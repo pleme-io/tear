@@ -1,0 +1,15 @@
+[package]
+name = "tear-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Session/window/pane state machine, PTY ownership, layout engine, tmux.conf parser, format-string evaluator. The in-process MultiplexerControl impl mado will eventually consume as its pane backend."
+
+[lints]
+workspace = true
+
+[dependencies]
+tear-types = { workspace = true }

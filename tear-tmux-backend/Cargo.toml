@@ -1,0 +1,15 @@
+[package]
+name = "tear-tmux-backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Renders a typed TearProfile to a tmux.conf and shells out to vanilla tmux. M0 path that ships value before tear-daemon exists; kept long-term as the escape hatch for users on remote boxes where only tmux is installed."
+
+[lints]
+workspace = true
+
+[dependencies]
+tear-types = { workspace = true }

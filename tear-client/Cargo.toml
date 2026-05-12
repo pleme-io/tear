@@ -1,0 +1,15 @@
+[package]
+name = "tear-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Typed RPC client for tear-daemon. Consumed by the tear bin, mado (Tier 2 native-split mode), and third parties that want to drive tear sessions."
+
+[lints]
+workspace = true
+
+[dependencies]
+tear-types = { workspace = true }

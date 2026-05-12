@@ -1,0 +1,16 @@
+[package]
+name = "tear-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Long-running tear server. Owns sessions across client disconnects, snapshots state, exposes typed UDS RPC. Wraps tear-core::InProcess."
+
+[lints]
+workspace = true
+
+[dependencies]
+tear-types = { workspace = true }
+tear-core = { workspace = true }

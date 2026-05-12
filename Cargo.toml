@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["tear-types", "tear-core", "tear-daemon", "tear-client", "tear-tmux-backend", "tear"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/pleme-io/tear"
+repository = "https://github.com/pleme-io/tear"
+authors = ["pleme-io"]
+
+[workspace.dependencies]
+tear-types = { path = "tear-types" }
+tear-core = { path = "tear-core" }
+tear-daemon = { path = "tear-daemon" }
+tear-client = { path = "tear-client" }
+tear-tmux-backend = { path = "tear-tmux-backend" }
+tear = { path = "tear" }
+
+[workspace.lints]
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+
+[profile]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
