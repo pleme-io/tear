@@ -12,3 +12,7 @@ description = "Pure types for the tear multiplexer — TearSession/Window/Pane/L
 workspace = true
 
 [dependencies]
+serde = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }

@@ -1,24 +1,23 @@
 [package]
-name = "tear-core"
+name = "tear-config"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Runtime logic for the tear multiplexer — InProcess MultiplexerControl impl backed by portable-pty. The single source of truth for pane semantics across pleme-io GUI consumers (mado at tier 3)."
+description = "Shikumi-style live configuration for the tear multiplexer. Parses ~/.config/tear/tear.yaml, watches it for changes, publishes the parsed TearConfig via Arc<TearConfig> swap. Same configuration story mado uses — operators learn one config style for both apps."
 
 [lints]
 workspace = true
 
 [dependencies]
 tear-types = { workspace = true }
-tear-config = { workspace = true }
 serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-parking_lot = { workspace = true }
-portable-pty = { workspace = true }
+arc-swap = { workspace = true }
+notify = { workspace = true }
 once_cell = { workspace = true }
-blake3 = { workspace = true }

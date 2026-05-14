@@ -1,13 +1,24 @@
 //! `tear-core` — runtime logic for the tear multiplexer.
 //!
 //! Houses the session/window/pane state machine, PTY ownership
-//! (`portable-pty`), layout algorithms, tmux.conf parser, and format-
-//! string evaluator. No daemon — those live in `tear-daemon`.
+//! (`portable-pty`), the layout engine, and the [`InProcess`]
+//! implementation of [`tear_types::MultiplexerControl`].
 //!
-//! The `InProcess` impl of [`tear_types::MultiplexerControl`] is the
-//! single source of truth for pane semantics across the substrate:
-//! `tear-daemon` wraps it for cross-process use; `mado` will swap its
-//! current `pane.rs`/`tab.rs` to consume it directly (post-tear M2 —
-//! see project memory `project_tear_mado_overlap`).
+//! ## Why this matters for the mado integration
+//!
+//! `mado` currently owns its own `pane.rs`/`tab.rs` with private
+//! state machines. At M5 those modules rebase onto
+//! `tear-core::InProcess` — both apps then share one source of
+//! truth for pane semantics. This crate's `InProcess` impl is the
+//! gravitational center the eventual rebase lands on.
+//!
+//! No daemon — those live in `tear-daemon`. Daemon-side composition
+//! wraps `InProcess` rather than reimplementing.
 
 #![forbid(unsafe_code)]
+
+pub mod inproc;
+pub mod pty;
+pub mod registry;
+
+pub use inproc::InProcess;

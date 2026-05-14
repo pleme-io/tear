@@ -13,3 +13,5 @@ workspace = true
 
 [dependencies]
 tear-types = { workspace = true }
+tear-config = { workspace = true }
+anyhow = { workspace = true }

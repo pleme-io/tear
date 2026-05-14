@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["tear-types", "tear-core", "tear-daemon", "tear-client", "tear-tmux-backend", "tear"]
+members = [
+    "tear-types",
+    "tear-config",
+    "tear-core",
+    "tear-daemon",
+    "tear-client",
+    "tear-tmux-backend",
+    "tear",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,23 +20,68 @@ repository = "https://github.com/pleme-io/tear"
 authors = ["pleme-io"]
 
 [workspace.dependencies]
-tear-types = { path = "tear-types" }
-tear-core = { path = "tear-core" }
-tear-daemon = { path = "tear-daemon" }
-tear-client = { path = "tear-client" }
-tear-tmux-backend = { path = "tear-tmux-backend" }
-tear = { path = "tear" }
+# ── tear internal crates ────────────────────────────────────────────
+tear-types = { path = "tear-types", version = "0.1.0" }
+tear-config = { path = "tear-config", version = "0.1.0" }
+tear-core = { path = "tear-core", version = "0.1.0" }
+tear-daemon = { path = "tear-daemon", version = "0.1.0" }
+tear-client = { path = "tear-client", version = "0.1.0" }
+tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.0" }
+tear = { path = "tear", version = "0.1.0" }
+
+# ── pleme-io shared libraries — same versions mado pins ────────────
+# Live configuration with hot-reload. Operators learn the shikumi
+# config style ONCE — mado + tear both consume `~/.config/<app>/<app>.yaml`
+# via shikumi so cross-tool muscle memory carries over.
+shikumi = { git = "https://github.com/pleme-io/shikumi" }
+# Typed design tokens — palette + typography. tear's StatusBar /
+# tab-bar / pane-border / message colors all resolve through ishou
+# so a fleet-wide colorway change is one ishou-tokens edit.
+ishou-tokens = { git = "https://github.com/pleme-io/ishou" }
+
+# ── canonical fleet runtime crates ─────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "net", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+parking_lot = "0.12"
+arc-swap = "1"
+mimalloc = { version = "0.1", default-features = false }
+blake3 = "1"
+once_cell = "1"
+notify = "8"
+
+# ── PTY backend (cross-platform; same crate mado uses transitively) ─
+portable-pty = "0.9"
+
+# ── unit conversions for layout / dimensions ────────────────────────
+nix = { version = "0.30", features = ["term"] }
 
 [workspace.lints]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 [profile]
 
 [profile.release]
 codegen-units = 1
-lto = true
-opt-level = "z"
+# opt-level = 3 (speed). Same shape mado uses — tear is a daemon and
+# CLI that compose with mado for fleet pane semantics; size opt would
+# regress the hot-path operations (PTY pump, status-bar refresh).
+opt-level = 3
+lto = "fat"
+panic = "abort"
 strip = true
+debug = false
+incremental = false
+overflow-checks = false
