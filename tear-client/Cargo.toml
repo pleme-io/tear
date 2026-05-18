@@ -13,7 +13,9 @@ workspace = true
 
 [dependencies]
 tear-types = { workspace = true }
+tear-config = { workspace = true }
 parking_lot = { workspace = true }
+serde_yaml_ng = { workspace = true }
 
 [dev-dependencies]
 tear-core = { workspace = true }

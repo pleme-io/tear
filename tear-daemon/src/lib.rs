@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
+use tear_config::LiveConfig;
 use tear_core::InProcess;
 use tear_types::wire::{read_msg, write_msg, Request, Response, WireError};
 use tear_types::MultiplexerControl;
@@ -52,6 +53,15 @@ pub struct DaemonHandle {
     /// Kept alive so dropping the handle drops the InProcess (and
     /// every PTY it owns) only when the operator decides to.
     _inproc: Arc<InProcess>,
+    /// Shikumi-style live config — `Arc<ArcSwap<TearConfig>>` so
+    /// the daemon's request handlers can snapshot the current
+    /// config at any time, and the notify watcher (held inside
+    /// [`LiveConfig`]) keeps it fresh against file edits.
+    config: Arc<LiveConfig>,
+    /// Kept alive for the lifetime of the daemon so the notify
+    /// watcher's spawned thread keeps running. Drop = stop
+    /// watching.
+    _config_watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl DaemonHandle {
@@ -65,6 +75,14 @@ impl DaemonHandle {
     /// inspect daemon-side state without going through the RPC.
     pub fn inproc(&self) -> &Arc<InProcess> {
         &self._inproc
+    }
+
+    /// Borrow the live config — useful for tests that want to
+    /// poke the config without round-tripping through the RPC,
+    /// and for in-process consumers that want to subscribe to
+    /// changes.
+    pub fn config(&self) -> &Arc<LiveConfig> {
+        &self.config
     }
 
     /// Signal the accept loop to exit, then join it. Existing
@@ -98,7 +116,25 @@ impl Drop for DaemonHandle {
 /// stale socket file exists at the path it's unlinked first — the
 /// daemon assumes single-instance semantics; ship a `tear daemon
 /// --no-replace` if that ever becomes wrong.
+///
+/// Loads a default-derived `LiveConfig` (reads
+/// `~/.config/tear/tear.yaml` or returns default if missing) +
+/// spawns the notify file watcher. Use [`start_with_config`] to
+/// pass a pre-built `LiveConfig` (e.g. for tests that want to
+/// poke an in-memory config without touching the filesystem).
 pub fn start(socket_path: PathBuf, inproc: Arc<InProcess>) -> io::Result<DaemonHandle> {
+    let live = LiveConfig::default();
+    start_with_config(socket_path, inproc, Arc::new(live))
+}
+
+/// Like [`start`] but accepts an explicit `LiveConfig` so callers
+/// can substitute a test-friendly config + opt in to / out of the
+/// file watcher.
+pub fn start_with_config(
+    socket_path: PathBuf,
+    inproc: Arc<InProcess>,
+    live_config: Arc<LiveConfig>,
+) -> io::Result<DaemonHandle> {
     if socket_path.exists() {
         let _ = std::fs::remove_file(&socket_path);
     }
@@ -108,20 +144,42 @@ pub fn start(socket_path: PathBuf, inproc: Arc<InProcess>) -> io::Result<DaemonH
     let listener = UnixListener::bind(&socket_path)?;
     info!(path = %socket_path.display(), "tear-daemon listening");
 
+    // Best-effort notify watcher. If spawn_watcher fails (e.g.
+    // config dir doesn't exist on a brand-new fleet host) we log
+    // and continue — operators can still ReloadConfig via the RPC.
+    let watcher = match live_config.spawn_watcher() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            warn!(error = %e, "config file watcher could not start — manual ReloadConfig still works");
+            None
+        }
+    };
+
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
     let inproc_for_accept = inproc.clone();
     let socket_for_accept = socket_path.clone();
+    let config_for_accept = live_config.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept".into())
-        .spawn(move || accept_loop(listener, stop_for_accept, inproc_for_accept, socket_for_accept))?;
+        .spawn(move || {
+            accept_loop(
+                listener,
+                stop_for_accept,
+                inproc_for_accept,
+                config_for_accept,
+                socket_for_accept,
+            )
+        })?;
 
     Ok(DaemonHandle {
         socket_path,
         stop,
         accept_thread: Some(accept_thread),
         _inproc: inproc,
+        config: live_config,
+        _config_watcher: watcher,
     })
 }
 
@@ -129,6 +187,7 @@ fn accept_loop(
     listener: UnixListener,
     stop: Arc<AtomicBool>,
     inproc: Arc<InProcess>,
+    config: Arc<LiveConfig>,
     _socket_path: PathBuf,
 ) {
     for incoming in listener.incoming() {
@@ -139,10 +198,11 @@ fn accept_loop(
         match incoming {
             Ok(stream) => {
                 let inproc_for_conn = inproc.clone();
+                let config_for_conn = config.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn".into())
                     .spawn(move || {
-                        if let Err(e) = serve_connection(stream, inproc_for_conn) {
+                        if let Err(e) = serve_connection(stream, inproc_for_conn, config_for_conn) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "connection ended");
                             }
@@ -173,6 +233,7 @@ fn accept_loop(
 pub fn serve_connection<S: io::Read + io::Write>(
     mut stream: S,
     inproc: Arc<InProcess>,
+    config: Arc<LiveConfig>,
 ) -> io::Result<()> {
     loop {
         let req: Request = match read_msg(&mut stream) {
@@ -184,7 +245,7 @@ pub fn serve_connection<S: io::Read + io::Write>(
         if let Request::Subscribe(pane) = req {
             return serve_subscription(stream, inproc, pane);
         }
-        let resp = dispatch(&inproc, req);
+        let resp = dispatch_with_config(&inproc, &config, req);
         write_msg(&mut stream, &resp)?;
     }
 }
@@ -233,6 +294,12 @@ fn serve_subscription<S: io::Read + io::Write>(
 /// Map a Request to the corresponding InProcess call, packaging
 /// the result into a Response. Pure function — no I/O — so it's
 /// trivially unit-testable.
+///
+/// Does NOT handle the config-related requests (`GetConfig`,
+/// `ReloadConfig`) because those need access to the shared
+/// `LiveConfig`. Use [`dispatch_with_config`] from the serve
+/// path; this entry point exists for tests that don't care about
+/// config and don't want to thread an unused LiveConfig.
 pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
     match req {
         Request::ListSessions => map_result(inproc.list_sessions(), Response::Sessions),
@@ -273,6 +340,53 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         Request::Subscribe(_) => Response::Err(WireError::Rejected(
             "Subscribe must be handled by serve_connection (push mode), not dispatch".into(),
         )),
+        // Config requests live in dispatch_with_config because they
+        // need a LiveConfig handle. Same rationale as Subscribe.
+        Request::GetConfig | Request::ReloadConfig | Request::SetConfig(_) => {
+            Response::Err(WireError::Rejected(
+                "config requests must be handled by dispatch_with_config (needs LiveConfig)"
+                    .into(),
+            ))
+        }
+    }
+}
+
+/// Dispatcher that also handles the config RPCs. The serve loop
+/// uses this; tests use the simpler `dispatch` when they don't
+/// care about config.
+pub fn dispatch_with_config(
+    inproc: &InProcess,
+    config: &LiveConfig,
+    req: Request,
+) -> Response {
+    match req {
+        Request::GetConfig => {
+            let cfg = config.load();
+            match serde_yaml_ng::to_string(&*cfg) {
+                Ok(yaml) => Response::ConfigYaml(yaml),
+                Err(e) => Response::Err(WireError::Internal(format!(
+                    "failed to serialise TearConfig as YAML: {e}"
+                ))),
+            }
+        }
+        Request::ReloadConfig => match config.reload() {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Err(WireError::Internal(format!(
+                "config reload failed: {e}"
+            ))),
+        },
+        Request::SetConfig(yaml) => {
+            match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
+                Ok(cfg) => {
+                    config.replace(cfg);
+                    Response::Ok
+                }
+                Err(e) => Response::Err(WireError::Rejected(format!(
+                    "SetConfig payload did not parse as TearConfig YAML: {e}"
+                ))),
+            }
+        }
+        other => dispatch(inproc, other),
     }
 }
 

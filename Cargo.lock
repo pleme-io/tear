@@ -1054,6 +1054,8 @@ name = "tear-client"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "serde_yaml_ng",
+ "tear-config",
  "tear-core",
  "tear-daemon",
  "tear-types",
@@ -1097,6 +1099,9 @@ name = "tear-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "notify",
+ "serde_yaml_ng",
+ "tear-config",
  "tear-core",
  "tear-types",
  "tracing",

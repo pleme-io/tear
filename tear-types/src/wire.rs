@@ -99,6 +99,27 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    // ── Config (Phase 5 — shikumi-style live reload) ─────────────
+    /// Snapshot the daemon's current `TearConfig` as YAML. Lets
+    /// mado (or any consumer) introspect the live config without
+    /// racing the notify-driven hot-reload + without parsing the
+    /// YAML file directly.
+    GetConfig,
+    /// Force the daemon to re-read its config file from disk. The
+    /// notify watcher normally picks file changes up within ms;
+    /// this is the manual escape hatch for filesystems where
+    /// inotify-equivalents are unreliable (some network mounts).
+    ReloadConfig,
+    /// Push a typed `TearConfig` (serialised as YAML) to the
+    /// daemon — replaces the daemon's live config snapshot
+    /// in-place via the same `LiveConfig::replace` path the
+    /// notify watcher uses. Lets mado (or any client) impose a
+    /// config when it first attaches AND mutate the config
+    /// dynamically over the lifetime of a session (per the M5
+    /// destination — mado is the canonical author of the tear
+    /// config when it's the front-end). Daemon-side config file
+    /// on disk is NOT touched; the next reload reverts.
+    SetConfig(String),
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always
@@ -126,6 +147,15 @@ pub enum Response {
     /// Pushed by the daemon when the subscribed pane is destroyed.
     /// Subscribers should disconnect after observing this.
     PaneClosed(PaneId),
+    /// Reply to `Request::GetConfig` — the daemon's current live
+    /// TearConfig serialised as YAML (the same on-disk format
+    /// operators author at `~/.config/tear/tear.yaml`). Wire stays
+    /// in `tear-types`; deserialization back to a typed TearConfig
+    /// happens in tear-client / consumer code which already
+    /// depends on tear-config. YAML over the wire (vs typed CBOR)
+    /// avoids the cycle tear-types ↔ tear-config and keeps the
+    /// daemon's config inspectable with any text tool.
+    ConfigYaml(String),
     Ok,
     Err(WireError),
 }
