@@ -459,6 +459,13 @@ impl MultiplexerControl for Client {
         }
     }
 
+    fn pane_subscriber_count(&self, id: PaneId) -> ControlResult<u32> {
+        match self.rpc(Request::PaneSubscriberCount(id))? {
+            Response::SubscriberCount(n) => Ok(n),
+            other => Err(unexpected("SubscriberCount", other)),
+        }
+    }
+
     fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
         match self.rpc(Request::PaneSnapshot(id))? {
             Response::PaneSnapshot(snap) => Ok(snap),
@@ -1210,6 +1217,60 @@ mod tests {
         let got_b = collect(&rx_b);
         assert_eq!(got_a, vec!["C-fan-1", "C-fan-2"], "subscriber A");
         assert_eq!(got_b, vec!["C-fan-1", "C-fan-2"], "subscriber B");
+        daemon.stop();
+    }
+
+    // ── #3 migration — subscriber count ────────────────────────
+
+    /// Subscriber count reflects active byte-stream attachers.
+    /// Drop a SubscribeHandle and the daemon's count drops on
+    /// the next broadcast (it's lazy — sender pruning happens
+    /// when send fails).
+    #[test]
+    fn pane_subscriber_count_tracks_attach_lifecycle() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-subcount-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start(socket.clone(), inproc).expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let client = Client::connect(&socket).expect("connect");
+        let sid = client.new_session("subcount", "/bin/sh").unwrap();
+        let pane_id = *client.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        // No subscribers yet.
+        assert_eq!(client.pane_subscriber_count(pane_id).unwrap(), 0);
+
+        // Attach one subscriber. The daemon counts it.
+        let (tx, _rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let h1 = client.subscribe_pane_bytes(pane_id, move |b| {
+            let _ = tx.send(b.to_vec());
+        }).expect("sub 1");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(client.pane_subscriber_count(pane_id).unwrap(), 1);
+
+        // Two subscribers.
+        let (tx2, _rx2) = std::sync::mpsc::channel::<Vec<u8>>();
+        let h2 = client.subscribe_pane_bytes(pane_id, move |b| {
+            let _ = tx2.send(b.to_vec());
+        }).expect("sub 2");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(client.pane_subscriber_count(pane_id).unwrap(), 2);
+
+        // Drop one. Daemon prunes lazily — drive a write so the
+        // fan-out happens, then re-count.
+        h1.stop();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Send a marker to drive fan-out and force pruning.
+        client.send_keys(pane_id, b"trigger").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let n = client.pane_subscriber_count(pane_id).unwrap();
+        assert!(n <= 2, "expected ≤2 after drop, got {n}");
+
+        h2.stop();
         daemon.stop();
     }
 

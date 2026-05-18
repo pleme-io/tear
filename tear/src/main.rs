@@ -110,6 +110,17 @@ enum Cmd {
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
     },
+    /// Show typed pane metadata — size, state, input policy,
+    /// current subscriber count. Useful for migration ergonomics
+    /// (`tear pane-info <pane>` before attaching a second mado to
+    /// see if anyone's already there).
+    PaneInfo {
+        pane: String,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Probe daemon reachability. Prints `{reachable, socket,
     /// sessions, version}` as text or JSON (--json). Suitable for
     /// shell-prompt hooks (starship custom command, p10k poweradd,
@@ -196,6 +207,7 @@ fn main() -> Result<()> {
         Cmd::Kill { id, name, socket } => cmd_kill(&id, name, socket),
         Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
         Cmd::PaneInput { pane, action, socket } => cmd_pane_input(&pane, action, socket),
+        Cmd::PaneInfo { pane, socket, json } => cmd_pane_info(&pane, socket, json),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
         Cmd::ConfigPath => {
@@ -452,6 +464,45 @@ fn cmd_pane_input(
     };
     client.set_input_policy(pane_id, policy)?;
     println!("pane {pane_id} input_policy={}", policy.label());
+    Ok(())
+}
+
+/// `tear pane-info <pane>` — typed pane metadata + current
+/// subscriber count. Migration ergonomic.
+fn cmd_pane_info(
+    pane: &str,
+    socket: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    let pane_id = pane
+        .parse::<tear_types::PaneId>()
+        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let p = client.get_pane(pane_id)?;
+    let subs = client.pane_subscriber_count(pane_id).unwrap_or(0);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": pane_id.to_string(),
+                "shell": p.shell,
+                "size_cells": [p.size_cells.0, p.size_cells.1],
+                "state": format!("{:?}", p.state),
+                "input_policy": p.input_policy.label(),
+                "subscribers": subs,
+                "title": p.title,
+            })
+        );
+    } else {
+        println!(
+            "pane {pane_id}  shell={}  size={}x{}  state={:?}  input={}  subscribers={subs}",
+            p.shell,
+            p.size_cells.0,
+            p.size_cells.1,
+            p.state,
+            p.input_policy.label(),
+        );
+    }
     Ok(())
 }
 

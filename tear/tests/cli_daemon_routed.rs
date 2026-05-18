@@ -244,7 +244,34 @@ fn rename_relabels_session_in_daemon_list() {
     );
 }
 
-// ── #2 input policy ─────────────────────────────────────────────────
+// ── #3 migration ergonomic — pane-info subscriber count ────────────
+
+#[test]
+fn pane_info_on_fresh_pane_shows_zero_subscribers() {
+    let h = DaemonHarness::new("pane-info");
+    let _ = h.run(&["up", "--name", "info-test"]);
+    // YAML list serialises ids as decimal u64s. Grab the first
+    // pane id from the first session and convert to hex form for
+    // the pane-info CLI input.
+    let (yaml, _, _) = h.run(&["list", "--yaml"]);
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    let pane_decimal = parsed
+        .as_sequence()
+        .and_then(|s| s.first())
+        .and_then(|v| v["panes"].as_mapping())
+        .and_then(|m| m.keys().next())
+        .and_then(|k| k.as_u64())
+        .expect("expected one pane under the only session");
+    let pane_hex = format!("{:016x}", pane_decimal);
+    let (stdout, _, code) = h.run(&["pane-info", &pane_hex, "--json"]);
+    assert_eq!(code, 0, "pane-info failed: {stdout}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["subscribers"], 0);
+    assert_eq!(v["input_policy"], "free");
+    assert_eq!(v["id"], pane_hex);
+}
+
+
 
 #[test]
 fn pane_input_lock_unlock_round_trip() {

@@ -126,6 +126,14 @@ pub enum Request {
     /// config when it's the front-end). Daemon-side config file
     /// on disk is NOT touched; the next reload reverts.
     SetConfig(String),
+    /// Probe how many subscribers (byte-stream consumers) are
+    /// currently attached to a pane. Used by the migration
+    /// ergonomic — `tear pane-info` surfaces the count so an
+    /// operator knows whether they're stepping into an
+    /// already-shared pane, and by the auto-detect path so a new
+    /// renderer can decide between "attach to existing" and
+    /// "start new session".
+    PaneSubscriberCount(PaneId),
     /// Set a pane's input policy. `InputPolicy::Locked` rejects
     /// every subsequent `SendKeys` for that pane with
     /// `WireError::Rejected`; `InputPolicy::Free` re-opens it.
@@ -183,6 +191,10 @@ pub enum Response {
     /// avoids the cycle tear-types ↔ tear-config and keeps the
     /// daemon's config inspectable with any text tool.
     ConfigYaml(String),
+    /// Reply to `Request::PaneSubscriberCount` — number of
+    /// currently-attached byte-stream subscribers for that pane.
+    /// Includes the requester if it has an outstanding subscribe.
+    SubscriberCount(u32),
     /// Pushed by the daemon on every live-config replace, to
     /// every connection that issued `Request::SubscribeConfigChange`.
     /// Payload is the new config as YAML — same shape as

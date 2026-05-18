@@ -448,6 +448,22 @@ impl MultiplexerControl for InProcess {
         Ok(())
     }
 
+    fn pane_subscriber_count(&self, id: PaneId) -> ControlResult<u32> {
+        // Mirrors the byte-stream fan-out path: subscribers are
+        // indexed per-pane in InProcess.subscribers. Counting +
+        // sender liveness check (try_send via a synthetic
+        // empty-byte cycle would be too heavy) means we just
+        // report the slot length — a sender drops naturally on
+        // next broadcast if dead, so the count is an upper bound.
+        let count = self
+            .subscribers
+            .lock()
+            .get(&id)
+            .map(|v| v.len() as u32)
+            .unwrap_or(0);
+        Ok(count)
+    }
+
     fn set_input_policy(
         &self,
         id: PaneId,

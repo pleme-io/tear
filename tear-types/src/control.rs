@@ -154,6 +154,13 @@ pub trait MultiplexerControl: Send + Sync {
     /// chord) to a pane's PTY.
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()>;
 
+    /// How many byte-stream subscribers are currently attached to
+    /// the named pane. Returns 0 if the pane has no subscribers
+    /// (or doesn't exist — wraps the typed NoSuchPane miss into
+    /// a 0 count so the migration call site doesn't have to
+    /// distinguish "no subscribers" from "pane gone").
+    fn pane_subscriber_count(&self, id: PaneId) -> ControlResult<u32>;
+
     /// Replace a pane's typed [`crate::pane::InputPolicy`]. Default
     /// behavior is `Free`; setting `Locked` causes every
     /// subsequent `send_keys` for that pane to return
