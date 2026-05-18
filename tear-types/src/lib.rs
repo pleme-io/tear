@@ -57,7 +57,10 @@ pub use id::{PaneId, SessionId, WindowId};
 pub use keybind::{Action, KeyBind, KeyChord, KeyTable, KeyTableName};
 pub use layout::{LayoutKind, LayoutNode, Size};
 pub use pane::{PaneState, PaneStats, TearPane};
-pub use pane_snapshot::{Cell, PaneSnapshot};
+pub use pane_snapshot::{
+    ansi_256_color, default_ansi_palette, Cell, CellAttrs, Color, PaneSnapshot, ANSI_BRIGHT_COLORS,
+    ANSI_COLORS,
+};
 pub use session::{SessionState, TearSession};
 pub use statusbar::{Segment, SegmentAlignment, StatusBar};
 pub use theme::HexColor;
