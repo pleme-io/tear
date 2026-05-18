@@ -359,4 +359,74 @@ mod tests {
         let got: Response = read_msg(&mut out_cur).unwrap();
         assert!(matches!(got, Response::Sessions(v) if v.is_empty()));
     }
+
+    #[test]
+    fn dispatch_subscribe_in_dispatch_path_returns_rejected() {
+        // Subscribe is supposed to be intercepted in serve_connection
+        // BEFORE dispatch. Calling dispatch directly with Subscribe
+        // is a programmer error; verify it surfaces as a Rejected
+        // response rather than blocking or panicking.
+        let inproc = InProcess::new();
+        let bogus = tear_types::PaneId::from_seed("nope");
+        let resp = dispatch(&inproc, Request::Subscribe(bogus));
+        match resp {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(msg.contains("serve_connection"));
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_pane_resize_absolute_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let pane = tear_types::PaneId::from_seed("nope");
+        let resp = dispatch(
+            &inproc,
+            Request::PaneResizeAbsolute {
+                id: pane,
+                cols: 80,
+                rows: 24,
+            },
+        );
+        match resp {
+            Response::Err(WireError::NoSuchPane(p)) => assert_eq!(p, pane),
+            other => panic!("expected NoSuchPane, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_pane_snapshot_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let pane = tear_types::PaneId::from_seed("nope");
+        let resp = dispatch(&inproc, Request::PaneSnapshot(pane));
+        match resp {
+            Response::Err(WireError::NoSuchPane(p)) => assert_eq!(p, pane),
+            other => panic!("expected NoSuchPane, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_kill_then_get_session_returns_nosuch() {
+        let inproc = InProcess::new();
+        // Create a session, kill it, then look it up — should error.
+        let sid = match dispatch(
+            &inproc,
+            Request::NewSession {
+                name: "x".into(),
+                shell: "/bin/sh".into(),
+            },
+        ) {
+            Response::SessionId(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        match dispatch(&inproc, Request::KillSession(sid)) {
+            Response::Ok => {}
+            other => panic!("expected Ok, got {other:?}"),
+        }
+        match dispatch(&inproc, Request::GetSession(sid)) {
+            Response::Err(WireError::NoSuchSession(s)) => assert_eq!(s, sid),
+            other => panic!("expected NoSuchSession, got {other:?}"),
+        }
+    }
 }

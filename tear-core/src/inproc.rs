@@ -476,4 +476,76 @@ mod tests {
         let err = inproc.get_session(SessionId(99)).unwrap_err();
         assert!(matches!(err, ControlError::NoSuchSession(_)));
     }
+
+    #[test]
+    fn subscribe_pane_bytes_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let pane = PaneId::from_seed("phantom");
+        let err = inproc.subscribe_pane_bytes(pane).unwrap_err();
+        assert!(matches!(err, ControlError::NoSuchPane(p) if p == pane));
+    }
+
+    #[test]
+    fn pane_snapshot_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let pane = PaneId::from_seed("phantom");
+        let err = inproc.pane_snapshot(pane).unwrap_err();
+        assert!(matches!(err, ControlError::NoSuchPane(p) if p == pane));
+    }
+
+    #[test]
+    fn pane_resize_absolute_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let pane = PaneId::from_seed("phantom");
+        let err = inproc.pane_resize_absolute(pane, 80, 24).unwrap_err();
+        assert!(matches!(err, ControlError::NoSuchPane(p) if p == pane));
+    }
+
+    #[test]
+    fn rename_session_to_same_name_is_idempotent() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("work", "/bin/sh").unwrap();
+        // Rename to current name should succeed without error.
+        inproc.rename_session(sid, "work").unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        assert_eq!(s.name, "work");
+        // Now rename to a different name.
+        inproc.rename_session(sid, "play").unwrap();
+        let s2 = inproc.get_session(sid).unwrap();
+        assert_eq!(s2.name, "play");
+    }
+
+    #[test]
+    fn new_session_then_kill_then_subscribe_returns_nosuch() {
+        // The kill-session path must prune subscribers + grids + ptys
+        // so a later subscribe to the dead pane errors cleanly.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("temp", "/bin/sh").unwrap();
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        inproc.kill_session(sid).unwrap();
+        let err = inproc.subscribe_pane_bytes(pane).unwrap_err();
+        assert!(matches!(err, ControlError::NoSuchPane(_)));
+    }
+
+    #[test]
+    fn list_sessions_returns_all_created_sessions() {
+        let inproc = InProcess::new();
+        let a = inproc.new_session("alpha", "/bin/sh").unwrap();
+        let b = inproc.new_session("beta", "/bin/sh").unwrap();
+        let c = inproc.new_session("gamma", "/bin/sh").unwrap();
+        let sessions = inproc.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 3);
+        let mut names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+        let ids: std::collections::HashSet<_> =
+            sessions.iter().map(|s| s.id).collect();
+        for id in [a, b, c] {
+            assert!(ids.contains(&id));
+        }
+        // Note: sessions_in_order sorts by created_at_unix (second
+        // precision); same-second creates are ordered by BTreeMap key
+        // (BLAKE3-derived SessionId). Tests asserting strict
+        // insertion order would be flaky.
+    }
 }

@@ -1215,6 +1215,206 @@ mod tests {
         }
         assert!(g.scrollback_len() <= 3);
     }
+
+    // ── SGR / wire-format edge cases ──────────────────────────
+
+    #[test]
+    fn sgr_truecolor_with_missing_params_does_not_panic() {
+        // Only 2 of the 5 expected params for 38;2;R;G;B.
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[38;2;200mX");
+        // Should not panic; pen unchanged or defaults.
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'X');
+    }
+
+    #[test]
+    fn sgr_256_with_missing_index_does_not_panic() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[38;5mX"); // missing index
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'X');
+    }
+
+    #[test]
+    fn sgr_unknown_param_is_ignored() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[999mX");
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'X');
+        // Pen stays at default (no SGR 999 → fg unchanged).
+        assert_eq!(snap.cells[0][0].fg, Color::WHITE);
+    }
+
+    #[test]
+    fn sgr_empty_params_resets() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[31m"); // set red
+        g.feed(b"\x1b[m"); // empty params = reset
+        g.feed(b"X");
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].fg, Color::WHITE);
+    }
+
+    #[test]
+    fn sgr_bright_bg_100_107() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"\x1b[104mX"); // bright blue background
+        let snap = g.snapshot();
+        let bright_blue = tear_types::pane_snapshot::ANSI_BRIGHT_COLORS[4];
+        assert_eq!(snap.cells[0][0].bg, bright_blue);
+    }
+
+    #[test]
+    fn sgr_disable_attrs_21_to_29() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"\x1b[1;4;7m"); // bold + underline + inverse
+        g.feed(b"\x1b[22;24;27m"); // disable each
+        g.feed(b"X");
+        let snap = g.snapshot();
+        assert!(snap.cells[0][0].attrs.is_empty());
+    }
+
+    // ── Erase + edit edge cases ───────────────────────────────
+
+    #[test]
+    fn ech_past_end_of_row_clamps() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"abc");
+        g.feed(b"\x1b[1;2H"); // cursor to (0, 1)
+        g.feed(b"\x1b[100X"); // erase 100 cells — clamps to row end
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'a');
+        assert_eq!(snap.cells[0][1].ch, ' ');
+        assert_eq!(snap.cells[0][2].ch, ' ');
+    }
+
+    #[test]
+    fn ich_at_end_of_row_no_overflow() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"abc");
+        g.feed(b"\x1b[1;3H"); // cursor at last col
+        g.feed(b"\x1b[5@"); // insert 5
+        let snap = g.snapshot();
+        // After insert: row truncated to 3 cells; the original 'c'
+        // was at col 2 and gets pushed off.
+        assert_eq!(snap.cells[0][0].ch, 'a');
+        assert_eq!(snap.cells[0][1].ch, 'b');
+        assert_eq!(snap.cells[0][2].ch, ' ');
+    }
+
+    #[test]
+    fn dch_more_than_row_clamps() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"abc");
+        g.feed(b"\x1b[1;1H");
+        g.feed(b"\x1b[100P"); // delete 100 cells
+        let snap = g.snapshot();
+        for c in 0..3 {
+            assert_eq!(snap.cells[0][c].ch, ' ', "col {c}");
+        }
+    }
+
+    // ── OSC + title edge cases ────────────────────────────────
+
+    #[test]
+    fn osc_with_no_params_is_dropped() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"\x1b]\x07"); // empty OSC
+        let snap = g.snapshot();
+        assert!(snap.title.is_none());
+    }
+
+    #[test]
+    fn osc_very_long_title_works() {
+        let mut g = PaneGrid::new(3, 1);
+        let long_title: String = "x".repeat(1000);
+        let payload = format!("\x1b]2;{}\x07", long_title);
+        g.feed(payload.as_bytes());
+        assert_eq!(g.title().map(str::len), Some(1000));
+    }
+
+    // ── DEC mode interactions ─────────────────────────────────
+
+    #[test]
+    fn dec_1049_save_and_restore_cursor_around_alt_screen() {
+        let mut g = PaneGrid::new(10, 3);
+        g.feed(b"AAA\r\nBBB");
+        // cursor at (1, 3)
+        g.feed(b"\x1b[?1049h"); // enter alt + save cursor
+        g.feed(b"\x1b[5;5H"); // move cursor in alt
+        let alt = g.snapshot();
+        assert!(alt.alt_screen_active);
+        // Leave alt — cursor restored to (1, 3).
+        g.feed(b"\x1b[?1049l");
+        let back = g.snapshot();
+        assert!(!back.alt_screen_active);
+        assert_eq!(back.cursor_row, 1);
+        assert_eq!(back.cursor_col, 3);
+        // Primary preserved.
+        assert_eq!(back.cells[0][0].ch, 'A');
+        assert_eq!(back.cells[1][0].ch, 'B');
+    }
+
+    #[test]
+    fn dec_25_cursor_visibility_round_trip() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"\x1b[?25l"); // hide
+        assert!(!g.snapshot().cursor_visible);
+        g.feed(b"\x1b[?25h"); // show
+        assert!(g.snapshot().cursor_visible);
+        g.feed(b"\x1b[?25l"); // hide again
+        assert!(!g.snapshot().cursor_visible);
+    }
+
+    // ── Misc robustness ───────────────────────────────────────
+
+    #[test]
+    fn bel_does_not_crash_or_consume_cell() {
+        let mut g = PaneGrid::new(3, 1);
+        g.feed(b"A\x07B"); // BEL between two chars
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'A');
+        assert_eq!(snap.cells[0][1].ch, 'B');
+    }
+
+    #[test]
+    fn tab_aligns_to_next_multiple_of_8() {
+        let mut g = PaneGrid::new(20, 1);
+        g.feed(b"\tX"); // tab from col 0 → col 8
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][8].ch, 'X');
+    }
+
+    #[test]
+    fn resize_to_zero_clamps_safely() {
+        let mut g = PaneGrid::new(5, 3);
+        g.feed(b"hello");
+        // PaneGrid documents "max(1)" — but the constructor accepts
+        // 0 cols/rows in theory. Resize to 0 should not panic.
+        g.resize(0, 0);
+        let snap = g.snapshot();
+        // Cursor clamped to 0,0 since rows.saturating_sub(1) = 0.
+        assert_eq!(snap.cursor_row, 0);
+        assert_eq!(snap.cursor_col, 0);
+    }
+
+    #[test]
+    fn ris_resets_pen_and_clears_screen() {
+        let mut g = PaneGrid::new(5, 2);
+        g.feed(b"\x1b[31m"); // red pen
+        g.feed(b"AB\r\nCD");
+        g.feed(b"\x1bc"); // RIS
+        let snap = g.snapshot();
+        for row in snap.cells {
+            for cell in row {
+                assert_eq!(cell.ch, ' ');
+                assert_eq!(cell.fg, Color::WHITE);
+            }
+        }
+        assert_eq!(snap.cursor_row, 0);
+        assert_eq!(snap.cursor_col, 0);
+    }
 }
 
 #[cfg(test)]

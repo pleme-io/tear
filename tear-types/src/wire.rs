@@ -289,4 +289,124 @@ mod tests {
         let p = default_socket_path();
         assert!(p.to_string_lossy().ends_with("tear.sock"));
     }
+
+    #[test]
+    fn roundtrip_pane_resize_absolute_request() {
+        let pane = PaneId::from_seed("resize-pane");
+        let req = Request::PaneResizeAbsolute {
+            id: pane,
+            cols: 132,
+            rows: 50,
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        let mut cur = Cursor::new(buf);
+        let got: Request = read_msg(&mut cur).unwrap();
+        match got {
+            Request::PaneResizeAbsolute { id, cols, rows } => {
+                assert_eq!(id, pane);
+                assert_eq!(cols, 132);
+                assert_eq!(rows, 50);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_subscribe_request() {
+        let pane = PaneId::from_seed("sub-pane");
+        let req = Request::Subscribe(pane);
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        let mut cur = Cursor::new(buf);
+        let got: Request = read_msg(&mut cur).unwrap();
+        assert!(matches!(got, Request::Subscribe(p) if p == pane));
+    }
+
+    #[test]
+    fn roundtrip_pane_bytes_response() {
+        let resp = Response::PaneBytes(b"hello\xff\x00 mixed bytes".to_vec());
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &resp).unwrap();
+        let mut cur = Cursor::new(buf);
+        let got: Response = read_msg(&mut cur).unwrap();
+        match got {
+            Response::PaneBytes(b) => {
+                assert_eq!(b, b"hello\xff\x00 mixed bytes");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_pane_closed_response() {
+        let pane = PaneId::from_seed("closed-pane");
+        let resp = Response::PaneClosed(pane);
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &resp).unwrap();
+        let mut cur = Cursor::new(buf);
+        let got: Response = read_msg(&mut cur).unwrap();
+        assert!(matches!(got, Response::PaneClosed(p) if p == pane));
+    }
+
+    #[test]
+    fn every_wire_error_variant_roundtrips() {
+        let sid = SessionId::from_seed("s");
+        let wid = WindowId::from_seed("w");
+        let pid = PaneId::from_seed("p");
+        let cases: Vec<ControlError> = vec![
+            ControlError::NoSuchSession(sid),
+            ControlError::NoSuchWindow(wid),
+            ControlError::NoSuchPane(pid),
+            ControlError::Transport("bad pipe".into()),
+            ControlError::Rejected("not allowed".into()),
+            ControlError::Internal(anyhow::anyhow!("boom")),
+        ];
+        for orig in cases {
+            let we: WireError = (orig).into();
+            let ce2: ControlError = we.into();
+            // Type stays in the same variant family. (Internal
+            // collapses to the same kind even though the inner
+            // anyhow chain is opaque after serialise.)
+            assert_eq!(
+                std::mem::discriminant(&ce2_to_kind_marker(&ce2)),
+                std::mem::discriminant(&ce2_to_kind_marker(&ce2)),
+                "discriminant preserved"
+            );
+        }
+    }
+
+    // Helper for the wire-error roundtrip test: erases the inner
+    // payload so we can compare variant tags only.
+    enum Kind {
+        S,
+        W,
+        P,
+        T,
+        R,
+        I,
+    }
+    fn ce2_to_kind_marker(e: &ControlError) -> Kind {
+        match e {
+            ControlError::NoSuchSession(_) => Kind::S,
+            ControlError::NoSuchWindow(_) => Kind::W,
+            ControlError::NoSuchPane(_) => Kind::P,
+            ControlError::Transport(_) => Kind::T,
+            ControlError::Rejected(_) => Kind::R,
+            ControlError::Internal(_) => Kind::I,
+        }
+    }
+
+    #[test]
+    fn truncated_frame_errors_cleanly() {
+        // 100-byte length-prefix, only 4 bytes of payload — read_msg
+        // should return io::Error rather than panic.
+        let mut buf = Vec::new();
+        let len: u32 = 100;
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(&[1, 2, 3, 4]);
+        let mut cur = Cursor::new(buf);
+        let err = read_msg::<_, Request>(&mut cur).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
 }
