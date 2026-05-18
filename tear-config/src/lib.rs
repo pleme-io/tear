@@ -120,6 +120,68 @@ pub struct TearConfig {
     /// Example: `~/.local/share/tear/recordings`.
     #[serde(default)]
     pub recording_auto_dir: Option<String>,
+
+    /// #4 — `tear ai` LLM proxy config. `None` disables `tear ai`
+    /// (operator gets a clean "no provider configured" error).
+    /// Defaults work for a stock local Ollama install — no API
+    /// key, no network, no telemetry.
+    #[serde(default)]
+    pub ai: Option<AiConfig>,
+}
+
+/// `tear ai` provider + model. Lives in `tear-config` so it
+/// round-trips through the same shikumi YAML as every other
+/// daemon-side knob; an operator flipping models picks up via
+/// the next reload.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AiConfig {
+    /// Provider implementation. Default `ollama`.
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    /// Model name (e.g. `llama3.2`, `qwen2.5-coder:7b`,
+    /// `claude-sonnet-4-5`).
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    /// Full HTTP endpoint. Default points at a stock local
+    /// Ollama (`http://127.0.0.1:11434`); override for any
+    /// OpenAI-compatible API.
+    #[serde(default = "default_ai_endpoint")]
+    pub endpoint: String,
+    /// Name of an env var that holds the API key. Read at
+    /// request time. `None` for providers that need no auth
+    /// (Ollama).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Max output bytes from the latest block to feed in as
+    /// context. Default 2000 — most LLMs handle the rest of
+    /// the context (cwd + cmd + exit) trivially.
+    #[serde(default = "default_ai_context_bytes")]
+    pub context_bytes: usize,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_ai_provider(),
+            model: default_ai_model(),
+            endpoint: default_ai_endpoint(),
+            api_key_env: None,
+            context_bytes: default_ai_context_bytes(),
+        }
+    }
+}
+
+fn default_ai_provider() -> String {
+    "ollama".into()
+}
+fn default_ai_model() -> String {
+    "llama3.2".into()
+}
+fn default_ai_endpoint() -> String {
+    "http://127.0.0.1:11434".into()
+}
+fn default_ai_context_bytes() -> usize {
+    2000
 }
 
 impl Default for TearConfig {
@@ -134,6 +196,7 @@ impl Default for TearConfig {
             theme: TearTheme::default(),
             reload_debounce_ms: default_debounce(),
             recording_auto_dir: None,
+            ai: None,
         }
     }
 }

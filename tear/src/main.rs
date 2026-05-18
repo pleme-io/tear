@@ -27,6 +27,7 @@ use tear_core::InProcess;
 use tear_types::MultiplexerControl;
 use tracing::info;
 
+mod ai;
 mod top;
 
 #[derive(Parser, Debug)]
@@ -153,6 +154,26 @@ enum Cmd {
         socket: Option<std::path::PathBuf>,
         #[arg(long)]
         json: bool,
+    },
+    /// #4 LLM proxy — assembles context from the latest captured
+    /// pane block (or `--block <index>`) and forwards to the
+    /// configured LLM. Defaults to a local Ollama install. Set
+    /// `services.tear.settings.ai.{provider,model,endpoint,api_key_env}`
+    /// in `~/.config/tear/tear.yaml` to use anything else.
+    Ai {
+        prompt: Vec<String>,
+        /// Pane to draw context from. Defaults to the only pane
+        /// in the only active session; fails if ambiguous.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Specific block index. Default: the most recent.
+        #[arg(long)]
+        block: Option<u64>,
+        /// Model override (defaults to the configured model).
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
     },
     /// Semantic history — typed projection of every captured block
     /// across one pane, one session, or the whole daemon. Each
@@ -316,6 +337,9 @@ fn main() -> Result<()> {
         }
         Cmd::History { pane, session, since_secs, exit_code, limit, socket, json } => {
             cmd_history(pane, session, since_secs, exit_code, limit, socket, json)
+        }
+        Cmd::Ai { prompt, pane, block, model, socket } => {
+            cmd_ai(prompt, pane, block, model, socket)
         }
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
@@ -752,6 +776,70 @@ fn cmd_block(
         println!("command: {}", block.command.trim_end());
         println!("─ output ─");
         print!("{}", block.output);
+    }
+    Ok(())
+}
+
+/// `tear ai <prompt>` — assemble block context + forward to LLM.
+fn cmd_ai(
+    prompt: Vec<String>,
+    pane_filter: Option<String>,
+    block_index: Option<u64>,
+    model_override: Option<String>,
+    socket: Option<std::path::PathBuf>,
+) -> Result<()> {
+    if prompt.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing prompt — usage: tear ai \"why did this fail\""
+        ));
+    }
+    let user_prompt = prompt.join(" ");
+    let (client, _) = connect_to_daemon(socket)?;
+
+    // Resolve pane: explicit --pane wins, otherwise expect exactly
+    // one pane in exactly one session.
+    let pane_id = if let Some(p) = pane_filter {
+        p.parse::<tear_types::PaneId>()
+            .map_err(|e| anyhow::anyhow!("invalid --pane: {e}"))?
+    } else {
+        let sessions = client.list_sessions()?;
+        let mut all_panes: Vec<tear_types::PaneId> =
+            sessions.iter().flat_map(|s| s.panes.keys().copied()).collect();
+        match all_panes.len() {
+            0 => return Err(anyhow::anyhow!("no panes — `tear up` first")),
+            1 => all_panes.pop().unwrap(),
+            n => {
+                return Err(anyhow::anyhow!(
+                    "{n} panes exist — pass --pane <id> explicitly"
+                ))
+            }
+        }
+    };
+
+    // Resolve block: explicit --block wins, otherwise the
+    // most recent completed one.
+    let block = match block_index {
+        Some(idx) => Some(client.pane_block_at(pane_id, idx)?),
+        None => {
+            let blocks = client.pane_blocks_list(pane_id, 0, 10_000)?;
+            blocks.into_iter().last()
+        }
+    };
+
+    // Load + override config.
+    let cfg_yaml = client.get_config_yaml()?;
+    let cfg: tear_config::TearConfig = serde_yaml_ng::from_str(&cfg_yaml)?;
+    let mut ai_cfg = cfg.ai.clone().unwrap_or_default();
+    if let Some(m) = model_override {
+        ai_cfg.model = m;
+    }
+    let provider = ai::provider_from_config(&ai_cfg)?;
+    let full_prompt = ai::assemble_prompt(&user_prompt, block.as_ref(), ai_cfg.context_bytes);
+
+    let response = provider.generate(&full_prompt)?;
+    print!("{response}");
+    if !response.ends_with('\n') {
+        println!();
     }
     Ok(())
 }

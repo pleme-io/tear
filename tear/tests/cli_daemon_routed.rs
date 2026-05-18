@@ -244,6 +244,44 @@ fn rename_relabels_session_in_daemon_list() {
     );
 }
 
+// ── #4 LLM proxy (tear ai) ──────────────────────────────────────────
+
+#[test]
+fn ai_help_lists_required_options() {
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let out = std::process::Command::new(bin)
+        .args(["ai", "--help"])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--pane"), "ai --help missing --pane: {stdout}");
+    assert!(stdout.contains("--block"), "ai --help missing --block: {stdout}");
+    assert!(stdout.contains("--model"), "ai --help missing --model: {stdout}");
+}
+
+#[test]
+fn ai_without_prompt_errors_clearly() {
+    let h = DaemonHarness::new("ai-no-prompt");
+    let (_stdout, stderr, code) = h.run(&["ai"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("missing prompt") || stderr.contains("required") || stderr.contains("Required"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
+fn ai_with_no_panes_errors_clearly() {
+    let h = DaemonHarness::new("ai-no-panes");
+    // Don't `tear up`. Operator-facing prompt should be clear.
+    let (_stdout, stderr, code) = h.run(&["ai", "why"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("no panes") || stderr.contains("connection") || !stderr.is_empty(),
+        "got: {stderr}"
+    );
+}
+
 // ── #5 semantic history ─────────────────────────────────────────────
 
 #[test]
