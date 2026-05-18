@@ -5322,6 +5322,12 @@ rec {
             features = [ "rustls" "json" ];
           }
         ];
+        devDependencies = [
+          {
+            name = "tempfile";
+            packageId = "tempfile";
+          }
+        ];
 
       };
       "tear-client" = rec {
@@ -5496,8 +5502,21 @@ rec {
             packageId = "anyhow";
           }
           {
+            name = "blake3";
+            packageId = "blake3";
+          }
+          {
             name = "notify";
             packageId = "notify";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
           }
           {
             name = "serde_yaml_ng";
@@ -5577,6 +5596,12 @@ rec {
           {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "serde_json";
+            packageId = "serde_json";
           }
         ];
 
