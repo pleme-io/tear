@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mado-web — browser-side tear renderer</title>
+<style>
+  body {
+    background: #2e3440;
+    color: #eceff4;
+    font-family: "JetBrainsMono Nerd Font Mono", "Menlo", monospace;
+    margin: 1em 2em;
+  }
+  h1 { color: #88c0d0; font-size: 1.1em; }
+  ul#sessions { list-style: none; padding-left: 0; }
+  ul#sessions li {
+    padding: 4px 8px;
+    border-left: 2px solid #5e81ac;
+    margin: 2px 0;
+  }
+  pre#pane-stream {
+    background: #3b4252;
+    color: #d8dee9;
+    padding: 8px 12px;
+    border-radius: 4px;
+    min-height: 16em;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .controls { margin: 12px 0; }
+  input[type="text"] {
+    background: #3b4252;
+    color: #eceff4;
+    border: 1px solid #4c566a;
+    padding: 4px 8px;
+    font-family: inherit;
+    min-width: 28em;
+  }
+  button {
+    background: #5e81ac;
+    color: #eceff4;
+    border: 0;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: #81a1c1; }
+</style>
+</head>
+<body>
+  <h1>⛗ mado-web — browser attach to tear-daemon (via tear-ws-bridge)</h1>
+
+  <div class="controls">
+    <label>ws URL:
+      <input type="text" id="ws-url" value="ws://localhost:8181/">
+    </label>
+    <label style="margin-left:1em;">subscribe pane (16-hex, optional):
+      <input type="text" id="pane-id" placeholder="leave empty to just list">
+    </label>
+    <button id="connect">connect</button>
+  </div>
+
+  <h2 style="color:#a3be8c;font-size:1em;">sessions</h2>
+  <ul id="sessions"><li>(disconnected)</li></ul>
+
+  <h2 style="color:#a3be8c;font-size:1em;">pane stream</h2>
+  <pre id="pane-stream"></pre>
+
+  <script type="module">
+    import init, { init_panic_hook, connect } from "../pkg/mado_web.js";
+
+    await init();
+    init_panic_hook();
+
+    document.getElementById("connect").onclick = () => {
+      const url = document.getElementById("ws-url").value;
+      const pane = document.getElementById("pane-id").value.trim();
+      const paneArg = pane.length === 16 ? pane : undefined;
+      try {
+        connect(url, paneArg);
+      } catch (e) {
+        console.error("connect failed:", e);
+      }
+    };
+  </script>
+</body>
+</html>
