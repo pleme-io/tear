@@ -155,6 +155,42 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// #4 — replay an asciinema v2 .cast to the current terminal
+    /// with timing fidelity. Pure-Rust player; no asciinema CLI
+    /// dep. `--speed 2.0` plays back at 2x; `--max-delay-ms 200`
+    /// caps long pauses (great for skipping `sleep` commands).
+    Replay {
+        cast: std::path::PathBuf,
+        #[arg(long, default_value_t = 1.0)]
+        speed: f32,
+        #[arg(long, default_value_t = 200)]
+        max_delay_ms: u64,
+    },
+    /// #6 audit reader — replays the daemon's JSONL audit log.
+    /// Filters: --since-secs (last N seconds), --kind (one of
+    /// session_create | session_kill | set_input_policy |
+    /// start_recording | stop_recording | set_config). Reads
+    /// the path the daemon writes to (from
+    /// `services.tear.settings.audit_log` in tear.yaml).
+    Audit {
+        /// Explicit audit-log path. Default reads tear's config
+        /// via the daemon for the canonical path.
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+        /// Filter to the last N seconds (0 = everything).
+        #[arg(long, default_value_t = 0)]
+        since_secs: u64,
+        /// Filter to a specific event kind.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Max rows to return.
+        #[arg(long, default_value_t = 200)]
+        limit: u32,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// #4 LLM proxy — assembles context from the latest captured
     /// pane block (or `--block <index>`) and forwards to the
     /// configured LLM. Defaults to a local Ollama install. Set
@@ -341,6 +377,10 @@ fn main() -> Result<()> {
         Cmd::Ai { prompt, pane, block, model, socket } => {
             cmd_ai(prompt, pane, block, model, socket)
         }
+        Cmd::Audit { path, since_secs, kind, limit, socket, json } => {
+            cmd_audit(path, since_secs, kind, limit, socket, json)
+        }
+        Cmd::Replay { cast, speed, max_delay_ms } => cmd_replay(&cast, speed, max_delay_ms),
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
@@ -778,6 +818,171 @@ fn cmd_block(
         print!("{}", block.output);
     }
     Ok(())
+}
+
+/// `tear replay <cast>` — pure-Rust asciinema v2 .cast player.
+fn cmd_replay(
+    cast: &std::path::Path,
+    speed: f32,
+    max_delay_ms: u64,
+) -> Result<()> {
+    use std::io::Write;
+    use std::time::Duration;
+    let content = std::fs::read_to_string(cast)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", cast.display()))?;
+    let mut lines = content.lines();
+    // Header is optional; skip it if present (we don't need it
+    // for playback — width/height come from the operator's
+    // current terminal).
+    if let Some(first) = lines.next() {
+        // Header is a JSON object; data rows are JSON arrays.
+        if !first.trim_start().starts_with('[') {
+            // Skipped header.
+        } else {
+            // Header was missing — process first as a data row.
+            process_cast_row(first, &mut 0.0, speed, max_delay_ms)?;
+        }
+    }
+    let mut last_t = 0.0f64;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        process_cast_row(line, &mut last_t, speed, max_delay_ms)?;
+    }
+    let _ = std::io::stdout().flush();
+    Ok(())
+}
+
+fn process_cast_row(
+    line: &str,
+    last_t: &mut f64,
+    speed: f32,
+    max_delay_ms: u64,
+) -> Result<()> {
+    use std::io::Write;
+    use std::time::Duration;
+    let v: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return Ok(()),
+    };
+    if arr.len() < 3 {
+        return Ok(());
+    }
+    let t = arr[0].as_f64().unwrap_or(0.0);
+    let kind = arr[1].as_str().unwrap_or("");
+    let payload = arr[2].as_str().unwrap_or("");
+    // Only "o" (output) rows; "i" (input) rows are ignored.
+    if kind != "o" {
+        *last_t = t;
+        return Ok(());
+    }
+    let delta = (t - *last_t).max(0.0) / speed as f64;
+    let cap_ms = max_delay_ms;
+    let delay_ms = ((delta * 1000.0) as u64).min(cap_ms);
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+    let mut out = std::io::stdout().lock();
+    out.write_all(payload.as_bytes())?;
+    out.flush()?;
+    *last_t = t;
+    Ok(())
+}
+
+/// `tear audit` — read + filter the daemon's JSONL audit log.
+fn cmd_audit(
+    path: Option<std::path::PathBuf>,
+    since_secs: u64,
+    kind_filter: Option<String>,
+    limit: u32,
+    socket: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let log_path = match path {
+        Some(p) => p,
+        None => {
+            let (client, _) = connect_to_daemon(socket)?;
+            let yaml = client.get_config_yaml()?;
+            let cfg: tear_config::TearConfig = serde_yaml_ng::from_str(&yaml)?;
+            let raw = cfg.audit_log.ok_or_else(|| {
+                anyhow::anyhow!("daemon has no audit_log configured (set services.tear.settings.audit_log in tear.yaml)")
+            })?;
+            std::path::PathBuf::from(expand_tilde(&raw))
+        }
+    };
+    let content = std::fs::read_to_string(&log_path).map_err(|e| {
+        anyhow::anyhow!("read {}: {e}", log_path.display())
+    })?;
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let cutoff = if since_secs > 0 {
+        now_ms.saturating_sub(since_secs * 1000)
+    } else {
+        0
+    };
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for line in content.lines().rev() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(ts) = v.get("ts_ms").and_then(|t| t.as_u64()) {
+            if ts < cutoff {
+                continue;
+            }
+        }
+        if let Some(want) = kind_filter.as_deref() {
+            if v.get("kind").and_then(|k| k.as_str()) != Some(want) {
+                continue;
+            }
+        }
+        rows.push(v);
+        if rows.len() >= limit as usize {
+            break;
+        }
+    }
+    rows.reverse(); // chronological
+
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+    } else if rows.is_empty() {
+        println!("(no matching audit rows)");
+    } else {
+        for r in &rows {
+            let kind = r.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
+            let ts = r.get("ts_ms").and_then(|t| t.as_u64()).unwrap_or(0);
+            let rest: Vec<String> = r
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .filter(|(k, _)| !matches!(k.as_str(), "kind" | "ts_ms"))
+                        .map(|(k, v)| format!("{k}={}", v.to_string().trim_matches('"')))
+                        .collect()
+                })
+                .unwrap_or_default();
+            println!("{} {kind:<18} {}", short_ts(ts), rest.join(" "));
+        }
+    }
+    Ok(())
+}
+
+fn expand_tilde(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    s.to_string()
 }
 
 /// `tear ai <prompt>` — assemble block context + forward to LLM.

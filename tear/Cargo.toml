@@ -38,3 +38,6 @@ crossterm = "0.28"
 # because the CLI is short-lived; matches tear's existing sync
 # style). Pure rustls TLS — no native OpenSSL link dep.
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[dev-dependencies]
+tempfile = "3"

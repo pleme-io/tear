@@ -127,6 +127,15 @@ pub struct TearConfig {
     /// key, no network, no telemetry.
     #[serde(default)]
     pub ai: Option<AiConfig>,
+
+    /// #6 — append-only JSONL audit log. When set, the daemon
+    /// writes one line per typed event (session_create /
+    /// session_kill / set_input_policy / start_recording /
+    /// stop_recording / set_config). `None` disables. Path
+    /// supports leading `~/`. Example:
+    /// `~/.local/share/tear/audit.log`.
+    #[serde(default)]
+    pub audit_log: Option<String>,
 }
 
 /// `tear ai` provider + model. Lives in `tear-config` so it
@@ -197,6 +206,7 @@ impl Default for TearConfig {
             reload_debounce_ms: default_debounce(),
             recording_auto_dir: None,
             ai: None,
+            audit_log: None,
         }
     }
 }

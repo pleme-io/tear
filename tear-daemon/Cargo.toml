@@ -15,9 +15,12 @@ workspace = true
 tear-types = { workspace = true }
 tear-core = { workspace = true }
 tear-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+blake3 = { workspace = true }
 # notify is used transitively via tear-config; we re-export the
 # watcher type from DaemonHandle for keep-alive semantics.
 notify = { workspace = true }

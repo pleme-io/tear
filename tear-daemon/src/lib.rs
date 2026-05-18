@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod audit;
+
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -43,6 +45,8 @@ use tear_core::InProcess;
 use tear_types::wire::{read_msg, write_msg, Request, Response, WireError};
 use tear_types::MultiplexerControl;
 use tracing::{debug, error, info, warn};
+
+use crate::audit::{AuditEvent, AuditLog};
 
 /// Handle returned by [`start`]. Dropping it (or calling
 /// [`DaemonHandle::stop`]) stops the accept loop and joins the
@@ -59,6 +63,12 @@ pub struct DaemonHandle {
     /// config at any time, and the notify watcher (held inside
     /// [`LiveConfig`]) keeps it fresh against file edits.
     config: Arc<LiveConfig>,
+    /// #6 — append-only audit log handle, opened from the
+    /// initial config's `audit_log` field. `None` when no
+    /// audit_log was configured. Hot-reload-of-audit-path is
+    /// deliberately out of scope (operator restarts the daemon
+    /// to switch sinks).
+    audit: Option<AuditLog>,
     /// Kept alive for the lifetime of the daemon so the notify
     /// watcher's spawned thread keeps running. Drop = stop
     /// watching.
@@ -158,10 +168,13 @@ pub fn start_tcp_with_config(
         }
     };
 
+    let audit = open_audit_from_config(&live_config);
+
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
     let inproc_for_accept = inproc.clone();
     let config_for_accept = live_config.clone();
+    let audit_for_accept = audit.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept-tcp".into())
@@ -171,6 +184,7 @@ pub fn start_tcp_with_config(
                 stop_for_accept,
                 inproc_for_accept,
                 config_for_accept,
+                audit_for_accept,
             )
         })?;
 
@@ -184,8 +198,24 @@ pub fn start_tcp_with_config(
         accept_thread: Some(accept_thread),
         _inproc: inproc,
         config: live_config,
+        audit,
         _config_watcher: watcher,
     })
+}
+
+/// Open the audit log from the current config snapshot. Returns
+/// None when no `audit_log` is set or the file couldn't be
+/// opened (logged at warn level — audit failures are
+/// best-effort, never block startup).
+fn open_audit_from_config(live: &LiveConfig) -> Option<AuditLog> {
+    let path = live.load().audit_log.clone()?;
+    match AuditLog::open(&path) {
+        Ok(a) => Some(a),
+        Err(e) => {
+            warn!(path, error = %e, "audit: open failed; audit disabled this run");
+            None
+        }
+    }
 }
 
 pub fn start_with_config(
@@ -213,11 +243,14 @@ pub fn start_with_config(
         }
     };
 
+    let audit = open_audit_from_config(&live_config);
+
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
     let inproc_for_accept = inproc.clone();
     let socket_for_accept = socket_path.clone();
     let config_for_accept = live_config.clone();
+    let audit_for_accept = audit.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept".into())
@@ -228,6 +261,7 @@ pub fn start_with_config(
                 inproc_for_accept,
                 config_for_accept,
                 socket_for_accept,
+                audit_for_accept,
             )
         })?;
 
@@ -237,6 +271,7 @@ pub fn start_with_config(
         accept_thread: Some(accept_thread),
         _inproc: inproc,
         config: live_config,
+        audit,
         _config_watcher: watcher,
     })
 }
@@ -250,6 +285,7 @@ fn accept_loop_tcp(
     stop: Arc<AtomicBool>,
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
+    audit: Option<AuditLog>,
 ) {
     listener
         .set_nonblocking(true)
@@ -264,6 +300,7 @@ fn accept_loop_tcp(
                 debug!(peer = %peer, "tcp connection accepted");
                 let inproc_for_conn = inproc.clone();
                 let config_for_conn = config.clone();
+                let audit_for_conn = audit.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn-tcp".into())
                     .spawn(move || {
@@ -271,7 +308,12 @@ fn accept_loop_tcp(
                         // mode (set_nonblocking on TcpListener is
                         // inherited by accepted TcpStream).
                         let _ = stream.set_nonblocking(false);
-                        if let Err(e) = serve_connection(stream, inproc_for_conn, config_for_conn) {
+                        if let Err(e) = serve_connection(
+                            stream,
+                            inproc_for_conn,
+                            config_for_conn,
+                            audit_for_conn,
+                        ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "tcp connection ended");
                             }
@@ -295,6 +337,7 @@ fn accept_loop(
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
     _socket_path: PathBuf,
+    audit: Option<AuditLog>,
 ) {
     for incoming in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
@@ -305,10 +348,16 @@ fn accept_loop(
             Ok(stream) => {
                 let inproc_for_conn = inproc.clone();
                 let config_for_conn = config.clone();
+                let audit_for_conn = audit.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn".into())
                     .spawn(move || {
-                        if let Err(e) = serve_connection(stream, inproc_for_conn, config_for_conn) {
+                        if let Err(e) = serve_connection(
+                            stream,
+                            inproc_for_conn,
+                            config_for_conn,
+                            audit_for_conn,
+                        ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "connection ended");
                             }
@@ -340,6 +389,7 @@ pub fn serve_connection<S: io::Read + io::Write>(
     mut stream: S,
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
+    audit: Option<AuditLog>,
 ) -> io::Result<()> {
     loop {
         let req: Request = match read_msg(&mut stream) {
@@ -356,7 +406,7 @@ pub fn serve_connection<S: io::Read + io::Write>(
         if matches!(req, Request::SubscribeConfigChange) {
             return serve_config_subscription(stream, config);
         }
-        let resp = dispatch_with_config(&inproc, &config, req);
+        let resp = dispatch_with_config(&inproc, &config, req, audit.as_ref());
         write_msg(&mut stream, &resp)?;
     }
 }
@@ -541,6 +591,7 @@ pub fn dispatch_with_config(
     inproc: &InProcess,
     config: &LiveConfig,
     req: Request,
+    audit: Option<&AuditLog>,
 ) -> Response {
     match req {
         Request::GetConfig => {
@@ -561,7 +612,14 @@ pub fn dispatch_with_config(
         Request::SetConfig(yaml) => {
             match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
                 Ok(cfg) => {
+                    let hash = hash_str(&yaml);
                     config.replace(cfg);
+                    if let Some(a) = audit {
+                        a.emit(&AuditEvent::SetConfig {
+                            ts_ms: AuditEvent::now_ms(),
+                            config_hash: hash,
+                        });
+                    }
                     Response::Ok
                 }
                 Err(e) => Response::Err(WireError::Rejected(format!(
@@ -578,10 +636,80 @@ pub fn dispatch_with_config(
             if let Some(dir) = config.load().recording_auto_dir.clone() {
                 flush_session_recordings(inproc, id, &dir);
             }
-            map_unit(inproc.kill_session(id))
+            let resp = map_unit(inproc.kill_session(id));
+            if matches!(resp, Response::Ok) {
+                if let Some(a) = audit {
+                    a.emit(&AuditEvent::SessionKill {
+                        ts_ms: AuditEvent::now_ms(),
+                        sid: id.to_string(),
+                    });
+                }
+            }
+            resp
+        }
+        Request::NewSession { name, shell, source } => {
+            let src = source.unwrap_or_default();
+            let result = inproc.new_session_with_source(&name, &shell, src.clone());
+            if let Ok(sid) = &result {
+                if let Some(a) = audit {
+                    a.emit(&AuditEvent::SessionCreate {
+                        ts_ms: AuditEvent::now_ms(),
+                        sid: sid.to_string(),
+                        name: name.clone(),
+                        shell: shell.clone(),
+                        source: src.label().to_string(),
+                    });
+                }
+            }
+            map_result(result, Response::SessionId)
+        }
+        Request::SetInputPolicy { id, policy } => {
+            let resp = map_unit(inproc.set_input_policy(id, policy));
+            if matches!(resp, Response::Ok) {
+                if let Some(a) = audit {
+                    a.emit(&AuditEvent::SetInputPolicy {
+                        ts_ms: AuditEvent::now_ms(),
+                        pid: id.to_string(),
+                        policy: policy.label().to_string(),
+                    });
+                }
+            }
+            resp
+        }
+        Request::StartPaneRecording(id) => {
+            let resp = map_unit(inproc.enable_pane_recording(id));
+            if matches!(resp, Response::Ok) {
+                if let Some(a) = audit {
+                    a.emit(&AuditEvent::StartRecording {
+                        ts_ms: AuditEvent::now_ms(),
+                        pid: id.to_string(),
+                    });
+                }
+            }
+            resp
+        }
+        Request::StopPaneRecording(id) => {
+            let resp = map_unit(inproc.disable_pane_recording(id));
+            if matches!(resp, Response::Ok) {
+                if let Some(a) = audit {
+                    a.emit(&AuditEvent::StopRecording {
+                        ts_ms: AuditEvent::now_ms(),
+                        pid: id.to_string(),
+                    });
+                }
+            }
+            resp
         }
         other => dispatch(inproc, other),
     }
+}
+
+/// Tiny hex SHA-256 helper — used to fingerprint SetConfig
+/// payloads for the audit log without bloating each row.
+fn hash_str(s: &str) -> String {
+    // tear already pulls in blake3 for InProcess id minting; reuse.
+    let hash = blake3::hash(s.as_bytes());
+    hash.to_hex().to_string()
 }
 
 /// Best-effort: walk every pane in the session, export each
@@ -828,7 +956,7 @@ mod tests {
 
         // Dispatch a KillSession via dispatch_with_config so the
         // auto-flush hook runs.
-        match dispatch_with_config(&inproc, &live, Request::KillSession(sid)) {
+        match dispatch_with_config(&inproc, &live, Request::KillSession(sid), None) {
             Response::Ok => {}
             other => panic!("expected Ok, got {other:?}"),
         }

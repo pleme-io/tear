@@ -244,6 +244,53 @@ fn rename_relabels_session_in_daemon_list() {
     );
 }
 
+// ── #4 tear replay ──────────────────────────────────────────────────
+
+#[test]
+fn replay_emits_payload_bytes_in_order() {
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    let cast = r#"{"version":2,"width":80,"height":24}
+[0.0,"o","hello "]
+[0.05,"o","world"]
+"#;
+    tmp.write_all(cast.as_bytes()).unwrap();
+    tmp.flush().unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let out = std::process::Command::new(bin)
+        .args(["replay"])
+        .arg(tmp.path())
+        .args(["--max-delay-ms", "10"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "exit code: {:?}", out.status.code());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("hello world"), "got: {stdout}");
+}
+
+#[test]
+fn replay_ignores_input_rows() {
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    let cast = r#"{"version":2,"width":80,"height":24}
+[0.0,"i","you typed this"]
+[0.0,"o","output"]
+"#;
+    tmp.write_all(cast.as_bytes()).unwrap();
+    tmp.flush().unwrap();
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let out = std::process::Command::new(bin)
+        .args(["replay"])
+        .arg(tmp.path())
+        .args(["--max-delay-ms", "1"])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("you typed this"), "got: {stdout}");
+    assert!(stdout.contains("output"), "got: {stdout}");
+}
+
 // ── #4 LLM proxy (tear ai) ──────────────────────────────────────────
 
 #[test]

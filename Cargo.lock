@@ -1687,6 +1687,7 @@ dependencies = [
  "tear-daemon",
  "tear-tmux-backend",
  "tear-types",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -1743,7 +1744,10 @@ name = "tear-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "notify",
+ "serde",
+ "serde_json",
  "serde_yaml_ng",
  "tear-config",
  "tear-core",
