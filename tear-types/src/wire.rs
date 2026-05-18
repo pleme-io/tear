@@ -51,6 +51,12 @@ pub enum Request {
     NewSession {
         name: String,
         shell: String,
+        /// Optional provenance tag — defaults to None on pre-#6
+        /// wire bytes (serde's default). When present, mado MCP /
+        /// CLI sets it to `Some(Agent)` / `Some(Human)` / `Some(Named(...))`
+        /// so `tear list` can group by source.
+        #[serde(default)]
+        source: Option<crate::session::SessionSource>,
     },
     RenameSession {
         id: SessionId,

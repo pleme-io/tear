@@ -61,7 +61,7 @@ pub use pane_snapshot::{
     ansi_256_color, default_ansi_palette, Cell, CellAttrs, Color, PaneSnapshot, ANSI_BRIGHT_COLORS,
     ANSI_COLORS,
 };
-pub use session::{SessionState, TearSession};
+pub use session::{SessionSource, SessionState, TearSession};
 pub use statusbar::{Segment, SegmentAlignment, StatusBar};
 pub use theme::HexColor;
 pub use theme::TearTheme;

@@ -344,8 +344,12 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             window: w,
         }),
         Request::GetPane(id) => map_result(inproc.get_pane(id), Response::Pane),
-        Request::NewSession { name, shell } => {
-            map_result(inproc.new_session(&name, &shell), Response::SessionId)
+        Request::NewSession { name, shell, source } => {
+            let src = source.unwrap_or_default();
+            map_result(
+                inproc.new_session_with_source(&name, &shell, src),
+                Response::SessionId,
+            )
         }
         Request::RenameSession { id, new_name } => {
             map_unit(inproc.rename_session(id, &new_name))
@@ -472,6 +476,7 @@ mod tests {
             Request::NewSession {
                 name: "work".into(),
                 shell: "/bin/sh".into(),
+                source: None,
             },
         );
         let session_id = match resp {
@@ -571,6 +576,7 @@ mod tests {
             Request::NewSession {
                 name: "x".into(),
                 shell: "/bin/sh".into(),
+                source: None,
             },
         ) {
             Response::SessionId(s) => s,

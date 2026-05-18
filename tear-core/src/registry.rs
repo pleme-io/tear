@@ -82,6 +82,7 @@ impl Registry {
             state: SessionState::Active,
             created_at_unix: now_unix(),
             description: String::new(),
+            source: tear_types::SessionSource::default(),
         };
         self.sessions.insert(id, s);
         id

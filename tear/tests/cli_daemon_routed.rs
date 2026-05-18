@@ -244,6 +244,70 @@ fn rename_relabels_session_in_daemon_list() {
     );
 }
 
+// ── #6 source provenance ────────────────────────────────────────────
+
+#[test]
+fn up_default_source_is_human() {
+    let h = DaemonHarness::new("source-default");
+    let (stdout, _, code) = h.run(&["up", "--name", "default-src"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("source=human"), "expected human, got: {stdout}");
+}
+
+#[test]
+fn up_with_explicit_agent_source_lands_as_agent() {
+    let h = DaemonHarness::new("source-agent");
+    let (stdout, _, code) = h.run(&["up", "--name", "agent-src", "--source", "agent"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("source=agent"), "got: {stdout}");
+}
+
+#[test]
+fn up_with_named_source_lands_with_label() {
+    let h = DaemonHarness::new("source-named");
+    let (stdout, _, code) = h.run(&["up", "--name", "named-src", "--source", "named:ci-runner"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("source=named"));
+}
+
+#[test]
+fn up_with_invalid_source_is_rejected() {
+    let h = DaemonHarness::new("source-bad");
+    let (_stdout, stderr, code) = h.run(&["up", "--name", "x", "--source", "not-a-source"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("invalid --source") || stderr.contains("not-a-source"),
+        "got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn list_source_filter_shows_only_matching_sessions() {
+    let h = DaemonHarness::new("source-filter");
+    let _ = h.run(&["up", "--name", "h1"]); // default = human
+    let _ = h.run(&["up", "--name", "a1", "--source", "agent"]);
+    let _ = h.run(&["up", "--name", "n1", "--source", "named:ci-runner"]);
+
+    let (stdout_h, _, _) = h.run(&["list", "--source", "human"]);
+    assert!(stdout_h.contains("h1"), "human filter missed h1: {stdout_h}");
+    assert!(!stdout_h.contains("a1"), "human filter included a1: {stdout_h}");
+    assert!(!stdout_h.contains("n1"), "human filter included n1: {stdout_h}");
+
+    let (stdout_a, _, _) = h.run(&["list", "--source", "agent"]);
+    assert!(stdout_a.contains("a1"), "agent filter missed a1: {stdout_a}");
+    assert!(!stdout_a.contains("h1"), "agent filter included h1: {stdout_a}");
+
+    let (stdout_n, _, _) = h.run(&["list", "--source", "named"]);
+    assert!(stdout_n.contains("n1"), "named filter missed n1: {stdout_n}");
+    assert!(!stdout_n.contains("h1"), "named filter included h1: {stdout_n}");
+
+    let (stdout_exact, _, _) = h.run(&["list", "--source", "named:ci-runner"]);
+    assert!(stdout_exact.contains("n1"), "exact named missed n1: {stdout_exact}");
+
+    let (stdout_miss, _, _) = h.run(&["list", "--source", "named:does-not-exist"]);
+    assert!(stdout_miss.contains("(no sessions"), "expected empty list: {stdout_miss}");
+}
+
 // ── error paths shared by every daemon-routed command ──────────────
 
 #[test]

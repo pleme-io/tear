@@ -61,6 +61,11 @@ enum Cmd {
         /// Daemon UDS path. Defaults to the standard XDG location.
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+        /// Provenance tag — written into the daemon's session
+        /// metadata so `tear list --source` can audit. Accepts
+        /// `human` (default), `agent`, or `named:<label>`.
+        #[arg(long, default_value = "human")]
+        source: String,
     },
     /// List the daemon's active sessions / windows / panes.
     List {
@@ -70,6 +75,11 @@ enum Cmd {
         /// Daemon UDS path. Defaults to the standard XDG location.
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+        /// Filter by provenance. Accepts `human`, `agent`,
+        /// `named` (any named source), or `named:<label>` (exact
+        /// named match). Omit to list everything.
+        #[arg(long)]
+        source: Option<String>,
     },
     /// Kill a daemon session by id (or name with --name).
     Kill {
@@ -162,8 +172,8 @@ fn main() -> Result<()> {
     init_tracing(cli.verbose);
 
     match cli.command {
-        Cmd::Up { name, shell, socket } => cmd_up(name, shell, socket),
-        Cmd::List { yaml, socket } => cmd_list(yaml, socket),
+        Cmd::Up { name, shell, socket, source } => cmd_up(name, shell, socket, source),
+        Cmd::List { yaml, socket, source } => cmd_list(yaml, socket, source),
         Cmd::Kill { id, name, socket } => cmd_kill(&id, name, socket),
         Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
@@ -219,6 +229,7 @@ fn cmd_up(
     name: Option<String>,
     shell: Option<String>,
     socket: Option<std::path::PathBuf>,
+    source: String,
 ) -> Result<()> {
     let (client, _socket_path) = connect_to_daemon(socket)?;
     // The daemon already enforces its own default_shell from its
@@ -238,15 +249,24 @@ fn cmd_up(
             .unwrap_or(0);
         format!("session-{n}")
     });
-    let id = client.new_session(&name, &shell)?;
-    info!(session_id = %id, name, shell, "tear up");
-    println!("created session {id} ({name}) in daemon");
+    let source = parse_source_for_creation(&source)?;
+    let id = client.new_session_with_source(&name, &shell, source.clone())?;
+    info!(session_id = %id, name, shell, source = %source.label(), "tear up");
+    println!("created session {id} ({name}) in daemon  source={}", source.label());
     Ok(())
 }
 
-fn cmd_list(yaml: bool, socket: Option<std::path::PathBuf>) -> Result<()> {
+fn cmd_list(
+    yaml: bool,
+    socket: Option<std::path::PathBuf>,
+    source_filter: Option<String>,
+) -> Result<()> {
     let (client, socket_path) = connect_to_daemon(socket)?;
-    let sessions = client.list_sessions()?;
+    let mut sessions = client.list_sessions()?;
+    if let Some(spec) = source_filter.as_deref() {
+        let filter = parse_source_filter(spec)?;
+        sessions.retain(|s| filter.matches(&s.source));
+    }
     if yaml {
         println!("{}", serde_yaml_ng::to_string(&sessions)?);
     } else if sessions.is_empty() {
@@ -254,16 +274,90 @@ fn cmd_list(yaml: bool, socket: Option<std::path::PathBuf>) -> Result<()> {
     } else {
         for s in sessions {
             println!(
-                "{} {}  windows={} panes={}  state={:?}",
+                "{} {}  windows={} panes={}  state={:?}  source={}",
                 s.id,
                 s.name,
                 s.windows.len(),
                 s.panes.len(),
                 s.state,
+                source_display(&s.source),
             );
         }
     }
     Ok(())
+}
+
+/// CLI surface for `--source human|agent|named:<label>` on
+/// session-CREATION commands (`tear up`). Anything else is an
+/// operator error.
+fn parse_source_for_creation(spec: &str) -> Result<tear_types::SessionSource> {
+    use tear_types::SessionSource;
+    if let Some(label) = spec.strip_prefix("named:") {
+        if label.is_empty() {
+            return Err(anyhow::anyhow!(
+                "--source named:<label> requires a non-empty label"
+            ));
+        }
+        return Ok(SessionSource::Named(label.to_owned()));
+    }
+    match spec {
+        "human" => Ok(SessionSource::Human),
+        "agent" => Ok(SessionSource::Agent),
+        "named" => Err(anyhow::anyhow!(
+            "--source named requires a label (e.g. --source named:ci-runner)"
+        )),
+        other => Err(anyhow::anyhow!(
+            "invalid --source `{other}`. Accepted: human | agent | named:<label>"
+        )),
+    }
+}
+
+/// Filter spec for `tear list --source`. Adds `named` as a
+/// wildcard meaning "anything tagged Named(_)".
+enum SourceFilter {
+    Human,
+    Agent,
+    AnyNamed,
+    Named(String),
+}
+
+impl SourceFilter {
+    fn matches(&self, s: &tear_types::SessionSource) -> bool {
+        use tear_types::SessionSource;
+        match (self, s) {
+            (SourceFilter::Human, SessionSource::Human) => true,
+            (SourceFilter::Agent, SessionSource::Agent) => true,
+            (SourceFilter::AnyNamed, SessionSource::Named(_)) => true,
+            (SourceFilter::Named(want), SessionSource::Named(got)) => want == got,
+            _ => false,
+        }
+    }
+}
+
+fn parse_source_filter(spec: &str) -> Result<SourceFilter> {
+    if let Some(label) = spec.strip_prefix("named:") {
+        if label.is_empty() {
+            return Err(anyhow::anyhow!("--source named:<label> requires a label"));
+        }
+        return Ok(SourceFilter::Named(label.to_owned()));
+    }
+    match spec {
+        "human" => Ok(SourceFilter::Human),
+        "agent" => Ok(SourceFilter::Agent),
+        "named" => Ok(SourceFilter::AnyNamed),
+        other => Err(anyhow::anyhow!(
+            "invalid --source filter `{other}`. Accepted: human | agent | named | named:<label>"
+        )),
+    }
+}
+
+fn source_display(s: &tear_types::SessionSource) -> String {
+    use tear_types::SessionSource;
+    match s {
+        SessionSource::Human => "human".into(),
+        SessionSource::Agent => "agent".into(),
+        SessionSource::Named(label) => format!("named:{label}"),
+    }
 }
 
 fn cmd_kill(id: &str, by_name: bool, socket: Option<std::path::PathBuf>) -> Result<()> {

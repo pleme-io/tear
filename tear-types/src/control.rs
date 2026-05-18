@@ -78,8 +78,25 @@ pub trait MultiplexerControl: Send + Sync {
     // ── Sessions ─────────────────────────────────────────────────
 
     /// Create a new session. `name` is the operator-visible label;
-    /// the returned [`SessionId`] is the stable handle.
-    fn new_session(&self, name: &str, shell: &str) -> ControlResult<SessionId>;
+    /// the returned [`SessionId`] is the stable handle. Defaults
+    /// to `SessionSource::Human` — agent-driven consumers (mado
+    /// MCP, automation) should call
+    /// [`Self::new_session_with_source`] so `tear list --source`
+    /// can audit provenance.
+    fn new_session(&self, name: &str, shell: &str) -> ControlResult<SessionId> {
+        self.new_session_with_source(name, shell, crate::session::SessionSource::Human)
+    }
+
+    /// Create a session with a typed [`SessionSource`] tag. The
+    /// daemon stores this on the [`TearSession`] so `tear list`
+    /// can group by provenance and operators can audit
+    /// agent-created sessions.
+    fn new_session_with_source(
+        &self,
+        name: &str,
+        shell: &str,
+        source: crate::session::SessionSource,
+    ) -> ControlResult<SessionId>;
 
     /// Rename a session. Idempotent — renaming to the current name
     /// returns Ok(()) without side effects.

@@ -194,9 +194,21 @@ impl MultiplexerControl for InProcess {
         Err(ControlError::NoSuchPane(id))
     }
 
-    fn new_session(&self, name: &str, shell: &str) -> ControlResult<SessionId> {
+    fn new_session_with_source(
+        &self,
+        name: &str,
+        shell: &str,
+        source: tear_types::SessionSource,
+    ) -> ControlResult<SessionId> {
         let mut r = self.registry.write();
         let sid = r.create_session(name);
+        // Stamp provenance on the typed session entry. The
+        // registry.create_session built it with Source::default()
+        // (Human); overwrite when the caller asked for something
+        // else.
+        if let Some(s) = r.sessions.get_mut(&sid) {
+            s.source = source.clone();
+        }
         let Some((_wid, pane_id)) = r.add_window(sid, "main", shell, (80, 24)) else {
             return Err(ControlError::Internal(anyhow::anyhow!(
                 "registry.add_window returned None after fresh create_session"
@@ -209,7 +221,7 @@ impl MultiplexerControl for InProcess {
             self.registry.write().sessions.remove(&sid);
             return Err(ControlError::Internal(e));
         }
-        info!(session = %sid, name, shell, "tear-core: new session");
+        info!(session = %sid, name, shell, source = %source.label(), "tear-core: new session");
         Ok(sid)
     }
 

@@ -329,10 +329,16 @@ impl MultiplexerControl for Client {
         }
     }
 
-    fn new_session(&self, name: &str, shell: &str) -> ControlResult<SessionId> {
+    fn new_session_with_source(
+        &self,
+        name: &str,
+        shell: &str,
+        source: tear_types::SessionSource,
+    ) -> ControlResult<SessionId> {
         match self.rpc(Request::NewSession {
             name: name.to_owned(),
             shell: shell.to_owned(),
+            source: Some(source),
         })? {
             Response::SessionId(id) => Ok(id),
             other => Err(unexpected("SessionId", other)),
