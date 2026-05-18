@@ -31,7 +31,10 @@
 
 use std::io::{self, BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 
 use parking_lot::Mutex;
 
@@ -47,6 +50,42 @@ use tear_types::{
 /// (this `Client`).
 pub struct Client {
     inner: Mutex<ClientInner>,
+    /// Path the client connected to. Subscriptions need to dial
+    /// the same daemon on a fresh socket because Subscribe consumes
+    /// the connection.
+    socket_path: PathBuf,
+}
+
+/// Handle returned by [`Client::subscribe_pane_bytes`]. Dropping
+/// it disconnects the subscription connection (the daemon's serve
+/// thread observes the write error on the next chunk and prunes
+/// the dead sender).
+pub struct SubscribeHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl SubscribeHandle {
+    /// Signal the reader thread to stop and join it. Idempotent —
+    /// safe to call multiple times.
+    pub fn stop(mut self) {
+        self.signal_and_join();
+    }
+
+    fn signal_and_join(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+
+impl Drop for SubscribeHandle {
+    fn drop(&mut self) {
+        if self.join.is_some() {
+            self.signal_and_join();
+        }
+    }
 }
 
 /// The buffered halves of the UDS stream. Buffered so the framed
@@ -63,13 +102,85 @@ impl Client {
     /// unchanged so callers can distinguish "no daemon there"
     /// (`NotFound`) from "permission" (`PermissionDenied`) etc.
     pub fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
-        let stream = UnixStream::connect(path)?;
+        let path_buf = path.as_ref().to_path_buf();
+        let stream = UnixStream::connect(&path_buf)?;
         let reader_stream = stream.try_clone()?;
         Ok(Self {
             inner: Mutex::new(ClientInner {
                 reader: BufReader::new(reader_stream),
                 writer: BufWriter::new(stream),
             }),
+            socket_path: path_buf,
+        })
+    }
+
+    /// Path the client is connected to. Mostly useful for the
+    /// subscribe API which needs to open a second connection to
+    /// the same daemon.
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+
+    /// Subscribe to a pane's PTY byte stream. Opens a fresh UDS
+    /// connection to the same daemon, sends `Request::Subscribe`,
+    /// then spawns a reader thread that calls `on_bytes` for every
+    /// `Response::PaneBytes` frame. The reader exits on
+    /// `Response::PaneClosed`, on EOF, or when the returned
+    /// [`SubscribeHandle`] is dropped / stopped.
+    ///
+    /// `on_bytes` runs on the reader thread — keep it cheap and
+    /// non-blocking. Typical consumer: push the bytes into a
+    /// channel for the render loop to drain.
+    pub fn subscribe_pane_bytes<F>(
+        &self,
+        pane: PaneId,
+        mut on_bytes: F,
+    ) -> ControlResult<SubscribeHandle>
+    where
+        F: FnMut(&[u8]) + Send + 'static,
+    {
+        // Subscriptions ride a separate connection because they
+        // consume the stream — the control connection has to stay
+        // free for further RPCs.
+        let stream = UnixStream::connect(&self.socket_path)
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let mut reader = BufReader::new(reader_stream);
+        let mut writer = BufWriter::new(stream);
+        write_msg(&mut writer, &Request::Subscribe(pane))
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        // First reply: Ok or Err (NoSuchPane / etc.).
+        let ack: Response = read_msg(&mut reader)
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        match ack {
+            Response::Ok => {}
+            Response::Err(we) => return Err(ControlError::from(we)),
+            other => {
+                return Err(ControlError::Transport(format!(
+                    "unexpected ack to Subscribe: {other:?}"
+                )))
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let join = thread::Builder::new()
+            .name("tear-client-subscribe".into())
+            .spawn(move || {
+                while !stop_for_thread.load(Ordering::SeqCst) {
+                    match read_msg::<_, Response>(&mut reader) {
+                        Ok(Response::PaneBytes(b)) => on_bytes(&b),
+                        Ok(Response::PaneClosed(_)) => return,
+                        Ok(_) => return, // unexpected variant — bail
+                        Err(_) => return, // EOF / I/O error → done
+                    }
+                }
+            })
+            .map_err(|e| ControlError::Transport(format!("spawn subscriber thread: {e}")))?;
+        Ok(SubscribeHandle {
+            stop,
+            join: Some(join),
         })
     }
 
@@ -388,6 +499,65 @@ mod tests {
             "marker `{marker}` never appeared in snapshot.\nGot:\n{got}"
         );
 
+        drop(client);
+        daemon.stop();
+    }
+
+    /// **Phase 2.5 push subscription end-to-end**: subscribe to a
+    /// pane's byte stream, send a marker, verify the subscriber
+    /// thread receives the bytes.
+    #[test]
+    fn end_to_end_subscribe_pane_bytes_pushes_pty_output() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-sub-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start(socket.clone(), inproc).expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let client = Client::connect(&socket).expect("connect");
+        let sid = client.new_session("sub-e2e", "/bin/sh").unwrap();
+        let session = client.get_session(sid).unwrap();
+        let pane_id = *session.panes.keys().next().expect("pane");
+
+        // Channel for the subscriber thread to publish bytes back.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let handle = client
+            .subscribe_pane_bytes(pane_id, move |bytes| {
+                let _ = tx.send(bytes.to_vec());
+            })
+            .expect("subscribe");
+
+        let marker = "TEAR_SUBSCRIBE_MARK_5821";
+        client
+            .send_keys(pane_id, format!("printf '{marker}\\n'\n").as_bytes())
+            .expect("send_keys");
+
+        // Drain the channel for up to 2s looking for the marker.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(2);
+        let mut accum = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                accum.extend(chunk);
+                if std::str::from_utf8(&accum)
+                    .map(|s| s.contains(marker))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&accum).to_string();
+        assert!(
+            text.contains(marker),
+            "subscriber never received marker `{marker}`. Accumulated bytes:\n{text}"
+        );
+
+        handle.stop();
         drop(client);
         daemon.stop();
     }

@@ -84,6 +84,13 @@ pub enum Request {
     },
     // ── Rendering (Phase 2) ──────────────────────────────────────
     PaneSnapshot(PaneId),
+    /// Promote this connection to a push-mode byte stream from the
+    /// named pane. The daemon responds with `Response::Ok` then a
+    /// continuous stream of `Response::PaneBytes(...)` frames as
+    /// the pane's PTY produces output. The connection is consumed
+    /// — no further Requests are accepted on it. Use a fresh
+    /// connection for control-plane work.
+    Subscribe(PaneId),
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always
@@ -103,6 +110,14 @@ pub enum Response {
     WindowId(WindowId),
     PaneId(PaneId),
     PaneSnapshot(PaneSnapshot),
+    /// Pushed by the daemon after a successful Subscribe — one
+    /// frame per PTY chunk. Bytes are exactly what the PTY master
+    /// reader delivered; consumers feed them into their own vte
+    /// parser (or into a tear-core PaneGrid client-side).
+    PaneBytes(Vec<u8>),
+    /// Pushed by the daemon when the subscribed pane is destroyed.
+    /// Subscribers should disconnect after observing this.
+    PaneClosed(PaneId),
     Ok,
     Err(WireError),
 }

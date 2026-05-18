@@ -127,17 +127,6 @@ impl GridState {
         }
     }
 
-    fn active_grid_mut(&mut self) -> &mut Vec<Vec<Cell>> {
-        // Both screens are conceptually `Vec<Vec<Cell>>`; the
-        // primary is a VecDeque so we can pop_front cheaply on
-        // scroll. We materialise a unified `&mut Vec<Vec<Cell>>`
-        // path by always going through the primary's
-        // `as_mut_slices` for the active alt-screen call sites —
-        // but the simpler path is to keep alternate as a plain Vec
-        // and dispatch.
-        unreachable!("active_grid_mut is unused; see active_cell_mut for row-level access")
-    }
-
     /// Return a mutable reference to one cell on whichever screen
     /// is active.
     fn active_cell_mut(&mut self, row: usize, col: usize) -> Option<&mut Cell> {

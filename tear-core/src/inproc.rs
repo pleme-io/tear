@@ -33,6 +33,8 @@ use tear_types::{
     TearSession, TearWindow, WindowId,
 };
 
+use std::sync::mpsc;
+
 use crate::pane_grid::PaneGrid;
 use crate::pty::PtyHandle;
 use crate::registry::Registry;
@@ -46,6 +48,11 @@ pub struct InProcess {
     /// state. Wrapped per-pane in `Mutex` so the PTY reader thread
     /// and snapshot callers can race independently per pane.
     grids: Arc<Mutex<BTreeMap<PaneId, Arc<Mutex<PaneGrid>>>>>,
+    /// Per-pane byte-stream subscribers. Each subscriber receives a
+    /// clone of every PTY chunk (after it lands in the grid). On
+    /// send error the daemon's serve thread can prune dead
+    /// subscribers; the InProcess side just fans out.
+    subscribers: Arc<Mutex<BTreeMap<PaneId, Vec<mpsc::Sender<Vec<u8>>>>>>,
 }
 
 impl Default for InProcess {
@@ -61,7 +68,31 @@ impl InProcess {
             registry: Arc::new(RwLock::new(Registry::new())),
             ptys: Arc::new(Mutex::new(BTreeMap::new())),
             grids: Arc::new(Mutex::new(BTreeMap::new())),
+            subscribers: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    /// Register a byte-stream subscriber for the named pane.
+    /// Returns the receiver end of an `mpsc::channel`; every PTY
+    /// chunk that lands in this pane is sent on the corresponding
+    /// sender. Drop the receiver to unsubscribe — the next send
+    /// will error and the daemon prunes the dead sender.
+    ///
+    /// Returns `NoSuchPane` if the pane has no PTY (never spawned
+    /// or already killed).
+    pub fn subscribe_pane_bytes(
+        &self,
+        pane: PaneId,
+    ) -> ControlResult<mpsc::Receiver<Vec<u8>>> {
+        // Confirm the pane exists; we don't actually need the
+        // grid here (the sender is registered regardless), but
+        // subscribing to a phantom pane silently is a footgun.
+        if !self.ptys.lock().contains_key(&pane) {
+            return Err(ControlError::NoSuchPane(pane));
+        }
+        let (tx, rx) = mpsc::channel();
+        self.subscribers.lock().entry(pane).or_default().push(tx);
+        Ok(rx)
     }
 
     /// Borrow the registry read-only — useful for callers that want
@@ -103,9 +134,25 @@ impl InProcess {
         self.grids.lock().insert(pane_id, grid.clone());
 
         let grid_for_callback = grid.clone();
+        let subscribers_for_callback = self.subscribers.clone();
         let on_bytes = Box::new(move |bytes: &[u8]| {
             grid_for_callback.lock().feed(bytes);
-            debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid");
+            // Fan out to subscribers (Phase-2.5 push subscriptions).
+            // Cheap when there are zero subscribers; per-subscriber
+            // cost is a Vec clone + mpsc::send. On send error the
+            // sender is dead — prune it.
+            let mut subs = subscribers_for_callback.lock();
+            if let Some(senders) = subs.get_mut(&pane_id) {
+                let mut i = 0;
+                while i < senders.len() {
+                    if senders[i].send(bytes.to_vec()).is_err() {
+                        senders.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid + subscribers");
         });
         let pty = PtyHandle::spawn(shell, &[], None, &[], pty_size, on_bytes)?;
         self.ptys.lock().insert(pane_id, pty);
@@ -182,9 +229,13 @@ impl MultiplexerControl for InProcess {
         {
             let mut ptys = self.ptys.lock();
             let mut grids = self.grids.lock();
+            let mut subs = self.subscribers.lock();
             for p in &panes_to_kill {
                 ptys.remove(p);
                 grids.remove(p);
+                // Dropping the sender vec disconnects subscribers
+                // cleanly — their recv() returns Err on next read.
+                subs.remove(p);
             }
         }
         self.registry.write().sessions.remove(&id);
@@ -224,9 +275,13 @@ impl MultiplexerControl for InProcess {
         {
             let mut ptys = self.ptys.lock();
             let mut grids = self.grids.lock();
+            let mut subs = self.subscribers.lock();
             for p in &panes_to_kill {
                 ptys.remove(p);
                 grids.remove(p);
+                // Dropping the sender vec disconnects subscribers
+                // cleanly — their recv() returns Err on next read.
+                subs.remove(p);
             }
         }
         let mut r = self.registry.write();
@@ -312,6 +367,7 @@ impl MultiplexerControl for InProcess {
     fn kill_pane(&self, id: PaneId) -> ControlResult<()> {
         self.ptys.lock().remove(&id);
         self.grids.lock().remove(&id);
+        self.subscribers.lock().remove(&id);
         let mut r = self.registry.write();
         let mut found = false;
         for s in r.sessions.values_mut() {

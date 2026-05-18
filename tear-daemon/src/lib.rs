@@ -161,6 +161,12 @@ fn accept_loop(
 /// the response is written before the next request is read — no
 /// pipelining at this layer.
 ///
+/// `Request::Subscribe` is the one special case: the connection is
+/// promoted to push-mode after the initial `Response::Ok` and
+/// streams `Response::PaneBytes` frames until the pane closes or
+/// the peer disconnects. No further Requests are read from a
+/// subscribed connection.
+///
 /// This function is public so tests (and embedded consumers that
 /// want to hand-stitch transports beyond UDS) can drive it
 /// directly with their own `Read + Write` stream.
@@ -174,8 +180,53 @@ pub fn serve_connection<S: io::Read + io::Write>(
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
         };
+        // Subscribe promotes the connection to push mode.
+        if let Request::Subscribe(pane) = req {
+            return serve_subscription(stream, inproc, pane);
+        }
         let resp = dispatch(&inproc, req);
         write_msg(&mut stream, &resp)?;
+    }
+}
+
+/// Push-mode handler invoked after a `Request::Subscribe`. Writes
+/// `Response::Ok` then a stream of `Response::PaneBytes` frames as
+/// the pane's PTY produces output. Terminates with
+/// `Response::PaneClosed` when the pane is killed (or with a plain
+/// close on write error / peer disconnect).
+fn serve_subscription<S: io::Read + io::Write>(
+    mut stream: S,
+    inproc: Arc<InProcess>,
+    pane: tear_types::PaneId,
+) -> io::Result<()> {
+    // Register the subscriber. On NoSuchPane we still respond with
+    // Err so the client knows immediately + closes the connection.
+    let rx = match inproc.subscribe_pane_bytes(pane) {
+        Ok(rx) => rx,
+        Err(e) => {
+            write_msg(&mut stream, &Response::Err(WireError::from(e)))?;
+            return Ok(());
+        }
+    };
+    write_msg(&mut stream, &Response::Ok)?;
+    // Drain the receiver synchronously — recv blocks until either a
+    // chunk arrives or every sender has been dropped (pane killed).
+    loop {
+        match rx.recv() {
+            Ok(bytes) => {
+                if write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err() {
+                    // Peer disconnected — drop our sender by
+                    // letting the rx drop naturally. The next PTY
+                    // chunk on InProcess prunes the dead sender.
+                    return Ok(());
+                }
+            }
+            Err(_) => {
+                // All senders dropped → the pane is gone.
+                let _ = write_msg(&mut stream, &Response::PaneClosed(pane));
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -213,6 +264,12 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         }
         Request::SendKeys { id, bytes } => map_unit(inproc.send_keys(id, &bytes)),
         Request::PaneSnapshot(id) => map_result(inproc.pane_snapshot(id), Response::PaneSnapshot),
+        // Subscribe is handled in serve_connection BEFORE dispatch;
+        // reaching this arm means someone called dispatch directly
+        // with Subscribe — programmer error.
+        Request::Subscribe(_) => Response::Err(WireError::Rejected(
+            "Subscribe must be handled by serve_connection (push mode), not dispatch".into(),
+        )),
     }
 }
 
