@@ -7,6 +7,7 @@ members = [
     "tear-daemon",
     "tear-client",
     "tear-tmux-backend",
+    "tear-ws-bridge",
     "tear",
 ]
 
@@ -27,6 +28,7 @@ tear-core = { path = "tear-core", version = "0.1.0" }
 tear-daemon = { path = "tear-daemon", version = "0.1.0" }
 tear-client = { path = "tear-client", version = "0.1.0" }
 tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.0" }
+tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.0" }
 tear = { path = "tear", version = "0.1.0" }
 
 # ── pleme-io shared libraries — same versions mado pins ────────────
@@ -73,6 +75,9 @@ ciborium = "0.2"
 
 # ── unit conversions for layout / dimensions ────────────────────────
 nix = { version = "0.30", features = ["term"] }
+
+# ── WebSocket transport for the browser-facing tear-ws-bridge (#1) ─
+tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
 
 [workspace.lints]
 

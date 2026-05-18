@@ -1,0 +1,34 @@
+[package]
+name = "tear-ws-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Tear WebSocket bridge — exposes the typed tear-daemon CBOR wire over ws://, so any browser / wasm renderer can attach without speaking UDS or TCP directly."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tear-ws-bridge"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tear-types = { workspace = true }
+tear-client = { workspace = true }
+tungstenite = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+mimalloc = { workspace = true }
+ctrlc = "3"
+
+[dev-dependencies]
+tear-core = { workspace = true }
+tear-daemon = { workspace = true }
