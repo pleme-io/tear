@@ -105,6 +105,16 @@ enum Cmd {
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
     },
+    /// Print a pane's rendered cell grid (Phase 2 introspection).
+    /// Useful for manually verifying that `send-keys` round-tripped
+    /// through the daemon ↔ PTY ↔ vte parser path.
+    Snapshot {
+        /// Pane id (16-char lowercase hex — as printed by `tear list`).
+        pane: String,
+        /// Daemon UDS path. Defaults to the standard XDG location.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -133,6 +143,7 @@ fn main() -> Result<()> {
         Cmd::Render { backend } => cmd_render(backend),
         Cmd::Attach { target, socket } => cmd_attach(target, socket),
         Cmd::Daemon { socket } => cmd_daemon(socket),
+        Cmd::Snapshot { pane, socket } => cmd_snapshot(&pane, socket),
     }
 }
 
@@ -273,6 +284,28 @@ fn cmd_attach(target: Option<String>, socket: Option<std::path::PathBuf>) -> Res
             );
         }
     }
+    Ok(())
+}
+
+fn cmd_snapshot(pane: &str, socket: Option<std::path::PathBuf>) -> Result<()> {
+    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
+    let client = tear_client::Client::connect(&socket_path).map_err(|e| {
+        anyhow::anyhow!(
+            "tear-daemon not reachable at {}: {}",
+            socket_path.display(),
+            e
+        )
+    })?;
+    let pane_id: tear_types::PaneId = pane
+        .parse()
+        .map_err(|e: anyhow::Error| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let snap = client.pane_snapshot(pane_id)?;
+    // Print a header so the rendered grid is visually framed.
+    println!("─ pane {pane_id} ({}x{}) ─", snap.cols, snap.rows);
+    for row in snap.to_text_rows() {
+        println!("│{}│", row);
+    }
+    println!("─ cursor: row {} col {} ─", snap.cursor_row, snap.cursor_col);
     Ok(())
 }
 

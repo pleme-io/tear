@@ -35,10 +35,10 @@ use std::path::Path;
 
 use parking_lot::Mutex;
 
-use tear_types::wire::{read_msg, write_msg, Request, Response, WireError};
+use tear_types::wire::{read_msg, write_msg, Request, Response};
 use tear_types::{
-    ControlError, ControlResult, Direction, MultiplexerControl, PaneId, SessionId, TearPane,
-    TearSession, TearWindow, WindowId,
+    ControlError, ControlResult, Direction, MultiplexerControl, PaneId, PaneSnapshot, SessionId,
+    TearPane, TearSession, TearWindow, WindowId,
 };
 
 /// A connected tear-daemon client. Implements [`MultiplexerControl`]
@@ -236,6 +236,13 @@ impl MultiplexerControl for Client {
             other => Err(unexpected("Ok", other)),
         }
     }
+
+    fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
+        match self.rpc(Request::PaneSnapshot(id))? {
+            Response::PaneSnapshot(snap) => Ok(snap),
+            other => Err(unexpected("PaneSnapshot", other)),
+        }
+    }
 }
 
 /// Daemon broke the contract — wrong response variant for a given
@@ -305,6 +312,81 @@ mod tests {
         let daemon_list = daemon.inproc().list_sessions().unwrap();
         assert_eq!(daemon_list.len(), 1);
         assert_eq!(daemon_list[0].id, sid);
+
+        drop(client);
+        daemon.stop();
+    }
+
+    /// **Phase 2 end-to-end**: spin up an in-process daemon, create
+    /// a session (which spawns `/bin/sh` in a real PTY), send a
+    /// known command, poll `pane_snapshot` over the wire, and
+    /// assert the command's output text appears in the snapshot.
+    ///
+    /// Proves the full vertical: send_keys → kernel PTY → child
+    /// shell → child stdout → PTY master read thread →
+    /// `PaneGrid::feed` → vte parser → snapshot → CBOR serialize →
+    /// UDS → CBOR deserialize → client returns text.
+    #[test]
+    fn end_to_end_send_keys_then_pane_snapshot_shows_output() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-e2e-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon =
+            tear_daemon::start(socket.clone(), inproc.clone()).expect("daemon start");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let client = Client::connect(&socket).expect("connect");
+
+        // /bin/sh keeps the test portable across macOS / Linux /
+        // NixOS — every host has it on PATH at this canonical
+        // location. Bash / zsh would also work but are not
+        // guaranteed everywhere.
+        let sid = client
+            .new_session("phase2-e2e", "/bin/sh")
+            .expect("new_session");
+        let session = client.get_session(sid).expect("get_session");
+
+        // The single first pane is the one we want.
+        let pane_id = *session
+            .panes
+            .keys()
+            .next()
+            .expect("session should have one pane");
+
+        // sh starts up + prints a prompt; nudge it with a known
+        // command whose output we can grep for. Use a unique marker
+        // so any pre-existing prompt text doesn't false-positive.
+        let marker = "MADO_TEAR_E2E_MARK_8421";
+        let cmd = format!("printf '{marker}\\n'\n");
+        client
+            .send_keys(pane_id, cmd.as_bytes())
+            .expect("send_keys");
+
+        // Poll up to 2s for the marker to appear in the snapshot —
+        // PTY round-trip latency varies on busy CI hardware.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(2);
+        let mut got = String::new();
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            match client.pane_snapshot(pane_id) {
+                Ok(snap) => {
+                    got = snap.to_text();
+                    if got.contains(marker) {
+                        break;
+                    }
+                }
+                Err(e) => panic!("pane_snapshot failed: {e}"),
+            }
+        }
+        assert!(
+            got.contains(marker),
+            "marker `{marker}` never appeared in snapshot.\nGot:\n{got}"
+        );
 
         drop(client);
         daemon.stop();

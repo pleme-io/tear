@@ -22,6 +22,7 @@ use crate::{
     direction::Direction,
     id::{PaneId, SessionId, WindowId},
     pane::TearPane,
+    pane_snapshot::PaneSnapshot,
     session::TearSession,
     window::TearWindow,
 };
@@ -119,4 +120,22 @@ pub trait MultiplexerControl: Send + Sync {
     /// Send keystrokes (already-bytes-encoded — caller resolved the
     /// chord) to a pane's PTY.
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()>;
+
+    // ── Rendering (Phase 2) ──────────────────────────────────────
+
+    /// Return a serializable snapshot of the named pane's currently-
+    /// rendered cell grid + cursor position. Consumers (mado at
+    /// Phase 4) walk the snapshot to draw pixels without holding a
+    /// reference into the live parser state.
+    ///
+    /// Default impl returns `Rejected` so backends that don't track
+    /// rendered state (e.g. tear-tmux-backend, which passes through
+    /// to tmux) can opt out. tear-core's `InProcess` overrides
+    /// with the real implementation.
+    fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
+        let _ = id;
+        Err(ControlError::Rejected(
+            "this backend does not expose per-pane snapshots".into(),
+        ))
+    }
 }

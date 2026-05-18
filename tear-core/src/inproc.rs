@@ -33,6 +33,7 @@ use tear_types::{
     TearSession, TearWindow, WindowId,
 };
 
+use crate::pane_grid::PaneGrid;
 use crate::pty::PtyHandle;
 use crate::registry::Registry;
 
@@ -40,6 +41,11 @@ use crate::registry::Registry;
 pub struct InProcess {
     registry: Arc<RwLock<Registry>>,
     ptys: Arc<Mutex<BTreeMap<PaneId, PtyHandle>>>,
+    /// Per-pane VT parser + cell grid. Phase-2-MVP wires PTY bytes
+    /// into these so [`Self::pane_snapshot`] returns the rendered
+    /// state. Wrapped per-pane in `Mutex` so the PTY reader thread
+    /// and snapshot callers can race independently per pane.
+    grids: Arc<Mutex<BTreeMap<PaneId, Arc<Mutex<PaneGrid>>>>>,
 }
 
 impl Default for InProcess {
@@ -54,6 +60,7 @@ impl InProcess {
         Self {
             registry: Arc::new(RwLock::new(Registry::new())),
             ptys: Arc::new(Mutex::new(BTreeMap::new())),
+            grids: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -64,8 +71,24 @@ impl InProcess {
         f(&r)
     }
 
+    /// Return a serializable snapshot of the named pane's rendered
+    /// grid. Returns `NoSuchPane` if the pane never had a grid
+    /// installed (which can only happen if it never had a PTY —
+    /// every PTY-spawning code path also installs a grid).
+    pub fn pane_snapshot(&self, pane_id: PaneId) -> ControlResult<tear_types::PaneSnapshot> {
+        let grid_arc = {
+            let map = self.grids.lock();
+            map.get(&pane_id)
+                .cloned()
+                .ok_or(ControlError::NoSuchPane(pane_id))?
+        };
+        let grid = grid_arc.lock();
+        Ok(grid.snapshot())
+    }
+
     /// Spawn a PTY for the given pane. Caller pre-creates the typed
-    /// pane via the registry; this attaches the runtime.
+    /// pane via the registry; this attaches the runtime + installs
+    /// the per-pane VT parser.
     fn spawn_pty_for(&self, pane_id: PaneId, shell: &str, size: (u16, u16)) -> anyhow::Result<()> {
         let pty_size = PtySize {
             rows: size.1,
@@ -73,11 +96,16 @@ impl InProcess {
             pixel_width: 0,
             pixel_height: 0,
         };
+        // Allocate the per-pane grid and register it BEFORE spawning
+        // the PTY — the reader thread starts immediately on spawn,
+        // and we want the first bytes to find their grid.
+        let grid = Arc::new(Mutex::new(PaneGrid::new(size.0 as usize, size.1 as usize)));
+        self.grids.lock().insert(pane_id, grid.clone());
+
+        let grid_for_callback = grid.clone();
         let on_bytes = Box::new(move |bytes: &[u8]| {
-            // TODO M2: feed bytes to the per-pane vte::Parser kept in
-            // the InProcess's grid map. For M0 the bytes simply
-            // increment the stats counter via PtyHandle::bytes_consumed.
-            debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes");
+            grid_for_callback.lock().feed(bytes);
+            debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid");
         });
         let pty = PtyHandle::spawn(shell, &[], None, &[], pty_size, on_bytes)?;
         self.ptys.lock().insert(pane_id, pty);
@@ -153,8 +181,10 @@ impl MultiplexerControl for InProcess {
         };
         {
             let mut ptys = self.ptys.lock();
+            let mut grids = self.grids.lock();
             for p in &panes_to_kill {
                 ptys.remove(p);
+                grids.remove(p);
             }
         }
         self.registry.write().sessions.remove(&id);
@@ -193,8 +223,10 @@ impl MultiplexerControl for InProcess {
         };
         {
             let mut ptys = self.ptys.lock();
+            let mut grids = self.grids.lock();
             for p in &panes_to_kill {
                 ptys.remove(p);
+                grids.remove(p);
             }
         }
         let mut r = self.registry.write();
@@ -279,6 +311,7 @@ impl MultiplexerControl for InProcess {
 
     fn kill_pane(&self, id: PaneId) -> ControlResult<()> {
         self.ptys.lock().remove(&id);
+        self.grids.lock().remove(&id);
         let mut r = self.registry.write();
         let mut found = false;
         for s in r.sessions.values_mut() {
@@ -328,6 +361,14 @@ impl MultiplexerControl for InProcess {
         pty.write(bytes)
             .map_err(|e| ControlError::Transport(e.to_string()))?;
         Ok(())
+    }
+
+    /// Phase-2 override of the trait's default `pane_snapshot`.
+    /// Delegates to the inherent [`Self::pane_snapshot`] method,
+    /// which reads the per-pane `PaneGrid` installed by
+    /// [`Self::spawn_pty_for`].
+    fn pane_snapshot(&self, id: PaneId) -> ControlResult<tear_types::PaneSnapshot> {
+        InProcess::pane_snapshot(self, id)
     }
 }
 

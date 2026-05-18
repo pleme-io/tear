@@ -22,3 +22,4 @@ parking_lot = { workspace = true }
 portable-pty = { workspace = true }
 once_cell = { workspace = true }
 blake3 = { workspace = true }
+vte = { workspace = true }

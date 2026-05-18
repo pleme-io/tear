@@ -59,6 +59,9 @@ notify = "8"
 # ── PTY backend (cross-platform; same crate mado uses transitively) ─
 portable-pty = "0.9"
 
+# ── VT100/xterm parser (same major mado uses; one parser fleet-wide) ─
+vte = "0.15"
+
 # ── RPC wire format (tear-daemon ↔ tear-client) ─────────────────────
 # ciborium (CBOR / RFC 8949) — self-describing binary serde format
 # that handles internally-tagged enums (LayoutNode uses

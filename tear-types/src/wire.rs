@@ -33,7 +33,8 @@ use std::io::{self, Read, Write};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ControlError, Direction, PaneId, SessionId, TearPane, TearSession, TearWindow, WindowId,
+    ControlError, Direction, PaneId, PaneSnapshot, SessionId, TearPane, TearSession, TearWindow,
+    WindowId,
 };
 
 /// Every [`MultiplexerControl`] operation, encoded as a single
@@ -81,6 +82,8 @@ pub enum Request {
         id: PaneId,
         bytes: Vec<u8>,
     },
+    // ── Rendering (Phase 2) ──────────────────────────────────────
+    PaneSnapshot(PaneId),
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always
@@ -99,6 +102,7 @@ pub enum Response {
     SessionId(SessionId),
     WindowId(WindowId),
     PaneId(PaneId),
+    PaneSnapshot(PaneSnapshot),
     Ok,
     Err(WireError),
 }
