@@ -16,3 +16,4 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
+ciborium = { workspace = true }

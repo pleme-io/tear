@@ -13,3 +13,8 @@ workspace = true
 
 [dependencies]
 tear-types = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tear-core = { workspace = true }
+tear-daemon = { workspace = true }

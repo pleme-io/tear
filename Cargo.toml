@@ -59,6 +59,15 @@ notify = "8"
 # ── PTY backend (cross-platform; same crate mado uses transitively) ─
 portable-pty = "0.9"
 
+# ── RPC wire format (tear-daemon ↔ tear-client) ─────────────────────
+# ciborium (CBOR / RFC 8949) — self-describing binary serde format
+# that handles internally-tagged enums (LayoutNode uses
+# `#[serde(tag = "kind")]` so bincode is off the table). Fast enough
+# for IPC (the wire is single Request/Response per call, not a
+# streaming hot path) and the on-wire bytes stay debug-inspectable
+# via `cbor-diag` / `pycbor`.
+ciborium = "0.2"
+
 # ── unit conversions for layout / dimensions ────────────────────────
 nix = { version = "0.30", features = ["term"] }
 

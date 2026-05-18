@@ -20,6 +20,7 @@ tear-types = { workspace = true }
 tear-config = { workspace = true }
 tear-core = { workspace = true }
 tear-client = { workspace = true }
+tear-daemon = { workspace = true }
 tear-tmux-backend = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
@@ -27,3 +28,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 mimalloc = { workspace = true }
 serde_yaml_ng = { workspace = true }
+ctrlc = "3"

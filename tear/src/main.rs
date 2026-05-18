@@ -84,9 +84,26 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = Backend::Tmux)]
         backend: Backend,
     },
-    /// Placeholder — M2 daemon attach. Reports a clear error today.
+    /// Connect to a running tear-daemon and print its session list.
+    /// (Stub interactive attach is a Phase-4 mado-side concern; today
+    /// this proves the daemon ↔ client RPC path end-to-end.)
     Attach {
         target: Option<String>,
+        /// Daemon UDS path. Defaults to `$XDG_RUNTIME_DIR/tear.sock`
+        /// (or `~/.local/share/tear/tear.sock`).
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
+    /// Start a long-running tear-daemon listening on a UDS. The
+    /// daemon owns sessions across client disconnects; mado, the
+    /// `tear attach` CLI, and any other typed driver can connect.
+    /// Blocks until SIGINT.
+    Daemon {
+        /// UDS path. Defaults to `$XDG_RUNTIME_DIR/tear.sock` (or
+        /// `~/.local/share/tear/tear.sock`). The directory is created
+        /// if missing; a stale socket file at the path is unlinked.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
     },
 }
 
@@ -114,7 +131,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Render { backend } => cmd_render(backend),
-        Cmd::Attach { target } => cmd_attach(target),
+        Cmd::Attach { target, socket } => cmd_attach(target, socket),
+        Cmd::Daemon { socket } => cmd_daemon(socket),
     }
 }
 
@@ -229,11 +247,62 @@ fn cmd_render(backend: Backend) -> Result<()> {
     Ok(())
 }
 
-fn cmd_attach(target: Option<String>) -> Result<()> {
-    let _ = target;
-    eprintln!(
-        "M0 — attach requires the tear-daemon UDS path (M2). \
-         Today: `tear render --backend tmux | tmux source -` then `tmux attach`."
-    );
-    std::process::exit(2);
+fn cmd_attach(target: Option<String>, socket: Option<std::path::PathBuf>) -> Result<()> {
+    let _ = target; // future: dial-target selection (named session, last, etc.)
+    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
+    let client = tear_client::Client::connect(&socket_path).map_err(|e| {
+        anyhow::anyhow!(
+            "tear-daemon not reachable at {}: {}\nStart it with: tear daemon",
+            socket_path.display(),
+            e
+        )
+    })?;
+    let sessions = client.list_sessions()?;
+    if sessions.is_empty() {
+        println!("(no sessions on {})", socket_path.display());
+    } else {
+        println!("connected to tear-daemon at {}", socket_path.display());
+        for s in sessions {
+            println!(
+                "  {} {}  windows={} panes={}  state={:?}",
+                s.id,
+                s.name,
+                s.windows.len(),
+                s.panes.len(),
+                s.state
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_daemon(socket: Option<std::path::PathBuf>) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
+    let inproc = Arc::new(InProcess::new());
+    let handle = tear_daemon::start(socket_path.clone(), inproc).map_err(|e| {
+        anyhow::anyhow!(
+            "tear-daemon failed to bind {}: {}",
+            socket_path.display(),
+            e
+        )
+    })?;
+    info!(socket = %socket_path.display(), "tear-daemon ready");
+    println!("tear-daemon listening on {}", socket_path.display());
+
+    // Block until SIGINT / SIGTERM. The handle stops + cleans up the
+    // socket on drop, so a panic or normal exit both leave the
+    // filesystem clean.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_handler = stop.clone();
+    ctrlc::set_handler(move || stop_for_handler.store(true, Ordering::SeqCst))
+        .map_err(|e| anyhow::anyhow!("install signal handler: {e}"))?;
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    println!("\ntear-daemon shutting down...");
+    handle.stop();
+    Ok(())
 }

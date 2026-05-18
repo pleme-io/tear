@@ -48,6 +48,7 @@ pub mod session;
 pub mod statusbar;
 pub mod theme;
 pub mod window;
+pub mod wire;
 
 pub use control::{ControlError, ControlResult, MultiplexerControl};
 pub use direction::{Direction, SplitOrientation};
