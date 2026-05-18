@@ -27,6 +27,8 @@ use tear_core::InProcess;
 use tear_types::MultiplexerControl;
 use tracing::info;
 
+mod top;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "tear",
@@ -136,6 +138,17 @@ enum Cmd {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// #48a — Interactive curses dashboard. Live view of every
+    /// session + pane (subscriber count, input policy, recording
+    /// state) with keybindings for lock/unlock, record on/off,
+    /// kill. `q` to quit. `--refresh-ms <n>` controls polling
+    /// cadence (default 1000ms).
+    Top {
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        #[arg(long, default_value_t = 1000)]
+        refresh_ms: u64,
+    },
     /// Probe daemon reachability. Prints `{reachable, socket,
     /// sessions, version}` as text or JSON (--json). Suitable for
     /// shell-prompt hooks (starship custom command, p10k poweradd,
@@ -240,6 +253,7 @@ fn main() -> Result<()> {
         Cmd::PaneInput { pane, action, socket } => cmd_pane_input(&pane, action, socket),
         Cmd::PaneInfo { pane, socket, json } => cmd_pane_info(&pane, socket, json),
         Cmd::PaneRecord { pane, action, socket, out } => cmd_pane_record(&pane, action, socket, out),
+        Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
         Cmd::ConfigPath => {
@@ -594,6 +608,15 @@ fn cmd_pane_info(
         );
     }
     Ok(())
+}
+
+/// `tear top` — interactive curses dashboard.
+fn cmd_top(
+    socket: Option<std::path::PathBuf>,
+    refresh_ms: u64,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    top::run(client, refresh_ms)
 }
 
 /// `tear status` — operator visibility into the daemon's health.

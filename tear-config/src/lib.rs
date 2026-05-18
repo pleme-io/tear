@@ -111,6 +111,15 @@ pub struct TearConfig {
     /// a row; coalescing keeps the reload count modest.
     #[serde(default = "default_debounce")]
     pub reload_debounce_ms: u64,
+
+    /// #48c — directory for auto-flushed recordings. When set, the
+    /// daemon writes any active recording on a pane (or session)
+    /// to `<dir>/<session_id>-<unix_ts>-<pane_id>.cast` on kill.
+    /// `None` disables auto-flush (operator still uses
+    /// `tear pane-record export --out PATH` explicitly).
+    /// Example: `~/.local/share/tear/recordings`.
+    #[serde(default)]
+    pub recording_auto_dir: Option<String>,
 }
 
 impl Default for TearConfig {
@@ -124,6 +133,7 @@ impl Default for TearConfig {
             status: default_status(),
             theme: TearTheme::default(),
             reload_debounce_ms: default_debounce(),
+            recording_auto_dir: None,
         }
     }
 }

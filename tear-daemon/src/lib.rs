@@ -558,8 +558,73 @@ pub fn dispatch_with_config(
                 ))),
             }
         }
+        // #48c — auto-flush any active recordings BEFORE the kill
+        // wipes the session. Reads `recording_auto_dir` from the
+        // live config; if unset, behaves identically to the pre-#48c
+        // path. Errors are logged but never block the kill — the
+        // operator's "stop this thing now" intent always wins.
+        Request::KillSession(id) => {
+            if let Some(dir) = config.load().recording_auto_dir.clone() {
+                flush_session_recordings(inproc, id, &dir);
+            }
+            map_unit(inproc.kill_session(id))
+        }
         other => dispatch(inproc, other),
     }
+}
+
+/// Best-effort: walk every pane in the session, export each
+/// pane's recording (if any), write to
+/// `<dir>/<session_id>-<unix_ts>-<pane_id>.cast`. Skip panes
+/// without a recording (export returns empty / NoSuchPane).
+fn flush_session_recordings(inproc: &InProcess, session: tear_types::SessionId, dir: &str) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let expanded = shellexpand(dir);
+    if std::fs::create_dir_all(&expanded).is_err() {
+        warn!(dir = %expanded, "auto-flush: mkdir failed; skipping");
+        return;
+    }
+    let panes: Vec<tear_types::PaneId> = match inproc.get_session(session) {
+        Ok(s) => s.panes.keys().copied().collect(),
+        Err(_) => return,
+    };
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for pane in panes {
+        // Skip panes with no recording state (status=(false, 0)) —
+        // exporting an empty buffer still produces a header-only
+        // cast which isn't useful and just pollutes the dir.
+        match inproc.pane_recording_status(pane) {
+            Ok((_, events)) if events > 0 => {}
+            _ => continue,
+        }
+        match inproc.export_pane_recording(pane) {
+            Ok(cast) => {
+                let path = std::path::Path::new(&expanded)
+                    .join(format!("{session}-{ts}-{pane}.cast"));
+                if let Err(e) = std::fs::write(&path, cast.as_bytes()) {
+                    warn!(path = %path.display(), error = %e, "auto-flush: write failed");
+                } else {
+                    info!(path = %path.display(), pane = %pane, "auto-flushed recording");
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+}
+
+/// Expand a leading `~/` in a path string. We deliberately don't
+/// pull in the `shellexpand` crate for one use — keep the
+/// dependency surface small.
+fn shellexpand(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    s.to_string()
 }
 
 fn map_result<T, F: FnOnce(T) -> Response>(
@@ -716,5 +781,76 @@ mod tests {
             Response::Err(WireError::NoSuchSession(s)) => assert_eq!(s, sid),
             other => panic!("expected NoSuchSession, got {other:?}"),
         }
+    }
+
+    // ── #48c recording auto-flush on kill ──────────────────
+
+    #[test]
+    fn kill_session_with_recording_auto_dir_writes_cast() {
+        let inproc = std::sync::Arc::new(InProcess::new());
+        let tmp = tempfile_path();
+        let mut cfg = tear_config::TearConfig::default();
+        cfg.recording_auto_dir = Some(tmp.to_string_lossy().into());
+        let live = std::sync::Arc::new(LiveConfig::default());
+        live.replace(cfg);
+
+        // Create a session + start recording on its first pane.
+        let sid = inproc
+            .new_session("auto-flush-test", "/bin/sh")
+            .expect("new_session");
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+        inproc.enable_pane_recording(pane_id).unwrap();
+        // Give the PTY a moment to produce a byte or two so the
+        // recording has events (otherwise auto-flush skips empty
+        // recordings by design).
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        inproc
+            .send_keys(pane_id, b"echo hello\n")
+            .expect("send_keys");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Dispatch a KillSession via dispatch_with_config so the
+        // auto-flush hook runs.
+        match dispatch_with_config(&inproc, &live, Request::KillSession(sid)) {
+            Response::Ok => {}
+            other => panic!("expected Ok, got {other:?}"),
+        }
+
+        // Walk the recording dir — must contain exactly one .cast
+        // matching <sid>-*-<pane_id>.cast.
+        let entries: Vec<_> = std::fs::read_dir(&tmp)
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let sid_prefix = format!("{sid}-");
+        let hits: Vec<&String> = entries
+            .iter()
+            .filter(|n| n.starts_with(&sid_prefix) && n.ends_with(".cast"))
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected one auto-flushed cast, found {entries:?}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn tempfile_path() -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        let pid = std::process::id();
+        let nonce: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        p.push(format!("tear-auto-flush-{pid}-{nonce}"));
+        std::fs::create_dir_all(&p).unwrap();
+        p
     }
 }
