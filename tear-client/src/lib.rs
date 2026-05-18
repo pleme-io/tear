@@ -649,6 +649,39 @@ impl Client {
             other => Err(unexpected("RecordingStatus", other)),
         }
     }
+
+    // ── Pane-as-block (warp-class UX) ──────────────────────
+
+    /// List captured OSC 133 blocks for the pane.
+    /// `since_index` filters older blocks (pass 0 for all);
+    /// `limit` caps the response.
+    pub fn pane_blocks_list(
+        &self,
+        pane: PaneId,
+        since_index: u64,
+        limit: u32,
+    ) -> ControlResult<Vec<tear_types::Block>> {
+        match self.rpc(Request::PaneBlocksList { pane, since_index, limit })? {
+            Response::Blocks(b) => Ok(b),
+            other => Err(unexpected("Blocks", other)),
+        }
+    }
+
+    /// Fetch one block by per-pane index.
+    pub fn pane_block_at(&self, pane: PaneId, index: u64) -> ControlResult<tear_types::Block> {
+        match self.rpc(Request::PaneBlockAt { pane, index })? {
+            Response::Block(b) => Ok(b),
+            other => Err(unexpected("Block", other)),
+        }
+    }
+
+    /// `(total_completed, in_progress)` summary.
+    pub fn pane_blocks_status(&self, pane: PaneId) -> ControlResult<(u32, bool)> {
+        match self.rpc(Request::PaneBlocksStatus(pane))? {
+            Response::BlocksStatus { total, in_progress } => Ok((total, in_progress)),
+            other => Err(unexpected("BlocksStatus", other)),
+        }
+    }
 }
 
 impl Client {

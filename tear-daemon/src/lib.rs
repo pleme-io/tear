@@ -495,6 +495,17 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
                 Response::RecordingStatus { enabled, events }
             })
         }
+        Request::PaneBlocksList { pane, since_index, limit } => {
+            map_result(inproc.pane_blocks_list(pane, since_index, limit), Response::Blocks)
+        }
+        Request::PaneBlockAt { pane, index } => {
+            map_result(inproc.pane_block_at(pane, index), Response::Block)
+        }
+        Request::PaneBlocksStatus(id) => {
+            map_result(inproc.pane_blocks_status(id), |(total, in_progress)| {
+                Response::BlocksStatus { total, in_progress }
+            })
+        }
         Request::PaneSnapshot(id) => map_result(inproc.pane_snapshot(id), Response::PaneSnapshot),
         Request::PaneResizeAbsolute { id, cols, rows } => {
             map_unit(inproc.pane_resize_absolute(id, cols, rows))

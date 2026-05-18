@@ -37,12 +37,12 @@ pub const DEFAULT_SCROLLBACK_ROWS: usize = 1_000;
 /// race for it).
 pub struct PaneGrid {
     parser: Parser,
-    state: GridState,
+    pub(crate) state: GridState,
 }
 
 /// Mutable state — separated from the parser so vte's `Perform`
 /// impl can borrow `&mut state` while the parser pushes bytes.
-struct GridState {
+pub(crate) struct GridState {
     rows: usize,
     cols: usize,
     /// Primary screen cells.
@@ -89,6 +89,12 @@ struct GridState {
     last_printed: Option<char>,
     /// Window / tab title (OSC 0 / OSC 2).
     title: Option<String>,
+    /// OSC 133 block extractor — captures prompt + command +
+    /// output + exit_code triples. Idle when the shell hasn't
+    /// emitted any OSC 133 marker yet (zero blocks; on_print is
+    /// a no-op). Once the shell's PS1 emits A, the extractor
+    /// fills as the byte stream advances.
+    pub(crate) blocks: crate::blocks::BlockExtractor,
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +130,7 @@ impl GridState {
             cursor_visible: true,
             last_printed: None,
             title: None,
+            blocks: crate::blocks::BlockExtractor::default(),
         }
     }
 
@@ -456,6 +463,11 @@ impl GridState {
 
 impl Perform for GridState {
     fn print(&mut self, c: char) {
+        // Pane-as-block: feed the extractor BEFORE placement so
+        // its phase state reflects the same chronology the
+        // grid sees. Cheap when the extractor is Idle (single
+        // Option-is-none check).
+        self.blocks.on_print(c);
         // Honour deferred wrap from the previous print, then place.
         if self.wrap_pending {
             self.wrap_pending = false;
@@ -743,6 +755,22 @@ impl Perform for GridState {
             if let Some(t) = params.get(1).and_then(|p| std::str::from_utf8(p).ok()) {
                 self.title = Some(t.to_owned());
             }
+            return;
+        }
+        // OSC 133 — FinalTerm prompt marks. Drive the block
+        // extractor. The marker (A/B/C/D[;<n>]) lives in
+        // params[1] for the standard `OSC 133;A` shape but
+        // some shells emit `OSC 133;A;…` with extra fields
+        // after — we pass the whole remainder to the extractor.
+        if matches!(code, Some("133")) {
+            // Rebuild the marker as "A" / "B;extra" / "D;0" etc.
+            let marker: String = params
+                .iter()
+                .skip(1)
+                .filter_map(|p| std::str::from_utf8(p).ok())
+                .collect::<Vec<_>>()
+                .join(";");
+            self.blocks.on_osc_133(&marker);
         }
     }
 

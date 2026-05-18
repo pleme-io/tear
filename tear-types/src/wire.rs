@@ -141,6 +141,22 @@ pub enum Request {
     /// #4 — `(is_enabled, event_count)` for the pane. Returns
     /// `Response::RecordingStatus { enabled, events }`.
     PaneRecordingStatus(PaneId),
+    /// Pane-as-block (warp-class UX): list captured OSC 133
+    /// blocks for a pane. `since_index` filters older blocks;
+    /// `limit` caps the response size.
+    PaneBlocksList {
+        pane: PaneId,
+        since_index: u64,
+        limit: u32,
+    },
+    /// Pane-as-block: fetch one block by per-pane index.
+    PaneBlockAt {
+        pane: PaneId,
+        index: u64,
+    },
+    /// Pane-as-block: `(total_completed, in_progress)` summary
+    /// for the pane. Cheap; `tear top` polls this each refresh.
+    PaneBlocksStatus(PaneId),
     /// Probe how many subscribers (byte-stream consumers) are
     /// currently attached to a pane. Used by the migration
     /// ergonomic — `tear pane-info` surfaces the count so an
@@ -214,6 +230,15 @@ pub enum Response {
     RecordingStatus {
         enabled: bool,
         events: u32,
+    },
+    /// Reply to `Request::PaneBlocksList`.
+    Blocks(Vec<crate::block::Block>),
+    /// Reply to `Request::PaneBlockAt`.
+    Block(crate::block::Block),
+    /// Reply to `Request::PaneBlocksStatus`.
+    BlocksStatus {
+        total: u32,
+        in_progress: bool,
     },
     /// Reply to `Request::PaneSubscriberCount` — number of
     /// currently-attached byte-stream subscribers for that pane.

@@ -138,6 +138,74 @@ impl InProcess {
         }
     }
 
+    /// List captured blocks for a pane (oldest-first). Filters by
+    /// `since_index` — pass 0 to get every retained block. The
+    /// daemon currently caps at 10_000 blocks per pane (ring
+    /// eviction). Returns `NoSuchPane` if the pane has no grid.
+    pub fn pane_blocks_list(
+        &self,
+        pane_id: PaneId,
+        since_index: u64,
+        limit: u32,
+    ) -> ControlResult<Vec<crate::blocks::Block>> {
+        let grid_arc = {
+            let map = self.grids.lock();
+            map.get(&pane_id)
+                .cloned()
+                .ok_or(ControlError::NoSuchPane(pane_id))?
+        };
+        let grid = grid_arc.lock();
+        let out: Vec<crate::blocks::Block> = grid
+            .state
+            .blocks
+            .iter()
+            .filter(|b| b.index >= since_index)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        Ok(out)
+    }
+
+    /// Fetch one block by per-pane index. Returns NoSuchPane if
+    /// the pane is gone, or the InvalidArgument variant via
+    /// Rejected when the block has been evicted / never existed.
+    pub fn pane_block_at(
+        &self,
+        pane_id: PaneId,
+        index: u64,
+    ) -> ControlResult<crate::blocks::Block> {
+        let grid_arc = {
+            let map = self.grids.lock();
+            map.get(&pane_id)
+                .cloned()
+                .ok_or(ControlError::NoSuchPane(pane_id))?
+        };
+        let grid = grid_arc.lock();
+        grid.state
+            .blocks
+            .get(index)
+            .cloned()
+            .ok_or_else(|| ControlError::Rejected(format!(
+                "no block at index {index} (oldest evicted or never existed)"
+            )))
+    }
+
+    /// `(total_completed_blocks, current_in_progress)` — useful
+    /// for status displays. `tear top` reads this column.
+    pub fn pane_blocks_status(&self, pane_id: PaneId) -> ControlResult<(u32, bool)> {
+        let grid_arc = {
+            let map = self.grids.lock();
+            map.get(&pane_id)
+                .cloned()
+                .ok_or(ControlError::NoSuchPane(pane_id))?
+        };
+        let grid = grid_arc.lock();
+        Ok((
+            grid.state.blocks.len() as u32,
+            grid.state.blocks.current().is_some(),
+        ))
+    }
+
     /// Register a byte-stream subscriber for the named pane.
     /// Returns the receiver end of an `mpsc::channel`; every PTY
     /// chunk that lands in this pane is sent on the corresponding
@@ -711,6 +779,80 @@ mod tests {
         inproc.set_input_policy(pane_id, tear_types::InputPolicy::Free).unwrap();
         // No assertion needed — the test is that none of these panic
         // or return Err on duplicate state.
+    }
+
+    // ── Pane-as-block (OSC 133) ────────────────────────────
+
+    #[test]
+    fn pane_blocks_captures_osc_133_round_trip() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("blocks-test", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        // Drive a full OSC 133 cycle through the PTY by sending
+        // the bytes via send_keys. The shell's echo back loops
+        // them through PaneGrid → block extractor.
+        //
+        // We use raw escape bytes: ESC ] 133 ; X BEL
+        //
+        // bash + readline echo the bytes back to the PTY only on
+        // INPUT, not on output. The cleanest test path: write
+        // the OSC 133 sequence directly into the pty's slave
+        // side via send_keys, then drain.
+        //
+        // For the unit test we bypass the PTY shell and feed the
+        // grid directly via a synthetic call. The block
+        // extractor is fully covered by tear-core/src/blocks.rs
+        // unit tests; here we verify the wiring through
+        // pane_blocks_list returns what we'd expect when blocks
+        // exist.
+        let grid_arc = {
+            let map = inproc.grids.lock();
+            map.get(&pane_id).cloned().unwrap()
+        };
+        {
+            let mut grid = grid_arc.lock();
+            grid.feed(b"\x1b]133;A\x07");
+            grid.feed(b"$ ");
+            grid.feed(b"\x1b]133;B\x07");
+            grid.feed(b"echo hi");
+            grid.feed(b"\x1b]133;C\x07");
+            grid.feed(b"hi\r\n");
+            grid.feed(b"\x1b]133;D;0\x07");
+        }
+
+        let blocks = inproc.pane_blocks_list(pane_id, 0, 10).unwrap();
+        assert_eq!(blocks.len(), 1);
+        let b = &blocks[0];
+        assert_eq!(b.prompt, "$ ");
+        assert_eq!(b.command, "echo hi");
+        assert!(b.output.contains("hi"));
+        assert_eq!(b.exit_code, Some(0));
+
+        let (total, in_progress) = inproc.pane_blocks_status(pane_id).unwrap();
+        assert_eq!(total, 1);
+        assert!(!in_progress);
+
+        let one = inproc.pane_block_at(pane_id, 0).unwrap();
+        assert_eq!(one.index, 0);
+    }
+
+    #[test]
+    fn pane_block_at_on_missing_index_returns_rejected() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("missing-block", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let err = inproc.pane_block_at(pane_id, 99).unwrap_err();
+        assert!(matches!(err, ControlError::Rejected(_)));
+    }
+
+    #[test]
+    fn pane_blocks_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let err = inproc
+            .pane_blocks_list(PaneId(0xdead_beef), 0, 10)
+            .unwrap_err();
+        assert!(matches!(err, ControlError::NoSuchPane(_)));
     }
 
     #[test]

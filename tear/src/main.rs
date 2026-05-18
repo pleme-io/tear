@@ -138,6 +138,35 @@ enum Cmd {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Pane-as-block: list every captured prompt+command+output
+    /// block for a pane. Blocks are detected via OSC 133 prompt
+    /// marks; your shell must be emitting them (powerlevel10k,
+    /// starship, modern bash with `__vsc_*` hooks). Default
+    /// `--limit 20` keeps the output digestible.
+    Blocks {
+        pane: String,
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pane-as-block: fetch one block by per-pane index. With
+    /// --latest, returns the most recent completed block instead.
+    Block {
+        pane: String,
+        #[arg(long, conflicts_with = "latest")]
+        index: Option<u64>,
+        #[arg(long, conflicts_with = "index")]
+        latest: bool,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// #48a — Interactive curses dashboard. Live view of every
     /// session + pane (subscriber count, input policy, recording
     /// state) with keybindings for lock/unlock, record on/off,
@@ -253,6 +282,12 @@ fn main() -> Result<()> {
         Cmd::PaneInput { pane, action, socket } => cmd_pane_input(&pane, action, socket),
         Cmd::PaneInfo { pane, socket, json } => cmd_pane_info(&pane, socket, json),
         Cmd::PaneRecord { pane, action, socket, out } => cmd_pane_record(&pane, action, socket, out),
+        Cmd::Blocks { pane, since, limit, socket, json } => {
+            cmd_blocks(&pane, since, limit, socket, json)
+        }
+        Cmd::Block { pane, index, latest, socket, json } => {
+            cmd_block(&pane, index, latest, socket, json)
+        }
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
@@ -606,6 +641,88 @@ fn cmd_pane_info(
             p.state,
             p.input_policy.label(),
         );
+    }
+    Ok(())
+}
+
+/// `tear blocks <pane>` — list captured OSC 133 blocks.
+fn cmd_blocks(
+    pane: &str,
+    since: u64,
+    limit: u32,
+    socket: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    let pane_id = pane
+        .parse::<tear_types::PaneId>()
+        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let blocks = client.pane_blocks_list(pane_id, since, limit)?;
+    if json {
+        println!("{}", serde_json::to_string(&blocks)?);
+    } else if blocks.is_empty() {
+        println!("(no captured blocks for {pane_id} — make sure your shell emits OSC 133 prompt marks)");
+    } else {
+        for b in &blocks {
+            let exit = b
+                .exit_code
+                .map(|c| format!(" exit={c}"))
+                .unwrap_or_default();
+            let cmd = b.command.replace('\n', "⏎");
+            let cmd_short: String = cmd.chars().take(60).collect();
+            println!(
+                "[{:>4}]{exit}  ${cmd_short}{}",
+                b.index,
+                if cmd.chars().count() > 60 { "…" } else { "" }
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `tear block <pane>` — fetch one block.
+fn cmd_block(
+    pane: &str,
+    index: Option<u64>,
+    latest: bool,
+    socket: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    let pane_id = pane
+        .parse::<tear_types::PaneId>()
+        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let block = if latest {
+        let (total, _) = client.pane_blocks_status(pane_id)?;
+        if total == 0 {
+            return Err(anyhow::anyhow!("no captured blocks for pane {pane_id}"));
+        }
+        // Index of the most recent completed block depends on
+        // ring eviction — fetch a small tail and pick the
+        // highest index.
+        let tail = client.pane_blocks_list(pane_id, 0, total)?;
+        let last = tail
+            .into_iter()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("no blocks returned"))?;
+        last
+    } else {
+        let idx = index.ok_or_else(|| {
+            anyhow::anyhow!("either --index <N> or --latest is required")
+        })?;
+        client.pane_block_at(pane_id, idx)?
+    };
+    if json {
+        println!("{}", serde_json::to_string(&block)?);
+    } else {
+        println!("─ block {} ─", block.index);
+        if let Some(c) = block.exit_code {
+            println!("exit: {c}");
+        }
+        println!("prompt: {}", block.prompt.trim_end());
+        println!("command: {}", block.command.trim_end());
+        println!("─ output ─");
+        print!("{}", block.output);
     }
     Ok(())
 }
