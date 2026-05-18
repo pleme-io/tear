@@ -3402,6 +3402,10 @@ rec {
             features = [ "derive" ];
           }
           {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
             name = "tear-config";
             packageId = "tear-config";
           }
