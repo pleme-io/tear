@@ -126,6 +126,21 @@ pub enum Request {
     /// config when it's the front-end). Daemon-side config file
     /// on disk is NOT touched; the next reload reverts.
     SetConfig(String),
+    /// #4 — start daemon-native recording for `pane`. Subsequent
+    /// PTY chunks are captured into a per-pane ring buffer; the
+    /// buffer can later be exported as asciinema v2 .cast via
+    /// `ExportPaneRecording`.
+    StartPaneRecording(PaneId),
+    /// #4 — stop recording. The captured buffer is retained so a
+    /// follow-up `ExportPaneRecording` still works.
+    StopPaneRecording(PaneId),
+    /// #4 — export the pane's captured recording as asciinema
+    /// v2 .cast (JSON-lines string). Returns
+    /// `Response::CastJson(string)`.
+    ExportPaneRecording(PaneId),
+    /// #4 — `(is_enabled, event_count)` for the pane. Returns
+    /// `Response::RecordingStatus { enabled, events }`.
+    PaneRecordingStatus(PaneId),
     /// Probe how many subscribers (byte-stream consumers) are
     /// currently attached to a pane. Used by the migration
     /// ergonomic — `tear pane-info` surfaces the count so an
@@ -191,6 +206,15 @@ pub enum Response {
     /// avoids the cycle tear-types ↔ tear-config and keeps the
     /// daemon's config inspectable with any text tool.
     ConfigYaml(String),
+    /// Reply to `Request::ExportPaneRecording` — asciinema v2
+    /// .cast (JSON-lines) string ready to write to disk or pipe
+    /// to `asciinema play`.
+    CastJson(String),
+    /// Reply to `Request::PaneRecordingStatus`.
+    RecordingStatus {
+        enabled: bool,
+        events: u32,
+    },
     /// Reply to `Request::PaneSubscriberCount` — number of
     /// currently-attached byte-stream subscribers for that pane.
     /// Includes the requester if it has an outstanding subscribe.

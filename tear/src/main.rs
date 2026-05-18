@@ -121,6 +121,21 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// #4 — daemon-native pane recording. `start` flips capture on
+    /// (resets prior buffer). `stop` halts capture but retains
+    /// the buffer for export. `export` writes asciinema v2 .cast
+    /// (JSON-lines) to stdout (or `--out <path>`). `status`
+    /// reports `(enabled, event_count)`.
+    PaneRecord {
+        pane: String,
+        #[arg(value_enum)]
+        action: PaneRecordAction,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        /// File path for `export` (defaults to stdout).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Probe daemon reachability. Prints `{reachable, socket,
     /// sessions, version}` as text or JSON (--json). Suitable for
     /// shell-prompt hooks (starship custom command, p10k poweradd,
@@ -197,6 +212,14 @@ enum PaneInputAction {
     Unlock,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum PaneRecordAction {
+    Start,
+    Stop,
+    Export,
+    Status,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
@@ -208,6 +231,7 @@ fn main() -> Result<()> {
         Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
         Cmd::PaneInput { pane, action, socket } => cmd_pane_input(&pane, action, socket),
         Cmd::PaneInfo { pane, socket, json } => cmd_pane_info(&pane, socket, json),
+        Cmd::PaneRecord { pane, action, socket, out } => cmd_pane_record(&pane, action, socket, out),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
         Cmd::ConfigPath => {
@@ -464,6 +488,48 @@ fn cmd_pane_input(
     };
     client.set_input_policy(pane_id, policy)?;
     println!("pane {pane_id} input_policy={}", policy.label());
+    Ok(())
+}
+
+/// `tear pane-record <pane> {start|stop|export|status}` — #4
+/// daemon-native recording ergonomic.
+fn cmd_pane_record(
+    pane: &str,
+    action: PaneRecordAction,
+    socket: Option<std::path::PathBuf>,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    let pane_id = pane
+        .parse::<tear_types::PaneId>()
+        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    match action {
+        PaneRecordAction::Start => {
+            client.start_pane_recording(pane_id)?;
+            println!("recording started: pane {pane_id}");
+        }
+        PaneRecordAction::Stop => {
+            client.stop_pane_recording(pane_id)?;
+            println!("recording stopped: pane {pane_id}");
+        }
+        PaneRecordAction::Export => {
+            let cast = client.export_pane_recording(pane_id)?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, cast.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+                    println!("exported recording → {}", path.display());
+                }
+                None => {
+                    print!("{cast}");
+                }
+            }
+        }
+        PaneRecordAction::Status => {
+            let (enabled, events) = client.pane_recording_status(pane_id)?;
+            println!("pane {pane_id}  recording={enabled}  events={events}");
+        }
+    }
     Ok(())
 }
 

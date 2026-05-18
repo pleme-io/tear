@@ -244,6 +244,73 @@ fn rename_relabels_session_in_daemon_list() {
     );
 }
 
+// ── #4 recording ────────────────────────────────────────────────────
+
+#[test]
+fn pane_record_start_stop_status_round_trip() {
+    let h = DaemonHarness::new("record-roundtrip");
+    let _ = h.run(&["up", "--name", "rec-test"]);
+    let (yaml, _, _) = h.run(&["list", "--yaml"]);
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    let pane_decimal = parsed
+        .as_sequence()
+        .and_then(|s| s.first())
+        .and_then(|v| v["panes"].as_mapping())
+        .and_then(|m| m.keys().next())
+        .and_then(|k| k.as_u64())
+        .expect("one pane");
+    let pane_hex = format!("{:016x}", pane_decimal);
+
+    // Status before start: not recording.
+    let (status0, _, _) = h.run(&["pane-record", &pane_hex, "status"]);
+    assert!(status0.contains("recording=false"), "got: {status0}");
+
+    // Start: recording=true.
+    let (start_out, _, code) = h.run(&["pane-record", &pane_hex, "start"]);
+    assert_eq!(code, 0, "start failed: {start_out}");
+    let (status1, _, _) = h.run(&["pane-record", &pane_hex, "status"]);
+    assert!(status1.contains("recording=true"), "got: {status1}");
+
+    // Drive some output via send_keys → pty → recording.
+    let _ = h.run(&["pane-input", &pane_hex, "unlock"]); // ensure free
+    // send_keys via tear-client CLI isn't directly exposed; use
+    // the pane-info path to verify state instead — the recording
+    // capture is exercised at the InProcess unit-test level.
+
+    // Stop: recording=false but buffer retained.
+    let (stop_out, _, code) = h.run(&["pane-record", &pane_hex, "stop"]);
+    assert_eq!(code, 0, "stop failed: {stop_out}");
+    let (status2, _, _) = h.run(&["pane-record", &pane_hex, "status"]);
+    assert!(status2.contains("recording=false"), "got: {status2}");
+}
+
+#[test]
+fn pane_record_export_emits_valid_asciinema_cast_header() {
+    let h = DaemonHarness::new("record-export");
+    let _ = h.run(&["up", "--name", "exp-test"]);
+    let (yaml, _, _) = h.run(&["list", "--yaml"]);
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    let pane_decimal = parsed
+        .as_sequence()
+        .and_then(|s| s.first())
+        .and_then(|v| v["panes"].as_mapping())
+        .and_then(|m| m.keys().next())
+        .and_then(|k| k.as_u64())
+        .unwrap();
+    let pane_hex = format!("{:016x}", pane_decimal);
+
+    let _ = h.run(&["pane-record", &pane_hex, "start"]);
+    // Even with no events, the export should emit at minimum the
+    // header line so an asciinema player accepts the file.
+    let (cast, _, code) = h.run(&["pane-record", &pane_hex, "export"]);
+    assert_eq!(code, 0);
+    let first_line = cast.lines().next().expect("expected at least a header");
+    let header: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    assert_eq!(header["version"], 2);
+    assert!(header["width"].as_u64().unwrap() > 0);
+    assert!(header["height"].as_u64().unwrap() > 0);
+}
+
 // ── #3 migration ergonomic — pane-info subscriber count ────────────
 
 #[test]

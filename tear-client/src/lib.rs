@@ -465,6 +465,46 @@ impl MultiplexerControl for Client {
             other => Err(unexpected("SubscriberCount", other)),
         }
     }
+}
+
+impl Client {
+    // ── #4 recording client API (inherent, not on the trait —
+    // recording is a tear-core-side primitive) ──────────────
+
+    /// Start recording the pane's PTY output. Resets the ring
+    /// buffer if recording was already on.
+    pub fn start_pane_recording(&self, id: PaneId) -> ControlResult<()> {
+        match self.rpc(Request::StartPaneRecording(id))? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
+
+    /// Stop recording. The captured buffer is retained for
+    /// `export_pane_recording`.
+    pub fn stop_pane_recording(&self, id: PaneId) -> ControlResult<()> {
+        match self.rpc(Request::StopPaneRecording(id))? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
+
+    /// Export the captured recording as asciinema v2 .cast
+    /// (JSON-lines) string.
+    pub fn export_pane_recording(&self, id: PaneId) -> ControlResult<String> {
+        match self.rpc(Request::ExportPaneRecording(id))? {
+            Response::CastJson(s) => Ok(s),
+            other => Err(unexpected("CastJson", other)),
+        }
+    }
+
+    /// `(is_enabled, event_count)` for the pane.
+    pub fn pane_recording_status(&self, id: PaneId) -> ControlResult<(bool, u32)> {
+        match self.rpc(Request::PaneRecordingStatus(id))? {
+            Response::RecordingStatus { enabled, events } => Ok((enabled, events)),
+            other => Err(unexpected("RecordingStatus", other)),
+        }
+    }
 
     fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
         match self.rpc(Request::PaneSnapshot(id))? {

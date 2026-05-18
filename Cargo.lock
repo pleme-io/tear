@@ -1088,6 +1088,7 @@ dependencies = [
  "portable-pty",
  "proptest",
  "serde",
+ "serde_json",
  "tear-config",
  "tear-types",
  "thiserror 2.0.18",

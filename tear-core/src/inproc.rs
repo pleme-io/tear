@@ -37,6 +37,7 @@ use std::sync::mpsc;
 
 use crate::pane_grid::PaneGrid;
 use crate::pty::PtyHandle;
+use crate::recording::PaneRecording;
 use crate::registry::Registry;
 
 /// The native in-process multiplexer backend.
@@ -53,6 +54,11 @@ pub struct InProcess {
     /// send error the daemon's serve thread can prune dead
     /// subscribers; the InProcess side just fans out.
     subscribers: Arc<Mutex<BTreeMap<PaneId, Vec<mpsc::Sender<Vec<u8>>>>>>,
+    /// Per-pane recording (#4). Cheap when disabled — the on_bytes
+    /// hook hits a single boolean before deciding whether to
+    /// deep-copy the chunk. Recording is opt-in via
+    /// `enable_pane_recording`.
+    recordings: Arc<Mutex<BTreeMap<PaneId, Arc<PaneRecording>>>>,
 }
 
 impl Default for InProcess {
@@ -69,6 +75,66 @@ impl InProcess {
             ptys: Arc::new(Mutex::new(BTreeMap::new())),
             grids: Arc::new(Mutex::new(BTreeMap::new())),
             subscribers: Arc::new(Mutex::new(BTreeMap::new())),
+            recordings: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    /// Enable recording for `pane_id`. Idempotent — calling on an
+    /// already-enabled pane resets the recording buffer (per
+    /// `PaneRecording::enable` semantics). Reads the pane's
+    /// current size from the registry for the asciinema header.
+    pub fn enable_pane_recording(&self, pane_id: PaneId) -> ControlResult<()> {
+        let (cols, rows) = {
+            let r = self.registry.read();
+            let Some((sid, _wid)) = r.locate_pane(pane_id) else {
+                return Err(ControlError::NoSuchPane(pane_id));
+            };
+            let Some(p) = r.sessions.get(&sid).and_then(|s| s.panes.get(&pane_id)) else {
+                return Err(ControlError::NoSuchPane(pane_id));
+            };
+            p.size_cells
+        };
+        let mut recs = self.recordings.lock();
+        let rec = recs
+            .entry(pane_id)
+            .or_insert_with(|| Arc::new(PaneRecording::default()));
+        rec.enable(cols, rows);
+        Ok(())
+    }
+
+    /// Stop recording for `pane_id`. The captured buffer is
+    /// retained until the next `enable` or `kill_pane`; the
+    /// operator can still `export` after stopping.
+    pub fn disable_pane_recording(&self, pane_id: PaneId) -> ControlResult<()> {
+        let recs = self.recordings.lock();
+        match recs.get(&pane_id) {
+            Some(r) => {
+                r.disable();
+                Ok(())
+            }
+            None => Err(ControlError::NoSuchPane(pane_id)),
+        }
+    }
+
+    /// Export the pane's captured recording as asciinema v2
+    /// .cast (JSON-lines). Returns an empty string when nothing
+    /// has been captured yet (recording was never enabled or the
+    /// pane has no events).
+    pub fn export_pane_recording(&self, pane_id: PaneId) -> ControlResult<String> {
+        let recs = self.recordings.lock();
+        match recs.get(&pane_id) {
+            Some(r) => Ok(r.to_cast_json()),
+            None => Err(ControlError::NoSuchPane(pane_id)),
+        }
+    }
+
+    /// `(is_enabled, event_count)` snapshot — driven by the
+    /// pane-info / pane-record-status ergonomics.
+    pub fn pane_recording_status(&self, pane_id: PaneId) -> ControlResult<(bool, u32)> {
+        let recs = self.recordings.lock();
+        match recs.get(&pane_id) {
+            Some(r) => Ok((r.is_enabled(), r.event_count() as u32)),
+            None => Ok((false, 0)),
         }
     }
 
@@ -135,6 +201,7 @@ impl InProcess {
 
         let grid_for_callback = grid.clone();
         let subscribers_for_callback = self.subscribers.clone();
+        let recordings_for_callback = self.recordings.clone();
         let on_bytes = Box::new(move |bytes: &[u8]| {
             grid_for_callback.lock().feed(bytes);
             // Fan out to subscribers (Phase-2.5 push subscriptions).
@@ -151,6 +218,14 @@ impl InProcess {
                         i += 1;
                     }
                 }
+            }
+            drop(subs);
+            // Push to the recording (#4). The Arc-cloned
+            // recording handle's `push` is a single Mutex-lock
+            // + early return when disabled, so this is cheap
+            // even when nothing's recording.
+            if let Some(rec) = recordings_for_callback.lock().get(&pane_id) {
+                rec.push(bytes);
             }
             debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid + subscribers");
         });

@@ -375,6 +375,20 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         Request::PaneSubscriberCount(id) => {
             map_result(inproc.pane_subscriber_count(id), Response::SubscriberCount)
         }
+        // #4 — recording RPCs route directly to the InProcess
+        // inherent methods (not part of MultiplexerControl since
+        // recording is a tear-core-side primitive, not a generic
+        // multiplexer concept).
+        Request::StartPaneRecording(id) => map_unit(inproc.enable_pane_recording(id)),
+        Request::StopPaneRecording(id) => map_unit(inproc.disable_pane_recording(id)),
+        Request::ExportPaneRecording(id) => {
+            map_result(inproc.export_pane_recording(id), Response::CastJson)
+        }
+        Request::PaneRecordingStatus(id) => {
+            map_result(inproc.pane_recording_status(id), |(enabled, events)| {
+                Response::RecordingStatus { enabled, events }
+            })
+        }
         Request::PaneSnapshot(id) => map_result(inproc.pane_snapshot(id), Response::PaneSnapshot),
         Request::PaneResizeAbsolute { id, cols, rows } => {
             map_unit(inproc.pane_resize_absolute(id, cols, rows))
