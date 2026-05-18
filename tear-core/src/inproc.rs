@@ -568,8 +568,19 @@ impl MultiplexerControl for InProcess {
     }
 
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()> {
-        // Locked-policy gate (#2). Reject before touching the PTY
-        // so a Locked pane never writes a partial frame.
+        // Input-policy gate (#2).
+        //
+        // - Locked: always reject — operator-explicit "no input
+        //   now". Surfaced before we touch the PTY so a Locked
+        //   pane never writes a partial frame.
+        // - Leader: identity-gating semantics are enforced ONE
+        //   layer up by the daemon's serve_connection_with_auth
+        //   path (which carries per-connection client_id). The
+        //   in-process trait surface has no client identity, so
+        //   Leader is treated as Free here — once the daemon's
+        //   gate authorises a SendKeys, this layer accepts. Pure
+        //   in-process consumers (mado tier-3) that need Leader
+        //   semantics must gate at their own layer.
         {
             let r = self.registry.read();
             let Some((sid, _wid)) = r.locate_pane(id) else {
@@ -779,6 +790,58 @@ mod tests {
         inproc.set_input_policy(pane_id, tear_types::InputPolicy::Free).unwrap();
         // No assertion needed — the test is that none of these panic
         // or return Err on duplicate state.
+    }
+
+    #[test]
+    fn send_keys_treats_leader_as_free_at_inproc_layer() {
+        // In-process consumers have no per-client identity at the
+        // trait surface, so Leader collapses to Free here — the
+        // daemon adds the identity-gating layer on top via
+        // serve_connection_with_auth. This test pins the semantic
+        // so future refactors don't accidentally start rejecting.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("leader-inproc", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::leader(7))
+            .unwrap();
+        // No error — InProcess::send_keys does not enforce Leader.
+        inproc.send_keys(pane_id, b"x").unwrap();
+    }
+
+    #[test]
+    fn send_keys_unaffected_when_policy_remains_free() {
+        // Default policy is Free; send_keys should accept right away
+        // without the operator touching the policy. Smoke-checks the
+        // policy gate's no-op path.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("free-default", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        inproc.send_keys(pane_id, b"hello").unwrap();
+    }
+
+    #[test]
+    fn send_keys_after_unlock_round_trip() {
+        // Locked → Free → Locked → Free. Each Free interval must
+        // accept input.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("rt", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        for round in 0..2 {
+            inproc
+                .set_input_policy(pane_id, tear_types::InputPolicy::Locked)
+                .unwrap();
+            assert!(
+                inproc.send_keys(pane_id, b"x").is_err(),
+                "round {round}: Locked accepted send_keys"
+            );
+            inproc
+                .set_input_policy(pane_id, tear_types::InputPolicy::Free)
+                .unwrap();
+            inproc
+                .send_keys(pane_id, b"y")
+                .unwrap_or_else(|e| panic!("round {round}: Free rejected send_keys: {e:?}"));
+        }
     }
 
     // ── Pane-as-block (OSC 133) ────────────────────────────

@@ -5324,6 +5324,11 @@ rec {
         ];
         devDependencies = [
           {
+            name = "tear-daemon";
+            packageId = "tear-daemon";
+            features = [ "testing" ];
+          }
+          {
             name = "tempfile";
             packageId = "tempfile";
           }

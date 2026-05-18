@@ -15,43 +15,32 @@
 //! "session lives in this CLI process, dies on exit" M0 behaviour.
 
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::time::Duration;
 
-/// Per-test daemon scaffold. Drop stops the daemon and unlinks
-/// the socket. Each test gets a unique PID+counter socket so
-/// parallel `cargo test` workers don't collide.
+use tear_daemon::testing::DaemonHarness as InnerHarness;
+
+/// Thin adapter around [`tear_daemon::testing::DaemonHarness`] that
+/// adds the CLI-spawning helpers (`cmd`, `run`) — the daemon
+/// scaffold itself is shared, but the binary-shell ergonomics are
+/// CLI-test-specific so they stay here.
 struct DaemonHarness {
-    socket: std::path::PathBuf,
-    daemon: Option<tear_daemon::DaemonHandle>,
+    inner: InnerHarness,
 }
 
 impl DaemonHarness {
     fn new(label: &str) -> Self {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static SEQ: AtomicU32 = AtomicU32::new(0);
-        let pid = std::process::id();
-        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let mut socket = std::env::temp_dir();
-        socket.push(format!("tear-cli-{label}-{pid}-{seq}.sock"));
-        let _ = std::fs::remove_file(&socket);
-        let inproc = Arc::new(tear_core::InProcess::new());
-        let daemon =
-            tear_daemon::start(socket.clone(), inproc).expect("daemon start");
-        std::thread::sleep(Duration::from_millis(50));
         Self {
-            socket,
-            daemon: Some(daemon),
+            inner: InnerHarness::new(label),
         }
     }
 
-    /// Build a `Command` for the production tear binary, already
-    /// targeted at this harness's socket.
+    fn socket(&self) -> &std::path::Path {
+        self.inner.socket()
+    }
+
+    /// Build a `Command` for the production tear binary.
     fn cmd(&self) -> Command {
         let bin = env!("CARGO_BIN_EXE_tear");
-        let mut c = Command::new(bin);
-        c.arg("--").stdin(Stdio::null()); // clap eats the `--`; placeholder
-        // start over without the placeholder — clap parses cleanly
         let mut c = Command::new(bin);
         c.stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -65,24 +54,13 @@ impl DaemonHarness {
     fn run(&self, args: &[&str]) -> (String, String, i32) {
         let mut cmd = self.cmd();
         cmd.args(args);
-        // The Status subcommand has --socket placed first; List /
-        // Up / Kill / Rename accept it after the subcommand. Just
-        // append it; clap's per-subcommand arg parser handles it.
-        cmd.arg("--socket").arg(&self.socket);
+        cmd.arg("--socket").arg(self.socket());
         let out = cmd.output().expect("spawn tear");
         (
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
             out.status.code().unwrap_or(-1),
         )
-    }
-}
-
-impl Drop for DaemonHarness {
-    fn drop(&mut self) {
-        if let Some(d) = self.daemon.take() {
-            d.stop();
-        }
     }
 }
 
@@ -396,7 +374,7 @@ fn leader_policy_gates_send_keys_by_client_identity() {
     use tear_types::MultiplexerControl;
     let sessions = {
         let client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket.clone()),
+            tear_client::Transport::Unix(h.socket().to_path_buf()),
         )
         .unwrap();
         client.list_sessions().unwrap()
@@ -419,7 +397,7 @@ fn leader_policy_gates_send_keys_by_client_identity() {
     // Naive client without TEAR_CLIENT_ID: SendKeys must be rejected.
     {
         let client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket.clone()),
+            tear_client::Transport::Unix(h.socket().to_path_buf()),
         )
         .unwrap();
         let err = client.send_keys(pane_id, b"hello").expect_err("must reject");
@@ -433,7 +411,7 @@ fn leader_policy_gates_send_keys_by_client_identity() {
     // Authorized leader: identify_as(42) then SendKeys → Ok.
     {
         let mut client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket.clone()),
+            tear_client::Transport::Unix(h.socket().to_path_buf()),
         )
         .unwrap();
         client.identify_as(42).unwrap();
@@ -443,7 +421,7 @@ fn leader_policy_gates_send_keys_by_client_identity() {
     // Wrong identity: identify_as(99) then SendKeys → still rejected.
     {
         let mut client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket.clone()),
+            tear_client::Transport::Unix(h.socket().to_path_buf()),
         )
         .unwrap();
         client.identify_as(99).unwrap();

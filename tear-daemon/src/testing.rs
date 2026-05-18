@@ -35,10 +35,15 @@
 //! ```
 
 use std::io::{self, Cursor, Read, Write};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
+use tear_core::InProcess;
 use tear_types::wire::{read_msg, Response};
+
+use crate::DaemonHandle;
 
 /// In-memory bidirectional pipe for `serve_connection_with_auth`.
 /// Reads pre-encoded request frames from `r`; writes response
@@ -101,4 +106,62 @@ pub fn drain_responses(rx: &Receiver<u8>) -> Vec<Response> {
         out.push(r);
     }
     out
+}
+
+/// Per-test daemon scaffold for integration tests that want a real
+/// `tear-daemon` listening on a private UDS. Drop stops the daemon
+/// and unlinks the socket. Each test gets a unique
+/// `tear-{label}-{pid}-{seq}.sock` so parallel `cargo test` workers
+/// don't collide.
+///
+/// Use from a downstream integration-test crate by declaring
+/// `tear-daemon = { workspace = true, features = ["testing"] }`
+/// under `[dev-dependencies]`.
+pub struct DaemonHarness {
+    socket: PathBuf,
+    daemon: Option<DaemonHandle>,
+}
+
+impl DaemonHarness {
+    /// Create a new harness with a freshly-bound socket. Sleeps
+    /// 50ms after binding so accept-loop is ready when the first
+    /// client dials.
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let pid = std::process::id();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mut socket = std::env::temp_dir();
+        socket.push(format!("tear-{label}-{pid}-{seq}.sock"));
+        let _ = std::fs::remove_file(&socket);
+        let inproc = Arc::new(InProcess::new());
+        let daemon = crate::start(socket.clone(), inproc).expect("daemon start");
+        std::thread::sleep(Duration::from_millis(50));
+        Self {
+            socket,
+            daemon: Some(daemon),
+        }
+    }
+
+    /// Socket path the harness is bound to. Pass to
+    /// `tear-client`'s `Client::connect` (or to a child `tear` CLI
+    /// invocation as `--socket <path>`).
+    pub fn socket(&self) -> &std::path::Path {
+        &self.socket
+    }
+
+    /// Borrow the underlying daemon handle — useful for tests that
+    /// want to drive in-process state without going through the
+    /// RPC.
+    pub fn daemon(&self) -> &DaemonHandle {
+        self.daemon.as_ref().expect("daemon dropped")
+    }
+}
+
+impl Drop for DaemonHarness {
+    fn drop(&mut self) {
+        if let Some(d) = self.daemon.take() {
+            d.stop();
+        }
+    }
 }

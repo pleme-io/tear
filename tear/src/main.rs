@@ -511,6 +511,23 @@ fn connect_to_daemon(
     Ok((client, std::path::PathBuf::from(transport.display_string())))
 }
 
+/// Parse an operator-supplied 16-hex pane id string. Centralises
+/// the "bad CLI id → clear anyhow message" template so every
+/// pane-taking subcommand surfaces the same shape. The optional
+/// `label` is the flag/positional name (e.g. `"pane"`, `"--pane"`)
+/// to make the error point at the offending input.
+fn parse_pane_id(s: &str, label: &str) -> Result<tear_types::PaneId> {
+    s.parse::<tear_types::PaneId>()
+        .map_err(|e| anyhow::anyhow!("invalid {label} `{s}`: {e}"))
+}
+
+/// Parse an operator-supplied 16-hex session id string. Sibling of
+/// [`parse_pane_id`] — same template, same error shape.
+fn parse_session_id(s: &str, label: &str) -> Result<tear_types::SessionId> {
+    s.parse::<tear_types::SessionId>()
+        .map_err(|e| anyhow::anyhow!("invalid {label} `{s}`: {e}"))
+}
+
 fn init_tracing(verbose: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = if verbose {
@@ -678,9 +695,7 @@ fn cmd_rename(
     // Rename only accepts the id form on the wire; `--name`-style
     // lookup isn't exposed at the CLI level (no operator hit asks
     // for it). Keep the surface narrow until proven otherwise.
-    let session_id = id
-        .parse::<tear_types::SessionId>()
-        .map_err(|e| anyhow::anyhow!("invalid session id `{id}`: {e}"))?;
+    let session_id = parse_session_id(id, "session id")?;
     client.rename_session(session_id, new_name)?;
     println!("renamed {session_id} → {new_name}");
     Ok(())
@@ -696,9 +711,7 @@ fn resolve_session_id(
     by_name: bool,
 ) -> Result<tear_types::SessionId> {
     if !by_name {
-        return arg
-            .parse::<tear_types::SessionId>()
-            .map_err(|e| anyhow::anyhow!("invalid session id `{arg}`: {e}"));
+        return parse_session_id(arg, "session id");
     }
     let sessions = client.list_sessions()?;
     let hits: Vec<_> = sessions.iter().filter(|s| s.name == arg).collect();
@@ -725,9 +738,7 @@ fn cmd_pane_input(
     socket: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
-    let pane_id = pane
-        .parse::<tear_types::PaneId>()
-        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let pane_id = parse_pane_id(pane, "pane id")?;
     let policy = match action {
         PaneInputAction::Lock => tear_types::InputPolicy::Locked,
         PaneInputAction::Unlock => tear_types::InputPolicy::Free,
@@ -755,9 +766,7 @@ fn cmd_pane_record(
     out: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
-    let pane_id = pane
-        .parse::<tear_types::PaneId>()
-        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let pane_id = parse_pane_id(pane, "pane id")?;
     match action {
         PaneRecordAction::Start => {
             client.start_pane_recording(pane_id)?;
@@ -796,9 +805,7 @@ fn cmd_pane_info(
     json: bool,
 ) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
-    let pane_id = pane
-        .parse::<tear_types::PaneId>()
-        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let pane_id = parse_pane_id(pane, "pane id")?;
     let p = client.get_pane(pane_id)?;
     let subs = client.pane_subscriber_count(pane_id).unwrap_or(0);
     if json {
@@ -836,9 +843,7 @@ fn cmd_blocks(
     json: bool,
 ) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
-    let pane_id = pane
-        .parse::<tear_types::PaneId>()
-        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let pane_id = parse_pane_id(pane, "pane id")?;
     let blocks = client.pane_blocks_list(pane_id, since, limit)?;
     if json {
         println!("{}", serde_json::to_string(&blocks)?);
@@ -871,9 +876,7 @@ fn cmd_block(
     json: bool,
 ) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
-    let pane_id = pane
-        .parse::<tear_types::PaneId>()
-        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let pane_id = parse_pane_id(pane, "pane id")?;
     let block = if latest {
         let (total, _) = client.pane_blocks_status(pane_id)?;
         if total == 0 {
@@ -1332,8 +1335,7 @@ fn cmd_ai(
     // Resolve pane: explicit --pane wins, otherwise expect exactly
     // one pane in exactly one session.
     let pane_id = if let Some(p) = pane_filter {
-        p.parse::<tear_types::PaneId>()
-            .map_err(|e| anyhow::anyhow!("invalid --pane: {e}"))?
+        parse_pane_id(&p, "--pane")?
     } else {
         let sessions = client.list_sessions()?;
         let mut all_panes: Vec<tear_types::PaneId> =
@@ -1402,17 +1404,11 @@ fn cmd_history(
         0
     };
     let session_id_filter = match session_filter.as_deref() {
-        Some(s) => Some(
-            s.parse::<tear_types::SessionId>()
-                .map_err(|e| anyhow::anyhow!("invalid --session: {e}"))?,
-        ),
+        Some(s) => Some(parse_session_id(&s, "--session")?),
         None => None,
     };
     let pane_id_filter = match pane_filter.as_deref() {
-        Some(s) => Some(
-            s.parse::<tear_types::PaneId>()
-                .map_err(|e| anyhow::anyhow!("invalid --pane: {e}"))?,
-        ),
+        Some(s) => Some(parse_pane_id(&s, "--pane")?),
         None => None,
     };
 
@@ -1766,5 +1762,31 @@ mod main_helper_tests {
         // fallback "tear" is also acceptable.
         let name = default_session_name_for_cwd();
         assert!(!name.is_empty());
+    }
+
+    // ── parse_pane_id / parse_session_id helpers ─────────────────
+
+    #[test]
+    fn parse_pane_id_accepts_canonical_hex() {
+        // `tear list` prints 16-hex pane ids; canonical round-trip
+        // must succeed.
+        let p = tear_types::PaneId(0x1234_5678_9abc_def0);
+        let s = p.to_string();
+        let back = parse_pane_id(&s, "pane id").unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn parse_pane_id_surfaces_label_on_invalid_input() {
+        let err = parse_pane_id("not-hex", "--pane").unwrap_err().to_string();
+        assert!(err.contains("--pane"), "msg: {err}");
+        assert!(err.contains("not-hex"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_session_id_accepts_canonical_hex_and_rejects_garbage() {
+        let s = tear_types::SessionId(0xdead_beef_cafe_babe);
+        assert_eq!(parse_session_id(&s.to_string(), "x").unwrap(), s);
+        assert!(parse_session_id("zz-not-a-hex-id", "--session").is_err());
     }
 }
