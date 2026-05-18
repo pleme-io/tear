@@ -244,6 +244,36 @@ fn rename_relabels_session_in_daemon_list() {
     );
 }
 
+// ── #5 semantic history ─────────────────────────────────────────────
+
+#[test]
+fn history_with_no_blocks_returns_empty() {
+    let h = DaemonHarness::new("history-empty");
+    let _ = h.run(&["up", "--name", "h-empty"]);
+    let (stdout, _, code) = h.run(&["history", "--limit", "10"]);
+    assert_eq!(code, 0, "history failed: {stdout}");
+    assert!(stdout.contains("(no matching history rows)"), "got: {stdout}");
+}
+
+#[test]
+fn history_json_emits_array() {
+    let h = DaemonHarness::new("history-json");
+    let _ = h.run(&["up", "--name", "h-json"]);
+    let (stdout, _, code) = h.run(&["history", "--limit", "10", "--json"]);
+    assert_eq!(code, 0, "history --json failed: {stdout}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(v.is_array(), "history --json must emit JSON array, got: {stdout}");
+    assert_eq!(v.as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn history_with_invalid_session_id_errors_cleanly() {
+    let h = DaemonHarness::new("history-bad");
+    let (_stdout, stderr, code) = h.run(&["history", "--session", "not-hex"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("invalid --session"), "got stderr: {stderr}");
+}
+
 // ── #4 recording ────────────────────────────────────────────────────
 
 #[test]

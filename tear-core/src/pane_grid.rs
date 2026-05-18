@@ -757,6 +757,17 @@ impl Perform for GridState {
             }
             return;
         }
+        // OSC 7 — current working directory notification.
+        // Most shells (zsh-vcs-info, bash with __vsc_*, ghostty's
+        // shell-integration) emit `OSC 7 ; file://<host>/<path>`.
+        // The block extractor stamps this onto every subsequent
+        // block at prompt start.
+        if matches!(code, Some("7"))
+            && let Some(payload) = params.get(1).and_then(|p| std::str::from_utf8(p).ok())
+        {
+            self.blocks.set_cwd_from_osc7(payload);
+            return;
+        }
         // OSC 133 — FinalTerm prompt marks. Drive the block
         // extractor. The marker (A/B/C/D[;<n>]) lives in
         // params[1] for the standard `OSC 133;A` shape but

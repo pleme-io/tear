@@ -154,6 +154,32 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Semantic history — typed projection of every captured block
+    /// across one pane, one session, or the whole daemon. Each
+    /// row is (started_at, pane, exit_code, duration_ms, cwd,
+    /// command). Filter by --pane / --session / --exit-code /
+    /// --since (last hour). Text or --json output.
+    History {
+        #[arg(long)]
+        pane: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        /// Only blocks newer than this many seconds ago. Default
+        /// 0 means "everything retained".
+        #[arg(long, default_value_t = 0)]
+        since_secs: u64,
+        /// Filter to exit code (e.g. --exit-code 0 for successes,
+        /// --exit-code 1 for failures, etc.).
+        #[arg(long)]
+        exit_code: Option<i32>,
+        /// Max rows to return.
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Pane-as-block: fetch one block by per-pane index. With
     /// --latest, returns the most recent completed block instead.
     Block {
@@ -287,6 +313,9 @@ fn main() -> Result<()> {
         }
         Cmd::Block { pane, index, latest, socket, json } => {
             cmd_block(&pane, index, latest, socket, json)
+        }
+        Cmd::History { pane, session, since_secs, exit_code, limit, socket, json } => {
+            cmd_history(pane, session, since_secs, exit_code, limit, socket, json)
         }
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
@@ -725,6 +754,143 @@ fn cmd_block(
         print!("{}", block.output);
     }
     Ok(())
+}
+
+/// `tear history` — semantic history across one pane / session /
+/// the whole daemon. Aggregates blocks client-side; cheap because
+/// `pane_blocks_list` is already a typed wire RPC.
+#[allow(clippy::too_many_arguments)]
+fn cmd_history(
+    pane_filter: Option<String>,
+    session_filter: Option<String>,
+    since_secs: u64,
+    exit_code_filter: Option<i32>,
+    limit: u32,
+    socket: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let (client, _) = connect_to_daemon(socket)?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let cutoff_ms = if since_secs > 0 {
+        now_ms.saturating_sub(since_secs.saturating_mul(1000))
+    } else {
+        0
+    };
+    let session_id_filter = match session_filter.as_deref() {
+        Some(s) => Some(
+            s.parse::<tear_types::SessionId>()
+                .map_err(|e| anyhow::anyhow!("invalid --session: {e}"))?,
+        ),
+        None => None,
+    };
+    let pane_id_filter = match pane_filter.as_deref() {
+        Some(s) => Some(
+            s.parse::<tear_types::PaneId>()
+                .map_err(|e| anyhow::anyhow!("invalid --pane: {e}"))?,
+        ),
+        None => None,
+    };
+
+    let sessions = client.list_sessions()?;
+    let mut rows: Vec<HistoryRow> = Vec::new();
+    for session in sessions {
+        if let Some(sf) = session_id_filter {
+            if session.id != sf {
+                continue;
+            }
+        }
+        for pane_id in session.panes.keys() {
+            if let Some(pf) = pane_id_filter {
+                if *pane_id != pf {
+                    continue;
+                }
+            }
+            let blocks = client.pane_blocks_list(*pane_id, 0, 10_000).unwrap_or_default();
+            for b in blocks {
+                if b.started_at_unix_ms < cutoff_ms {
+                    continue;
+                }
+                if let Some(ec) = exit_code_filter {
+                    if b.exit_code != Some(ec) {
+                        continue;
+                    }
+                }
+                rows.push(HistoryRow {
+                    started_at_unix_ms: b.started_at_unix_ms,
+                    session_id: session.id.to_string(),
+                    session_name: session.name.clone(),
+                    pane_id: pane_id.to_string(),
+                    exit_code: b.exit_code,
+                    duration_ms: b.duration_ms(),
+                    cwd: b.cwd.clone(),
+                    command: b.command.clone(),
+                });
+            }
+        }
+    }
+    // Newest first.
+    rows.sort_by(|a, b| b.started_at_unix_ms.cmp(&a.started_at_unix_ms));
+    rows.truncate(limit as usize);
+
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+    } else if rows.is_empty() {
+        println!("(no matching history rows)");
+    } else {
+        for r in &rows {
+            let exit = r
+                .exit_code
+                .map(|c| format!("exit={c:<3}"))
+                .unwrap_or_else(|| "exit=?  ".into());
+            let dur = r
+                .duration_ms
+                .map(|d| format!("{d:>5}ms"))
+                .unwrap_or_else(|| "    ?ms".into());
+            let cwd = r.cwd.as_deref().unwrap_or("-");
+            let cmd = r.command.trim_end().replace('\n', "⏎");
+            let cmd_short: String = cmd.chars().take(60).collect();
+            let cmd_ell = if cmd.chars().count() > 60 { "…" } else { "" };
+            println!(
+                "{} {} {} {} [{}] {}{}",
+                short_ts(r.started_at_unix_ms),
+                exit,
+                dur,
+                shorten(&r.pane_id, 8),
+                cwd,
+                cmd_short,
+                cmd_ell,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct HistoryRow {
+    started_at_unix_ms: u64,
+    session_id: String,
+    session_name: String,
+    pane_id: String,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+    cwd: Option<String>,
+    command: String,
+}
+
+fn short_ts(ms: u64) -> String {
+    let secs = ms / 1000;
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+fn shorten(s: &str, max: usize) -> String {
+    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max]) }
 }
 
 /// `tear top` — interactive curses dashboard.

@@ -69,6 +69,10 @@ pub struct BlockExtractor {
     current: Option<Block>,
     phase: Phase,
     next_index: u64,
+    /// Last-known working directory from OSC 7. Captured into
+    /// each block at prompt start so the block carries its
+    /// own `cwd` even if the shell cd's mid-output.
+    current_cwd: Option<String>,
 }
 
 impl Default for BlockExtractor {
@@ -86,7 +90,35 @@ impl BlockExtractor {
             current: None,
             phase: Phase::Idle,
             next_index: 0,
+            current_cwd: None,
         }
+    }
+
+    /// Record the shell's current working directory. Called by
+    /// the OSC 7 hook in GridState — the next prompt-start
+    /// stamps this onto the new block. OSC 7 payload is
+    /// typically `file://<host>/path/to/dir`; we strip the
+    /// scheme + host to keep just the absolute path.
+    pub fn set_cwd_from_osc7(&mut self, raw: &str) {
+        if let Some(rest) = raw.strip_prefix("file://") {
+            // Drop the host portion (anything before the first
+            // '/' that starts the path).
+            if let Some(slash) = rest.find('/') {
+                self.current_cwd = Some(rest[slash..].to_owned());
+                return;
+            }
+        }
+        // Fallback: take the raw payload verbatim — some
+        // shells emit just the path.
+        self.current_cwd = Some(raw.to_owned());
+    }
+
+    /// Current OSC 7-set cwd, if any. Surfaced for tests and
+    /// for renderers that want to display the active directory
+    /// independent of any open block.
+    #[must_use]
+    pub fn current_cwd(&self) -> Option<&str> {
+        self.current_cwd.as_deref()
     }
 
     /// Number of completed blocks currently retained.
@@ -178,6 +210,7 @@ impl BlockExtractor {
             exit_code: None,
             started_at_unix_ms: now,
             ended_at_unix_ms: None,
+            cwd: self.current_cwd.clone(),
         });
         self.next_index += 1;
         self.phase = Phase::Prompt;
@@ -333,6 +366,34 @@ mod tests {
         assert_eq!(bx.get(0).map(|b| b.exit_code), Some(Some(0)));
         assert_eq!(bx.get(1).map(|b| b.exit_code), Some(Some(1)));
         assert!(bx.get(99).is_none());
+    }
+
+    #[test]
+    fn osc7_cwd_stamped_onto_next_block() {
+        let mut bx = BlockExtractor::default();
+        bx.set_cwd_from_osc7("file://localhost/Users/me/code");
+        bx.on_osc_133("A");
+        bx.on_osc_133("D;0");
+        let b = bx.iter().next().unwrap();
+        assert_eq!(b.cwd.as_deref(), Some("/Users/me/code"));
+    }
+
+    #[test]
+    fn osc7_without_file_scheme_passes_through_verbatim() {
+        let mut bx = BlockExtractor::default();
+        bx.set_cwd_from_osc7("/tmp/raw-path");
+        assert_eq!(bx.current_cwd(), Some("/tmp/raw-path"));
+    }
+
+    #[test]
+    fn block_duration_ms_computes_on_finalize() {
+        let mut bx = BlockExtractor::default();
+        bx.on_osc_133("A");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        bx.on_osc_133("D;0");
+        let b = bx.iter().next().unwrap();
+        let d = b.duration_ms().expect("finalized block has duration");
+        assert!(d < 5_000, "absurd duration: {d}ms");
     }
 
     #[test]

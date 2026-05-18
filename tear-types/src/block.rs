@@ -17,4 +17,20 @@ pub struct Block {
     pub exit_code: Option<i32>,
     pub started_at_unix_ms: u64,
     pub ended_at_unix_ms: Option<u64>,
+    /// Working directory at prompt start, captured from the
+    /// shell's OSC 7 `file://<host><path>` notification.
+    /// `None` when the shell hasn't emitted OSC 7 (older
+    /// configurations or pure /bin/sh).
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+impl Block {
+    /// Wall-clock duration of the block (output end - start).
+    /// `None` while still in progress.
+    #[must_use]
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.ended_at_unix_ms
+            .map(|end| end.saturating_sub(self.started_at_unix_ms))
+    }
 }
