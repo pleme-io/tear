@@ -3234,6 +3234,10 @@ rec {
             usesDefaultFeatures = false;
           }
           {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
             name = "serde_yaml_ng";
             packageId = "serde_yaml_ng";
           }
