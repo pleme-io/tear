@@ -109,6 +109,7 @@ impl Registry {
             origin_cells: (0, 0),
             state: PaneState::Running,
             title: shell.into(),
+            input_policy: tear_types::InputPolicy::default(),
         };
         let win = TearWindow {
             id: win_id,

@@ -154,6 +154,17 @@ pub trait MultiplexerControl: Send + Sync {
     /// chord) to a pane's PTY.
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()>;
 
+    /// Replace a pane's typed [`crate::pane::InputPolicy`]. Default
+    /// behavior is `Free`; setting `Locked` causes every
+    /// subsequent `send_keys` for that pane to return
+    /// `ControlError::Rejected`. Idempotent — same policy is a
+    /// no-op.
+    fn set_input_policy(
+        &self,
+        id: PaneId,
+        policy: crate::pane::InputPolicy,
+    ) -> ControlResult<()>;
+
     // ── Rendering (Phase 2) ──────────────────────────────────────
 
     /// Return a serializable snapshot of the named pane's currently-

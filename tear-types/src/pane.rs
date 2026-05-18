@@ -39,6 +39,51 @@ pub struct TearPane {
     /// program. Drives status-bar segment rendering.
     #[serde(default)]
     pub title: String,
+    /// Input acceptance policy. Default `Free` accepts input from
+    /// every connected client (mado, `tear send-keys`, MCP); the
+    /// daemon writes the bytes verbatim to the PTY in the order
+    /// they arrive. `Locked` rejects every send_keys with a typed
+    /// error — useful for "demo / observer" sessions, AI-driven
+    /// panes where human input would interleave with the agent,
+    /// or for the migration handoff window. New variants
+    /// (`Leader`, `OwnerOnly`) land alongside Subscribe-assigned
+    /// client identity in a future iteration.
+    #[serde(default)]
+    pub input_policy: InputPolicy,
+}
+
+/// Input acceptance policy for a single pane. Per-pane (not
+/// per-client) so the daemon enforces with one lookup on every
+/// `send_keys`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputPolicy {
+    /// Default. Every connected client's `send_keys` is written to
+    /// the PTY in arrival order. Multi-renderer attach is allowed
+    /// to interleave input.
+    Free,
+    /// Rejects every `send_keys` with `WireError::Rejected`. The
+    /// pane is observe-only — every PaneBytes subscriber still
+    /// gets output, but no one can type. Lifted via
+    /// `Request::SetInputPolicy(pane, InputPolicy::Free)`.
+    Locked,
+}
+
+impl Default for InputPolicy {
+    fn default() -> Self {
+        Self::Free
+    }
+}
+
+impl InputPolicy {
+    /// Short label for `tear list` / `tear pane status` text output.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            InputPolicy::Free => "free",
+            InputPolicy::Locked => "locked",
+        }
+    }
 }
 
 /// Pane lifecycle states.
@@ -100,8 +145,15 @@ mod tests {
             origin_cells: (0, 0),
             state: PaneState::Running,
             title: "zsh".into(),
+            input_policy: InputPolicy::default(),
         };
         assert_eq!(p.state, PaneState::Running);
         assert_eq!(p.size_cells, (120, 40));
+        assert_eq!(p.input_policy, InputPolicy::Free);
+    }
+
+    #[test]
+    fn input_policy_default_is_free() {
+        assert_eq!(InputPolicy::default(), InputPolicy::Free);
     }
 }

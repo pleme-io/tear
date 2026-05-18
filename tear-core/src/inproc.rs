@@ -353,6 +353,7 @@ impl MultiplexerControl for InProcess {
                     origin_cells: (0, 0),
                     state: tear_types::PaneState::Running,
                     title: shell.into(),
+                    input_policy: tear_types::InputPolicy::default(),
                 },
             );
             // Replace the window's layout with a balanced split.
@@ -424,11 +425,44 @@ impl MultiplexerControl for InProcess {
     }
 
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()> {
+        // Locked-policy gate (#2). Reject before touching the PTY
+        // so a Locked pane never writes a partial frame.
+        {
+            let r = self.registry.read();
+            let Some((sid, _wid)) = r.locate_pane(id) else {
+                return Err(ControlError::NoSuchPane(id));
+            };
+            let Some(pane) = r.sessions.get(&sid).and_then(|s| s.panes.get(&id)) else {
+                return Err(ControlError::NoSuchPane(id));
+            };
+            if matches!(pane.input_policy, tear_types::InputPolicy::Locked) {
+                return Err(ControlError::Rejected(format!(
+                    "pane {id} input_policy=locked — send_keys rejected"
+                )));
+            }
+        }
         let ptys = self.ptys.lock();
         let pty = ptys.get(&id).ok_or(ControlError::NoSuchPane(id))?;
         pty.write(bytes)
             .map_err(|e| ControlError::Transport(e.to_string()))?;
         Ok(())
+    }
+
+    fn set_input_policy(
+        &self,
+        id: PaneId,
+        policy: tear_types::InputPolicy,
+    ) -> ControlResult<()> {
+        let mut r = self.registry.write();
+        // Walk the session→panes maps to find the target. Mirrors
+        // locate_pane's address logic but with mutable access.
+        for s in r.sessions.values_mut() {
+            if let Some(p) = s.panes.get_mut(&id) {
+                p.input_policy = policy;
+                return Ok(());
+            }
+        }
+        Err(ControlError::NoSuchPane(id))
     }
 
     /// Phase-2 override of the trait's default `pane_snapshot`.
@@ -537,6 +571,55 @@ mod tests {
         inproc.kill_session(sid).unwrap();
         let err = inproc.subscribe_pane_bytes(pane).unwrap_err();
         assert!(matches!(err, ControlError::NoSuchPane(_)));
+    }
+
+    // ── #2 input policy ────────────────────────────────────────
+
+    #[test]
+    fn send_keys_rejected_when_pane_locked() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("policy", "/bin/sh").unwrap();
+        let session = inproc.get_session(sid).unwrap();
+        let pane_id = *session.panes.keys().next().unwrap();
+
+        // Lock it.
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::Locked)
+            .unwrap();
+        // send_keys must error with Rejected.
+        let err = inproc.send_keys(pane_id, b"x").unwrap_err();
+        assert!(
+            matches!(err, tear_types::ControlError::Rejected(_)),
+            "expected Rejected, got {err:?}"
+        );
+
+        // Unlock — send_keys works again.
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::Free)
+            .unwrap();
+        inproc.send_keys(pane_id, b"y").unwrap();
+    }
+
+    #[test]
+    fn set_input_policy_on_nonexistent_pane_returns_nosuch() {
+        let inproc = InProcess::new();
+        let err = inproc
+            .set_input_policy(tear_types::PaneId(0xdead_beef), tear_types::InputPolicy::Locked)
+            .unwrap_err();
+        assert!(matches!(err, tear_types::ControlError::NoSuchPane(_)));
+    }
+
+    #[test]
+    fn set_input_policy_is_idempotent() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("idem", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Locked).unwrap();
+        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Locked).unwrap();
+        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Free).unwrap();
+        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Free).unwrap();
+        // No assertion needed — the test is that none of these panic
+        // or return Err on duplicate state.
     }
 
     #[test]

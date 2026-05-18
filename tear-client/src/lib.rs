@@ -448,6 +448,17 @@ impl MultiplexerControl for Client {
         }
     }
 
+    fn set_input_policy(
+        &self,
+        id: PaneId,
+        policy: tear_types::InputPolicy,
+    ) -> ControlResult<()> {
+        match self.rpc(Request::SetInputPolicy { id, policy })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
+
     fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
         match self.rpc(Request::PaneSnapshot(id))? {
             Response::PaneSnapshot(snap) => Ok(snap),

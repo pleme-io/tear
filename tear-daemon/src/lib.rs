@@ -369,6 +369,9 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             map_unit(inproc.resize_pane(id, direction, delta_cells))
         }
         Request::SendKeys { id, bytes } => map_unit(inproc.send_keys(id, &bytes)),
+        Request::SetInputPolicy { id, policy } => {
+            map_unit(inproc.set_input_policy(id, policy))
+        }
         Request::PaneSnapshot(id) => map_result(inproc.pane_snapshot(id), Response::PaneSnapshot),
         Request::PaneResizeAbsolute { id, cols, rows } => {
             map_unit(inproc.pane_resize_absolute(id, cols, rows))

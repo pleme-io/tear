@@ -126,6 +126,16 @@ pub enum Request {
     /// config when it's the front-end). Daemon-side config file
     /// on disk is NOT touched; the next reload reverts.
     SetConfig(String),
+    /// Set a pane's input policy. `InputPolicy::Locked` rejects
+    /// every subsequent `SendKeys` for that pane with
+    /// `WireError::Rejected`; `InputPolicy::Free` re-opens it.
+    /// Useful for demo / observer sessions, agent-only panes
+    /// where human input would interleave, and the migration
+    /// handoff window.
+    SetInputPolicy {
+        id: PaneId,
+        policy: crate::pane::InputPolicy,
+    },
     /// Promote this connection to a config-change subscription.
     /// The daemon responds with `Response::Ok` then emits one
     /// `Response::ConfigChanged(yaml)` frame every time the live

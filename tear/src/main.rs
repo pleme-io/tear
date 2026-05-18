@@ -99,6 +99,17 @@ enum Cmd {
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
     },
+    /// Set a pane's typed input policy. `lock` → Locked (rejects
+    /// every send_keys until unlocked); `unlock` → Free (default).
+    /// Useful for observer / demo sessions, agent-only panes, and
+    /// the migration handoff window.
+    PaneInput {
+        pane: String,
+        #[arg(value_enum)]
+        action: PaneInputAction,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
     /// Probe daemon reachability. Prints `{reachable, socket,
     /// sessions, version}` as text or JSON (--json). Suitable for
     /// shell-prompt hooks (starship custom command, p10k poweradd,
@@ -167,6 +178,14 @@ enum Backend {
     Yaml,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum PaneInputAction {
+    /// Reject every subsequent send_keys for this pane until unlocked.
+    Lock,
+    /// Restore the default Free policy.
+    Unlock,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
@@ -176,6 +195,7 @@ fn main() -> Result<()> {
         Cmd::List { yaml, socket, source } => cmd_list(yaml, socket, source),
         Cmd::Kill { id, name, socket } => cmd_kill(&id, name, socket),
         Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
+        Cmd::PaneInput { pane, action, socket } => cmd_pane_input(&pane, action, socket),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
         Cmd::ConfigPath => {
@@ -413,6 +433,26 @@ fn resolve_session_id(
                 .join(", "),
         )),
     }
+}
+
+/// `tear pane-input <pane> lock|unlock` — flip a pane's typed
+/// InputPolicy via the daemon.
+fn cmd_pane_input(
+    pane: &str,
+    action: PaneInputAction,
+    socket: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    let pane_id = pane
+        .parse::<tear_types::PaneId>()
+        .map_err(|e| anyhow::anyhow!("invalid pane id `{pane}`: {e}"))?;
+    let policy = match action {
+        PaneInputAction::Lock => tear_types::InputPolicy::Locked,
+        PaneInputAction::Unlock => tear_types::InputPolicy::Free,
+    };
+    client.set_input_policy(pane_id, policy)?;
+    println!("pane {pane_id} input_policy={}", policy.label());
+    Ok(())
 }
 
 /// `tear status` — operator visibility into the daemon's health.
