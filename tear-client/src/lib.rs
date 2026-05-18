@@ -56,12 +56,17 @@ pub struct Client {
     socket_path: PathBuf,
 }
 
-/// Handle returned by [`Client::subscribe_pane_bytes`]. Dropping
-/// it disconnects the subscription connection (the daemon's serve
-/// thread observes the write error on the next chunk and prunes
-/// the dead sender).
+/// Handle returned by [`Client::subscribe_pane_bytes`] and
+/// [`Client::subscribe_config_change`]. Dropping it disconnects the
+/// subscription connection (the daemon's serve thread observes the
+/// read/write error on the next chunk and prunes the dead sender).
 pub struct SubscribeHandle {
     stop: Arc<AtomicBool>,
+    /// Owned half of the subscription socket — kept here so
+    /// [`signal_and_join`] can call `shutdown(Both)` and unblock the
+    /// reader thread, which is otherwise stuck in `read_msg`
+    /// (the `stop` AtomicBool only fires *between* reads).
+    socket: UnixStream,
     join: Option<thread::JoinHandle<()>>,
 }
 
@@ -74,6 +79,11 @@ impl SubscribeHandle {
 
     fn signal_and_join(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        // Slam the socket shut — this is the *load-bearing* step
+        // that unblocks the reader thread, which is otherwise in
+        // a blocking read on the BufReader<UnixStream> we cloned
+        // into it. Without this, j.join() deadlocks forever.
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -144,6 +154,13 @@ impl Client {
         // free for further RPCs.
         let stream = UnixStream::connect(&self.socket_path)
             .map_err(|e| ControlError::Transport(e.to_string()))?;
+        // `socket_for_handle` is held in the SubscribeHandle so
+        // Drop can `shutdown(Both)` and unblock the reader thread
+        // (which is otherwise blocked in `read_msg`, never
+        // observing the stop flag).
+        let socket_for_handle = stream
+            .try_clone()
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
         let reader_stream = stream
             .try_clone()
             .map_err(|e| ControlError::Transport(e.to_string()))?;
@@ -180,6 +197,83 @@ impl Client {
             .map_err(|e| ControlError::Transport(format!("spawn subscriber thread: {e}")))?;
         Ok(SubscribeHandle {
             stop,
+            socket: socket_for_handle,
+            join: Some(join),
+        })
+    }
+
+    /// Subscribe to live-config change events. Opens a fresh UDS
+    /// connection to the same daemon, sends
+    /// `Request::SubscribeConfigChange`, then spawns a reader
+    /// thread that calls `on_change` for every
+    /// `Response::ConfigChanged(yaml)` frame. The YAML is parsed
+    /// to a typed `TearConfig` before the callback fires —
+    /// consumers get an `Arc<TearConfig>` directly.
+    ///
+    /// Drives the "broadcast a config change to every attached
+    /// renderer" pattern: each mado instance subscribes once at
+    /// startup; when an operator runs `tear set-config` or edits
+    /// `~/.config/tear/tear.yaml`, every mado re-themes at the
+    /// same moment.
+    ///
+    /// The reader exits on parse failure (logs + drops), on EOF,
+    /// or when the returned [`SubscribeHandle`] is dropped. The
+    /// callback runs on the reader thread — keep it cheap and
+    /// non-blocking.
+    pub fn subscribe_config_change<F>(
+        &self,
+        mut on_change: F,
+    ) -> ControlResult<SubscribeHandle>
+    where
+        F: FnMut(Arc<tear_config::TearConfig>) + Send + 'static,
+    {
+        let stream = UnixStream::connect(&self.socket_path)
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let socket_for_handle = stream
+            .try_clone()
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let mut reader = BufReader::new(reader_stream);
+        let mut writer = BufWriter::new(stream);
+        write_msg(&mut writer, &Request::SubscribeConfigChange)
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let ack: Response = read_msg(&mut reader)
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        match ack {
+            Response::Ok => {}
+            Response::Err(we) => return Err(ControlError::from(we)),
+            other => {
+                return Err(ControlError::Transport(format!(
+                    "unexpected ack to SubscribeConfigChange: {other:?}"
+                )))
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let join = thread::Builder::new()
+            .name("tear-client-subscribe-config".into())
+            .spawn(move || {
+                while !stop_for_thread.load(Ordering::SeqCst) {
+                    match read_msg::<_, Response>(&mut reader) {
+                        Ok(Response::ConfigChanged(yaml)) => {
+                            match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
+                                Ok(cfg) => on_change(Arc::new(cfg)),
+                                Err(_) => return, // malformed payload, bail
+                            }
+                        }
+                        Ok(_) => return,
+                        Err(_) => return,
+                    }
+                }
+            })
+            .map_err(|e| {
+                ControlError::Transport(format!("spawn config subscriber thread: {e}"))
+            })?;
+        Ok(SubscribeHandle {
+            stop,
+            socket: socket_for_handle,
             join: Some(join),
         })
     }
@@ -993,5 +1087,169 @@ mod tests {
             Ok(_) => panic!("expected NotFound, daemon should be gone"),
             Err(e) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
         }
+    }
+
+    // ── #7 Config-change broadcast subscription ──────────────────
+
+    /// End-to-end: subscribe to config changes, then issue a
+    /// SetConfig RPC, and verify the subscriber thread receives
+    /// the new config with the override applied.
+    #[test]
+    fn subscribe_config_change_fires_on_set_config() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-config-sub-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let live = Arc::new(tear_config::LiveConfig::default());
+        let daemon = tear_daemon::start_with_config(
+            socket.clone(),
+            inproc,
+            live,
+        )
+        .expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let client = Client::connect(&socket).expect("connect");
+        let (tx, rx) = std::sync::mpsc::channel::<Arc<tear_config::TearConfig>>();
+        let _handle = client
+            .subscribe_config_change(move |cfg| {
+                let _ = tx.send(cfg);
+            })
+            .expect("subscribe");
+
+        // Give the daemon a moment to register the subscriber.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Push a new config — the subscriber should see it.
+        let mut new_cfg = tear_config::TearConfig::default();
+        new_cfg.prefix = "C-broadcast-test".into();
+        client.set_config(&new_cfg).expect("set_config");
+
+        let received = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("subscriber should receive change");
+        assert_eq!(received.prefix, "C-broadcast-test");
+
+        daemon.stop();
+    }
+
+    /// Two concurrent config-change subscribers each get every
+    /// frame — broadcast fan-out works.
+    #[test]
+    fn two_config_change_subscribers_each_receive_every_swap() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-config-fanout-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let live = Arc::new(tear_config::LiveConfig::default());
+        let daemon = tear_daemon::start_with_config(
+            socket.clone(),
+            inproc,
+            live,
+        )
+        .expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let client = Client::connect(&socket).expect("connect");
+        let (tx_a, rx_a) = std::sync::mpsc::channel();
+        let (tx_b, rx_b) = std::sync::mpsc::channel();
+        let _ha = client
+            .subscribe_config_change(move |cfg| {
+                let _ = tx_a.send(cfg.prefix.clone());
+            })
+            .expect("sub A");
+        let _hb = client
+            .subscribe_config_change(move |cfg| {
+                let _ = tx_b.send(cfg.prefix.clone());
+            })
+            .expect("sub B");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Push two distinct configs in quick succession.
+        for prefix in ["C-fan-1", "C-fan-2"] {
+            let mut cfg = tear_config::TearConfig::default();
+            cfg.prefix = prefix.into();
+            client.set_config(&cfg).expect("set_config");
+        }
+
+        let collect = |rx: &std::sync::mpsc::Receiver<String>| {
+            let mut got = Vec::new();
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(2);
+            while got.len() < 2 && std::time::Instant::now() < deadline {
+                if let Ok(p) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    got.push(p);
+                }
+            }
+            got
+        };
+        let got_a = collect(&rx_a);
+        let got_b = collect(&rx_b);
+        assert_eq!(got_a, vec!["C-fan-1", "C-fan-2"], "subscriber A");
+        assert_eq!(got_b, vec!["C-fan-1", "C-fan-2"], "subscriber B");
+        daemon.stop();
+    }
+
+    /// Dropping the SubscribeHandle severs the connection — the
+    /// daemon prunes the dead sender on the next broadcast, and
+    /// the subscriber's callback stops firing.
+    #[test]
+    fn dropping_subscribe_handle_stops_callbacks() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-config-drop-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let live = Arc::new(tear_config::LiveConfig::default());
+        let daemon = tear_daemon::start_with_config(
+            socket.clone(),
+            inproc,
+            live,
+        )
+        .expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let client = Client::connect(&socket).expect("connect");
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let handle = client
+            .subscribe_config_change(move |cfg| {
+                let _ = tx.send(cfg.prefix.clone());
+            })
+            .expect("subscribe");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Verify the first push works.
+        let mut cfg = tear_config::TearConfig::default();
+        cfg.prefix = "C-before-drop".into();
+        client.set_config(&cfg).expect("set 1");
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(1)).expect("first frame");
+
+        // Drop the handle; subsequent frames must NOT arrive.
+        handle.stop();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let mut cfg = tear_config::TearConfig::default();
+        cfg.prefix = "C-after-drop".into();
+        client.set_config(&cfg).expect("set 2");
+        // Either Timeout (channel still open but no frame) OR
+        // Disconnected (the reader thread exited on socket
+        // shutdown, dropping the closure's tx) is a valid "no
+        // frame after drop" outcome. The only failure is a
+        // successful Ok(...) — that would mean the subscription
+        // is still live after stop().
+        match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+            Ok(s) => panic!("got a frame after drop: {s}"),
+        }
+        daemon.stop();
     }
 }

@@ -46,7 +46,8 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -288,15 +289,29 @@ pub fn load_or_default() -> Arc<TearConfig> {
 /// Lock-free, hot-reloadable handle to the live config. Cheap clone
 /// (Arc bump). Readers call [`Self::load`] to get an `Arc<TearConfig>`
 /// they can hold across a frame.
+///
+/// Also supports change-broadcast subscriptions —
+/// [`Self::subscribe`] returns a receiver that gets one frame on
+/// every `replace()` (which includes notify-driven reloads + manual
+/// `SetConfig` RPCs + explicit `reload()`s). The pleme-io fleet uses
+/// this to push theme/keybind changes to every attached mado at the
+/// same moment, broadcast-style.
 #[derive(Clone)]
 pub struct LiveConfig {
     inner: Arc<ArcSwap<TearConfig>>,
+    /// Per-subscriber senders. Cloning a LiveConfig clones the Arc
+    /// (so daemon + watcher + RPC handlers see the same subscriber
+    /// list). Mutex<Vec<Sender>> is enough — fan-out is rare (only
+    /// on config replace) and the lock is held only for the
+    /// fan-out loop.
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<Arc<TearConfig>>>>>,
 }
 
 impl Default for LiveConfig {
     fn default() -> Self {
         Self {
             inner: Arc::new(ArcSwap::from(load_or_default())),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -308,10 +323,34 @@ impl LiveConfig {
         self.inner.load_full()
     }
 
-    /// Replace the current config atomically. Logs the swap.
+    /// Register a config-change subscriber. Returns the receiver
+    /// end of an mpsc channel; every successful `replace()` (and
+    /// every successful `reload()` / `SetConfig` RPC) sends one
+    /// frame on the corresponding sender. Drop the receiver to
+    /// unsubscribe — the next broadcast prunes the dead sender.
+    pub fn subscribe(&self) -> mpsc::Receiver<Arc<TearConfig>> {
+        let (tx, rx) = mpsc::channel();
+        self.subscribers.lock().expect("subscribers poisoned").push(tx);
+        rx
+    }
+
+    /// Replace the current config atomically. Logs the swap and
+    /// fans out to every change subscriber. Dead senders are
+    /// pruned in place (same shape as InProcess pane-byte
+    /// broadcast).
     pub fn replace(&self, cfg: TearConfig) {
         info!("tear-config: applying new config");
-        self.inner.store(Arc::new(cfg));
+        let new_arc = Arc::new(cfg);
+        self.inner.store(new_arc.clone());
+        let mut subs = self.subscribers.lock().expect("subscribers poisoned");
+        let mut i = 0;
+        while i < subs.len() {
+            if subs[i].send(new_arc.clone()).is_err() {
+                subs.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Reload from the canonical path. Logs success/failure; on

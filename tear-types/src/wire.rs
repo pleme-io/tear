@@ -120,6 +120,17 @@ pub enum Request {
     /// config when it's the front-end). Daemon-side config file
     /// on disk is NOT touched; the next reload reverts.
     SetConfig(String),
+    /// Promote this connection to a config-change subscription.
+    /// The daemon responds with `Response::Ok` then emits one
+    /// `Response::ConfigChanged(yaml)` frame every time the live
+    /// config is replaced (by `Request::SetConfig`, by a
+    /// `LiveConfig.reload()`, or by the notify-driven watcher
+    /// catching a file change). Connection is consumed — no
+    /// further Requests are accepted on it. Lets every attached
+    /// renderer react to a theme/keybind change at the same
+    /// moment, broadcast-style: typed config hot-reload to every
+    /// connected client.
+    SubscribeConfigChange,
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always
@@ -156,6 +167,13 @@ pub enum Response {
     /// avoids the cycle tear-types ↔ tear-config and keeps the
     /// daemon's config inspectable with any text tool.
     ConfigYaml(String),
+    /// Pushed by the daemon on every live-config replace, to
+    /// every connection that issued `Request::SubscribeConfigChange`.
+    /// Payload is the new config as YAML — same shape as
+    /// `Response::ConfigYaml`. The first frame after subscription
+    /// is `Response::Ok`; subsequent frames are `ConfigChanged`
+    /// until the connection is dropped.
+    ConfigChanged(String),
     Ok,
     Err(WireError),
 }

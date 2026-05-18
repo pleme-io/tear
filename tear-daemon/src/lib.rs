@@ -245,6 +245,11 @@ pub fn serve_connection<S: io::Read + io::Write>(
         if let Request::Subscribe(pane) = req {
             return serve_subscription(stream, inproc, pane);
         }
+        // SubscribeConfigChange is the same shape — promote to
+        // push mode and stream Response::ConfigChanged frames.
+        if matches!(req, Request::SubscribeConfigChange) {
+            return serve_config_subscription(stream, config);
+        }
         let resp = dispatch_with_config(&inproc, &config, req);
         write_msg(&mut stream, &resp)?;
     }
@@ -287,6 +292,36 @@ fn serve_subscription<S: io::Read + io::Write>(
                 let _ = write_msg(&mut stream, &Response::PaneClosed(pane));
                 return Ok(());
             }
+        }
+    }
+}
+
+/// Push-mode handler for `Request::SubscribeConfigChange`. Writes
+/// `Response::Ok` then a stream of `Response::ConfigChanged(yaml)`
+/// frames every time `LiveConfig::replace` runs (notify-driven
+/// reload, manual `SetConfig` RPC, or explicit `reload()`).
+/// Terminates with a plain close on peer disconnect or YAML
+/// serialisation failure.
+fn serve_config_subscription<S: io::Read + io::Write>(
+    mut stream: S,
+    config: Arc<LiveConfig>,
+) -> io::Result<()> {
+    let rx = config.subscribe();
+    write_msg(&mut stream, &Response::Ok)?;
+    loop {
+        match rx.recv() {
+            Ok(new_cfg) => {
+                let yaml = match serde_yaml_ng::to_string(&*new_cfg) {
+                    Ok(y) => y,
+                    Err(_) => continue, // skip un-serialisable frames
+                };
+                if write_msg(&mut stream, &Response::ConfigChanged(yaml)).is_err() {
+                    return Ok(());
+                }
+            }
+            // All senders dropped → LiveConfig is gone (unusual,
+            // happens only at daemon shutdown). Close the stream.
+            Err(_) => return Ok(()),
         }
     }
 }
@@ -348,6 +383,13 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
                     .into(),
             ))
         }
+        // SubscribeConfigChange is handled in serve_connection BEFORE
+        // dispatch; reaching this arm means someone called dispatch
+        // directly with it — programmer error.
+        Request::SubscribeConfigChange => Response::Err(WireError::Rejected(
+            "SubscribeConfigChange must be handled by serve_connection (push mode), not dispatch"
+                .into(),
+        )),
     }
 }
 
