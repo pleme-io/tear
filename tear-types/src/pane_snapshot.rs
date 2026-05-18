@@ -186,6 +186,19 @@ pub struct PaneSnapshot {
     /// suppress scrollback rendering when alt-screen is on.
     #[serde(default)]
     pub alt_screen_active: bool,
+    /// Cursor visibility (DEC mode 25). When false, renderers
+    /// should not draw the cursor cell. Defaults to true (cursor
+    /// shows by default per xterm semantics).
+    #[serde(default = "default_true")]
+    pub cursor_visible: bool,
+    /// Window/tab title set via OSC 0 / OSC 2. None until first
+    /// title set; clears to None on RIS.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PaneSnapshot {

@@ -80,6 +80,15 @@ struct GridState {
     scroll_bottom: usize,
     /// 16-color palette for SGR 30-37 / 40-47 / 90-97 / 100-107.
     palette: [Color; 16],
+    /// Insert/Replace mode (IRM — CSI 4 h/l). When true, print
+    /// shifts existing cells to the right before placement.
+    insert_mode: bool,
+    /// Cursor visibility (DEC mode 25 — CSI ? 25 h/l). False hides.
+    cursor_visible: bool,
+    /// Last printed char — REP (CSI b) repeats this.
+    last_printed: Option<char>,
+    /// Window / tab title (OSC 0 / OSC 2).
+    title: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -111,6 +120,10 @@ impl GridState {
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
             palette: default_ansi_palette(),
+            insert_mode: false,
+            cursor_visible: true,
+            last_printed: None,
+            title: None,
         }
     }
 
@@ -463,9 +476,20 @@ impl Perform for GridState {
         let cell = self.current_cell_for_print(c);
         let row = self.cursor_row;
         let col = self.cursor_col;
-        if let Some(slot) = self.active_cell_mut(row, col) {
+        if self.insert_mode {
+            // IRM: shift cells in the current row right starting at
+            // cursor; drop the last cell to make room.
+            let cols = self.cols;
+            if let Some(r) = self.active_row_mut(row) {
+                if col < r.len() {
+                    r.insert(col, cell);
+                    r.truncate(cols);
+                }
+            }
+        } else if let Some(slot) = self.active_cell_mut(row, col) {
             *slot = cell;
         }
+        self.last_printed = Some(c);
         self.advance_cursor_after_print();
     }
 
@@ -555,6 +579,117 @@ impl Perform for GridState {
                 2 => self.erase_line(),
                 _ => {}
             },
+            'L' => {
+                // IL — Insert Line. Inserts N blank lines at cursor;
+                // pushes lines below down (and off the bottom of region).
+                let blank = vec![self.blank_cell(); self.cols];
+                let row = self.cursor_row;
+                for _ in 0..n {
+                    if self.alt_active {
+                        if row < self.alternate.len() && row <= self.scroll_bottom {
+                            self.alternate.insert(row, blank.clone());
+                            if self.scroll_bottom + 1 < self.alternate.len() {
+                                self.alternate.remove(self.scroll_bottom + 1);
+                            }
+                        }
+                    } else if row < self.primary.len() && row <= self.scroll_bottom {
+                        self.primary.insert(row, blank.clone());
+                        if self.scroll_bottom + 1 < self.primary.len() {
+                            self.primary.remove(self.scroll_bottom + 1);
+                        }
+                    }
+                }
+            }
+            'M' => {
+                // DL — Delete Line. Removes N lines at cursor; pulls
+                // lines below up; pads with blanks at region bottom.
+                let blank = vec![self.blank_cell(); self.cols];
+                let row = self.cursor_row;
+                for _ in 0..n {
+                    if self.alt_active {
+                        if row < self.alternate.len() && row <= self.scroll_bottom {
+                            self.alternate.remove(row);
+                            let insert_at = (self.scroll_bottom).min(self.alternate.len());
+                            self.alternate.insert(insert_at, blank.clone());
+                        }
+                    } else if row < self.primary.len() && row <= self.scroll_bottom {
+                        self.primary.remove(row);
+                        let insert_at = (self.scroll_bottom).min(self.primary.len());
+                        self.primary.insert(insert_at, blank.clone());
+                    }
+                }
+            }
+            '@' => {
+                // ICH — Insert N blank cells at cursor; shifts right.
+                let blank = self.blank_cell();
+                let row = self.cursor_row;
+                let col = self.cursor_col;
+                let cols = self.cols;
+                if let Some(r) = self.active_row_mut(row) {
+                    for _ in 0..n {
+                        if col < r.len() {
+                            r.insert(col, blank);
+                            r.truncate(cols);
+                        }
+                    }
+                }
+            }
+            'P' => {
+                // DCH — Delete N cells at cursor; pulls remainder of row left.
+                let blank = self.blank_cell();
+                let row = self.cursor_row;
+                let col = self.cursor_col;
+                let cols = self.cols;
+                if let Some(r) = self.active_row_mut(row) {
+                    for _ in 0..n {
+                        if col < r.len() {
+                            r.remove(col);
+                            r.push(blank);
+                            if r.len() > cols {
+                                r.truncate(cols);
+                            }
+                        }
+                    }
+                }
+            }
+            'X' => {
+                // ECH — Erase N cells at cursor in place (no shift).
+                let blank = self.blank_cell();
+                let row = self.cursor_row;
+                let col = self.cursor_col;
+                let n_usize = n as usize;
+                if let Some(r) = self.active_row_mut(row) {
+                    for i in 0..n_usize {
+                        if col + i < r.len() {
+                            r[col + i] = blank;
+                        }
+                    }
+                }
+            }
+            'b' => {
+                // REP — Repeat last printed char N times.
+                if let Some(c) = self.last_printed {
+                    for _ in 0..n {
+                        Perform::print(self, c);
+                    }
+                }
+            }
+            'h' => {
+                // SM — set mode. Currently support IRM (4).
+                for p in params.iter() {
+                    if p.first().copied() == Some(4) {
+                        self.insert_mode = true;
+                    }
+                }
+            }
+            'l' => {
+                // RM — reset mode. Currently support IRM (4).
+                for p in params.iter() {
+                    if p.first().copied() == Some(4) {
+                        self.insert_mode = false;
+                    }
+                }
+            }
             'S' => {
                 for _ in 0..n {
                     self.scroll_region_up();
@@ -608,6 +743,17 @@ impl Perform for GridState {
             's' => self.save_cursor(),
             'u' => self.restore_cursor(),
             _ => {}
+        }
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // OSC 0 / 1 / 2 — set window/icon title. We treat them
+        // identically: title is the second param decoded as UTF-8.
+        let code = params.first().and_then(|p| std::str::from_utf8(p).ok());
+        if matches!(code, Some("0") | Some("1") | Some("2")) {
+            if let Some(t) = params.get(1).and_then(|p| std::str::from_utf8(p).ok()) {
+                self.title = Some(t.to_owned());
+            }
         }
     }
 
@@ -689,7 +835,8 @@ impl GridState {
                     self.restore_cursor();
                 }
             }
-            _ => {} // Other DEC modes (cursor visibility, autowrap, etc.) — out of MVP scope.
+            25 => self.cursor_visible = set, // DECTCEM
+            _ => {} // Autowrap, bracketed-paste, mouse modes etc. land later.
         }
     }
 }
@@ -722,7 +869,16 @@ impl PaneGrid {
             cursor_row: self.state.cursor_row,
             cursor_col: self.state.cursor_col,
             alt_screen_active: self.state.alt_active,
+            cursor_visible: self.state.cursor_visible,
+            title: self.state.title.clone(),
         }
+    }
+
+    /// Current window title (OSC 0 / 2). None until the first
+    /// title set; cleared on RIS.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.state.title.as_deref()
     }
 
     /// Number of scrollback rows that have rolled off the primary
@@ -917,6 +1073,107 @@ mod tests {
         let rows = snap.to_text_rows();
         assert_eq!(rows[0], "hi   ");
         assert_eq!(rows[1], "bye  ");
+    }
+
+    #[test]
+    fn osc_2_sets_window_title() {
+        let mut g = PaneGrid::new(10, 1);
+        g.feed(b"\x1b]2;hello world\x07");
+        assert_eq!(g.title(), Some("hello world"));
+        let snap = g.snapshot();
+        assert_eq!(snap.title.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn dec_25_hides_cursor() {
+        let mut g = PaneGrid::new(10, 1);
+        let snap_before = g.snapshot();
+        assert!(snap_before.cursor_visible);
+        g.feed(b"\x1b[?25l");
+        let snap_hidden = g.snapshot();
+        assert!(!snap_hidden.cursor_visible);
+        g.feed(b"\x1b[?25h");
+        let snap_back = g.snapshot();
+        assert!(snap_back.cursor_visible);
+    }
+
+    #[test]
+    fn ich_inserts_cells_and_shifts_right() {
+        let mut g = PaneGrid::new(6, 1);
+        g.feed(b"abcdef");
+        g.feed(b"\x1b[1;1H"); // cursor to (0,0)
+        g.feed(b"\x1b[2@"); // ICH 2 — insert 2 blanks at cursor
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, ' ');
+        assert_eq!(snap.cells[0][1].ch, ' ');
+        assert_eq!(snap.cells[0][2].ch, 'a');
+        assert_eq!(snap.cells[0][3].ch, 'b');
+    }
+
+    #[test]
+    fn dch_deletes_cells_and_shifts_left() {
+        let mut g = PaneGrid::new(6, 1);
+        g.feed(b"abcdef");
+        g.feed(b"\x1b[1;2H"); // cursor to (0,1) — on 'b'
+        g.feed(b"\x1b[2P"); // DCH 2
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'a');
+        assert_eq!(snap.cells[0][1].ch, 'd');
+        assert_eq!(snap.cells[0][2].ch, 'e');
+        assert_eq!(snap.cells[0][3].ch, 'f');
+    }
+
+    #[test]
+    fn ech_erases_in_place() {
+        let mut g = PaneGrid::new(6, 1);
+        g.feed(b"abcdef");
+        g.feed(b"\x1b[1;2H");
+        g.feed(b"\x1b[2X"); // ECH 2 — erase 2 cells in place
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'a');
+        assert_eq!(snap.cells[0][1].ch, ' ');
+        assert_eq!(snap.cells[0][2].ch, ' ');
+        assert_eq!(snap.cells[0][3].ch, 'd');
+    }
+
+    #[test]
+    fn il_dl_insert_delete_line() {
+        let mut g = PaneGrid::new(3, 4);
+        g.feed(b"AAA\r\nBBB\r\nCCC\r\nDDD");
+        g.feed(b"\x1b[2;1H"); // cursor to row 2
+        g.feed(b"\x1b[1L"); // IL 1 — insert blank line above
+        let snap1 = g.snapshot();
+        // After IL: row 0 unchanged (AAA), row 1 blank, then BBB, CCC.
+        // DDD pushed off the bottom of region.
+        assert_eq!(snap1.cells[0][0].ch, 'A');
+        assert_eq!(snap1.cells[1][0].ch, ' ');
+        assert_eq!(snap1.cells[2][0].ch, 'B');
+        // DL the inserted blank.
+        g.feed(b"\x1b[1M"); // DL 1
+        let snap2 = g.snapshot();
+        assert_eq!(snap2.cells[1][0].ch, 'B');
+    }
+
+    #[test]
+    fn rep_repeats_last_printable_char() {
+        let mut g = PaneGrid::new(10, 1);
+        g.feed(b"X\x1b[5b"); // print X, then REP 5
+        let snap = g.snapshot();
+        for c in 0..6 {
+            assert_eq!(snap.cells[0][c].ch, 'X', "col {c}");
+        }
+    }
+
+    #[test]
+    fn irm_inserts_on_print() {
+        let mut g = PaneGrid::new(6, 1);
+        g.feed(b"abcdef");
+        g.feed(b"\x1b[1;1H"); // cursor home
+        g.feed(b"\x1b[4hZ"); // SM 4 (IRM on), then print Z
+        let snap = g.snapshot();
+        assert_eq!(snap.cells[0][0].ch, 'Z');
+        assert_eq!(snap.cells[0][1].ch, 'a');
+        assert_eq!(snap.cells[0][2].ch, 'b');
     }
 
     #[test]
