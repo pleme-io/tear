@@ -354,6 +354,13 @@ impl MultiplexerControl for Client {
             other => Err(unexpected("PaneSnapshot", other)),
         }
     }
+
+    fn pane_resize_absolute(&self, id: PaneId, cols: u16, rows: u16) -> ControlResult<()> {
+        match self.rpc(Request::PaneResizeAbsolute { id, cols, rows })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
 }
 
 /// Daemon broke the contract — wrong response variant for a given
@@ -559,6 +566,112 @@ mod tests {
 
         handle.stop();
         drop(client);
+        daemon.stop();
+    }
+
+    /// Two concurrent subscribers to the same pane each receive the
+    /// full byte stream — the daemon fans out on every PTY chunk,
+    /// not just to the first registrant.
+    #[test]
+    fn two_subscribers_each_receive_pane_bytes() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-fanout-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start(socket.clone(), inproc).expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let client = Client::connect(&socket).expect("connect");
+        let sid = client.new_session("fanout", "/bin/sh").unwrap();
+        let pane_id = *client
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+
+        let (tx_a, rx_a) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx_b, rx_b) = std::sync::mpsc::channel::<Vec<u8>>();
+        let _h_a = client
+            .subscribe_pane_bytes(pane_id, move |b| {
+                let _ = tx_a.send(b.to_vec());
+            })
+            .expect("sub A");
+        let _h_b = client
+            .subscribe_pane_bytes(pane_id, move |b| {
+                let _ = tx_b.send(b.to_vec());
+            })
+            .expect("sub B");
+
+        let marker = "FANOUT_DUAL_MARK_3902";
+        client
+            .send_keys(pane_id, format!("printf '{marker}\\n'\n").as_bytes())
+            .unwrap();
+
+        // Each subscriber should accumulate the marker independently.
+        let collect = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+            let mut acc = Vec::new();
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Ok(c) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    acc.extend(c);
+                    if std::str::from_utf8(&acc)
+                        .map(|s| s.contains(marker))
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                }
+            }
+            acc
+        };
+        let got_a = collect(&rx_a);
+        let got_b = collect(&rx_b);
+        let text_a = String::from_utf8_lossy(&got_a).to_string();
+        let text_b = String::from_utf8_lossy(&got_b).to_string();
+        assert!(text_a.contains(marker), "subscriber A missed marker:\n{text_a}");
+        assert!(text_b.contains(marker), "subscriber B missed marker:\n{text_b}");
+        daemon.stop();
+    }
+
+    /// pane_resize_absolute via the wire flips snapshot dimensions
+    /// on the next snapshot, AND survives a follow-up subscribe.
+    #[test]
+    fn pane_resize_absolute_propagates_to_snapshot() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-resize-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start(socket.clone(), inproc).expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let client = Client::connect(&socket).expect("connect");
+        let sid = client.new_session("resize", "/bin/sh").unwrap();
+        let pane_id = *client
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+
+        // Default is 80x24 — confirm.
+        let initial = client.pane_snapshot(pane_id).unwrap();
+        assert_eq!(initial.cols, 80);
+        assert_eq!(initial.rows, 24);
+
+        // Resize to 120x40.
+        client.pane_resize_absolute(pane_id, 120, 40).unwrap();
+        let after = client.pane_snapshot(pane_id).unwrap();
+        assert_eq!(after.cols, 120);
+        assert_eq!(after.rows, 40);
         daemon.stop();
     }
 

@@ -91,6 +91,14 @@ pub enum Request {
     /// — no further Requests are accepted on it. Use a fresh
     /// connection for control-plane work.
     Subscribe(PaneId),
+    /// Set the pane's PTY to an absolute size. Fires SIGWINCH at
+    /// the child shell. Used by GPU consumers (mado at Phase 3.1)
+    /// when their window resizes.
+    PaneResizeAbsolute {
+        id: PaneId,
+        cols: u16,
+        rows: u16,
+    },
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always

@@ -426,6 +426,37 @@ impl MultiplexerControl for InProcess {
     fn pane_snapshot(&self, id: PaneId) -> ControlResult<tear_types::PaneSnapshot> {
         InProcess::pane_snapshot(self, id)
     }
+
+    /// Phase-3.1 override — resize the underlying PTY (fires
+    /// SIGWINCH at the child) AND resize the per-pane PaneGrid
+    /// so subsequent snapshots reflect the new geometry.
+    fn pane_resize_absolute(
+        &self,
+        id: PaneId,
+        cols: u16,
+        rows: u16,
+    ) -> ControlResult<()> {
+        use portable_pty::PtySize;
+        let pty_size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        // Resize the PTY (delivers SIGWINCH to child).
+        {
+            let ptys = self.ptys.lock();
+            let pty = ptys.get(&id).ok_or(ControlError::NoSuchPane(id))?;
+            pty.resize(pty_size)
+                .map_err(|e| ControlError::Internal(anyhow::anyhow!(e)))?;
+        }
+        // Resize the parser-backed grid so subsequent snapshots
+        // honour the new geometry.
+        if let Some(grid) = self.grids.lock().get(&id).cloned() {
+            grid.lock().resize(cols as usize, rows as usize);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

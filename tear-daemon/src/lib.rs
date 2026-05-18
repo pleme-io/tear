@@ -264,6 +264,9 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         }
         Request::SendKeys { id, bytes } => map_unit(inproc.send_keys(id, &bytes)),
         Request::PaneSnapshot(id) => map_result(inproc.pane_snapshot(id), Response::PaneSnapshot),
+        Request::PaneResizeAbsolute { id, cols, rows } => {
+            map_unit(inproc.pane_resize_absolute(id, cols, rows))
+        }
         // Subscribe is handled in serve_connection BEFORE dispatch;
         // reaching this arm means someone called dispatch directly
         // with Subscribe — programmer error.

@@ -117,6 +117,22 @@ pub trait MultiplexerControl: Send + Sync {
     /// shrinks. tmux's `resize-pane -L/-R/-U/-D`.
     fn resize_pane(&self, id: PaneId, direction: Direction, delta_cells: i16) -> ControlResult<()>;
 
+    /// Set a pane's PTY size to an absolute `(cols, rows)`. Used by
+    /// GPU consumers (mado at Phase 3.1) when the window the pane
+    /// is rendered in resizes — the multiplexer must SIGWINCH the
+    /// child shell so TUI apps re-layout. Distinct from
+    /// [`Self::resize_pane`] which is the tmux-style delta-on-an-axis
+    /// op for keyboard-driven splits.
+    ///
+    /// Default impl returns `Rejected` so passthrough backends
+    /// (tear-tmux-backend) can opt out.
+    fn pane_resize_absolute(&self, id: PaneId, cols: u16, rows: u16) -> ControlResult<()> {
+        let _ = (id, cols, rows);
+        Err(ControlError::Rejected(
+            "this backend does not support absolute pane resize".into(),
+        ))
+    }
+
     /// Send keystrokes (already-bytes-encoded — caller resolved the
     /// chord) to a pane's PTY.
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()>;

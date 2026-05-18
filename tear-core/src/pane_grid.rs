@@ -1175,4 +1175,128 @@ mod tests {
         assert_eq!(snap.cells[0][0].ch, ' ');
         assert_eq!(snap.cells[1][0].ch, 'a');
     }
+
+    #[test]
+    fn resize_preserves_top_left_content() {
+        let mut g = PaneGrid::new(5, 3);
+        g.feed(b"HELLO\r\nWORLD\r\nTHERE");
+        // Shrink to 4x2 — top-left HELLO[0..4] + WORLD[0..4] survive.
+        g.resize(4, 2);
+        let snap = g.snapshot();
+        assert_eq!(snap.cols, 4);
+        assert_eq!(snap.rows, 2);
+        assert_eq!(snap.cells[0][0].ch, 'H');
+        assert_eq!(snap.cells[0][3].ch, 'L');
+        assert_eq!(snap.cells[1][0].ch, 'W');
+        // Cursor was at (2, 5) before shrink — should clamp to (1, 3).
+        assert_eq!(snap.cursor_row, 1);
+        assert_eq!(snap.cursor_col, 3);
+    }
+
+    #[test]
+    fn resize_grow_pads_with_blanks() {
+        let mut g = PaneGrid::new(3, 2);
+        g.feed(b"AB\r\nCD");
+        g.resize(5, 4);
+        let snap = g.snapshot();
+        assert_eq!(snap.cols, 5);
+        assert_eq!(snap.rows, 4);
+        assert_eq!(snap.cells[0][0].ch, 'A');
+        assert_eq!(snap.cells[0][3].ch, ' ');
+        assert_eq!(snap.cells[2][0].ch, ' ');
+    }
+
+    #[test]
+    fn scrollback_caps_at_configured_size() {
+        let mut g = PaneGrid::with_scrollback(3, 2, 3);
+        // Push 10 lines through; scrollback should cap at 3.
+        for i in 0..10u8 {
+            g.feed(&[b'a' + i, b'\r', b'\n']);
+        }
+        assert!(g.scrollback_len() <= 3);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No matter what bytes we feed (printable, control, malformed
+        /// escapes, anything), PaneGrid never panics + the cursor stays
+        /// inside the grid + the snapshot has the right dimensions.
+        #[test]
+        fn random_bytes_never_panic_and_cursor_stays_in_bounds(
+            cols in 1usize..=80,
+            rows in 1usize..=24,
+            bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+        ) {
+            let mut g = PaneGrid::new(cols, rows);
+            g.feed(&bytes);
+            let snap = g.snapshot();
+            prop_assert_eq!(snap.cols, cols);
+            prop_assert_eq!(snap.rows, rows);
+            prop_assert_eq!(snap.cells.len(), rows);
+            for row in &snap.cells {
+                prop_assert_eq!(row.len(), cols);
+            }
+            prop_assert!(snap.cursor_row < rows.max(1));
+            prop_assert!(snap.cursor_col < cols.max(1));
+        }
+
+        /// Plain ASCII printable runs advance the cursor by exactly
+        /// `min(len, capacity)` cells, accounting for wrap.
+        #[test]
+        fn printable_ascii_runs_fill_cells_in_order(
+            text in r"[A-Za-z0-9 ]{1,40}",
+        ) {
+            let mut g = PaneGrid::new(40, 3);
+            g.feed(text.as_bytes());
+            let snap = g.snapshot();
+            for (i, c) in text.chars().enumerate() {
+                if i < snap.cols {
+                    prop_assert_eq!(snap.cells[0][i].ch, c);
+                }
+            }
+        }
+
+        /// Snapshot text dimensions always match snapshot.cols × rows.
+        #[test]
+        fn snapshot_text_dimensions_match(
+            cols in 1usize..=120,
+            rows in 1usize..=40,
+            bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+        ) {
+            let mut g = PaneGrid::new(cols, rows);
+            g.feed(&bytes);
+            let snap = g.snapshot();
+            let text_rows = snap.to_text_rows();
+            prop_assert_eq!(text_rows.len(), rows);
+            for row in &text_rows {
+                // chars().count() because some control codes (BEL etc.)
+                // never reach print so the rows stay exactly cols wide.
+                prop_assert_eq!(row.chars().count(), cols);
+            }
+        }
+
+        /// Resize never panics + cursor is in bounds afterwards.
+        #[test]
+        fn resize_keeps_cursor_in_bounds(
+            cols1 in 1usize..=60,
+            rows1 in 1usize..=20,
+            cols2 in 1usize..=60,
+            rows2 in 1usize..=20,
+            bytes in proptest::collection::vec(any::<u8>(), 0..512),
+        ) {
+            let mut g = PaneGrid::new(cols1, rows1);
+            g.feed(&bytes);
+            g.resize(cols2, rows2);
+            let snap = g.snapshot();
+            prop_assert_eq!(snap.cols, cols2);
+            prop_assert_eq!(snap.rows, rows2);
+            prop_assert!(snap.cursor_row < rows2.max(1));
+            prop_assert!(snap.cursor_col < cols2.max(1));
+        }
+    }
 }

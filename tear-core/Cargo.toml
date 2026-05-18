@@ -23,3 +23,6 @@ portable-pty = { workspace = true }
 once_cell = { workspace = true }
 blake3 = { workspace = true }
 vte = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
