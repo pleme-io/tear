@@ -291,6 +291,96 @@ fn replay_ignores_input_rows() {
     assert!(stdout.contains("output"), "got: {stdout}");
 }
 
+#[test]
+fn replay_silently_skips_malformed_rows() {
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    let cast = r#"{"version":2,"width":80,"height":24}
+this is not json
+[0.0,"o","good"]
+[0.0,"o","also good"]
+not json again
+"#;
+    tmp.write_all(cast.as_bytes()).unwrap();
+    tmp.flush().unwrap();
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let out = std::process::Command::new(bin)
+        .args(["replay"])
+        .arg(tmp.path())
+        .args(["--max-delay-ms", "1"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "goodalso good");
+}
+
+#[test]
+fn replay_handles_missing_file_with_clear_error() {
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let out = std::process::Command::new(bin)
+        .args(["replay", "/tmp/this-cast-does-not-exist-tear-test.cast"])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("does-not-exist") || stderr.contains("No such file"),
+        "expected file-not-found message, got: {stderr}"
+    );
+}
+
+#[test]
+fn replay_handles_empty_file_as_success() {
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.write_all(b"").unwrap();
+    tmp.flush().unwrap();
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let out = std::process::Command::new(bin)
+        .args(["replay"])
+        .arg(tmp.path())
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn replay_high_speed_does_not_introduce_noticeable_latency() {
+    use std::io::Write;
+    use std::time::Instant;
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    // 1 second between rows; --speed 1000 + --max-delay-ms 0 must
+    // both squash this to ~no delay.
+    let cast = r#"{"version":2}
+[0.0,"o","a"]
+[1.0,"o","b"]
+"#;
+    tmp.write_all(cast.as_bytes()).unwrap();
+    tmp.flush().unwrap();
+    let bin = env!("CARGO_BIN_EXE_tear");
+    let start = Instant::now();
+    let out = std::process::Command::new(bin)
+        .args(["replay"])
+        .arg(tmp.path())
+        .args(["--speed", "1000", "--max-delay-ms", "0"])
+        .output()
+        .expect("spawn");
+    let elapsed = start.elapsed();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "ab");
+    // Generous bound — we just want to assert "did not actually
+    // sleep ~1 second". A 500ms ceiling absorbs process startup +
+    // CI jitter.
+    assert!(
+        elapsed.as_millis() < 500,
+        "replay took {}ms; --speed/--max-delay-ms should have squashed the delay",
+        elapsed.as_millis()
+    );
+}
+
 // ── #2 Leader input policy ──────────────────────────────────────────
 
 #[test]
@@ -499,6 +589,34 @@ fn migrate_shell_snippet_emits_exports() {
         !stdout.contains("hint:"),
         "snippet output should be silent: {stdout}"
     );
+}
+
+#[test]
+fn migrate_shell_snippet_escapes_single_quotes_safely() {
+    let h = DaemonHarness::new("migrate-snippet-quote");
+    let dangerous_name = "it's; rm -rf";
+    let (stdout, _, code) =
+        h.run(&["migrate", "--name", dangerous_name, "--shell-snippet"]);
+    assert_eq!(code, 0);
+    // POSIX-safe quoting: every embedded single quote becomes
+    // '"'"' so the resulting export literally contains the
+    // operator's text without letting it escape the literal.
+    assert!(
+        stdout.contains(r#"TEAR_SESSION_NAME='it'"'"'s; rm -rf'"#),
+        "expected POSIX-quoted name, got: {stdout}"
+    );
+}
+
+#[test]
+fn migrate_with_explicit_shell_creates_session_with_that_shell() {
+    let h = DaemonHarness::new("migrate-shell");
+    let (stdout, _, code) =
+        h.run(&["migrate", "--name", "with-shell", "--shell", "/bin/dash"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("with-shell"));
+    // The daemon should report the session via list; we don't
+    // assert the shell here because list doesn't surface it in
+    // text mode, but creation success proves the path runs.
 }
 
 // ── #4 LLM proxy (tear ai) ──────────────────────────────────────────

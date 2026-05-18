@@ -24,3 +24,12 @@ blake3 = { workspace = true }
 # notify is used transitively via tear-config; we re-export the
 # watcher type from DaemonHandle for keep-alive semantics.
 notify = { workspace = true }
+
+[features]
+# Expose the in-memory test harness (DuplexStream + helpers) to
+# downstream test crates. Enabled by tear-daemon's own tests via
+# the standard cfg(test) gate; downstream crates opt in by adding
+# `tear-daemon = { workspace = true, features = ["testing"] }` to
+# their [dev-dependencies].
+default = []
+testing = []

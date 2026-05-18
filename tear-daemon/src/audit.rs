@@ -46,7 +46,7 @@ impl AuditLog {
     /// Open an audit log at `path` for append. Creates parent
     /// dirs + the file if missing. `~/` is expanded.
     pub fn open(path_str: &str) -> std::io::Result<Self> {
-        let expanded = shellexpand(path_str);
+        let expanded = tear_types::path::expand_tilde(path_str);
         let path = PathBuf::from(&expanded);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -128,15 +128,6 @@ impl AuditEvent {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0)
     }
-}
-
-fn shellexpand(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-    s.to_string()
 }
 
 #[cfg(test)]

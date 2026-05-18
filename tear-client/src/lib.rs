@@ -266,45 +266,54 @@ impl Client {
     /// rejection. Intended for the connect path; also exposed so
     /// long-lived clients can re-authenticate after a config rotation.
     pub fn authenticate(&mut self, token: &str) -> io::Result<()> {
-        let mut inner = self.inner.lock();
-        tear_types::wire::write_msg(
-            &mut inner.writer,
-            &tear_types::wire::Request::Authenticate(token.to_string()),
-        )?;
-        let resp: tear_types::wire::Response =
-            tear_types::wire::read_msg(&mut inner.reader)?;
-        match resp {
-            tear_types::wire::Response::Ok => Ok(()),
-            tear_types::wire::Response::Err(e) => Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("tear-daemon rejected Authenticate: {e:?}"),
-            )),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("tear-daemon returned unexpected response to Authenticate: {other:?}"),
-            )),
-        }
+        self.round_trip_ok(
+            tear_types::wire::Request::Authenticate(token.to_string()),
+            "Authenticate",
+            io::ErrorKind::PermissionDenied,
+        )
     }
 
     /// #2 — tag this connection with a 64-bit client identity used
-    /// by `InputPolicy::Leader(id)` to gate `SendKeys`. Idempotent —
+    /// by `InputPolicy::Leader { id }` to gate `SendKeys`. Idempotent —
     /// the daemon overwrites the prior identity each call. Returns
     /// `io::Error(Other)` if the daemon responds with anything other
     /// than `Ok` (defensive — the daemon's current implementation
     /// always returns Ok here).
     pub fn identify_as(&mut self, id: u64) -> io::Result<()> {
+        self.round_trip_ok(
+            tear_types::wire::Request::IdentifyClient(id),
+            "IdentifyClient",
+            io::ErrorKind::Other,
+        )
+    }
+
+    /// Shared "handshake" primitive: send one [`Request`], expect
+    /// exactly one [`Response::Ok`]. Any `Response::Err` is surfaced
+    /// as `io::Error(reject_kind)` with the daemon's message; any
+    /// other response variant is `io::Error(InvalidData)`.
+    ///
+    /// Used by [`Client::authenticate`] and [`Client::identify_as`];
+    /// add the next single-roundtrip request (e.g. `RegisterAttention`,
+    /// `AckConfigVersion`) by composing this directly rather than
+    /// hand-rolling a fresh match.
+    fn round_trip_ok(
+        &mut self,
+        req: tear_types::wire::Request,
+        label: &'static str,
+        reject_kind: io::ErrorKind,
+    ) -> io::Result<()> {
         let mut inner = self.inner.lock();
-        tear_types::wire::write_msg(
-            &mut inner.writer,
-            &tear_types::wire::Request::IdentifyClient(id),
-        )?;
-        let resp: tear_types::wire::Response =
-            tear_types::wire::read_msg(&mut inner.reader)?;
+        tear_types::wire::write_msg(&mut inner.writer, &req)?;
+        let resp: tear_types::wire::Response = tear_types::wire::read_msg(&mut inner.reader)?;
         match resp {
             tear_types::wire::Response::Ok => Ok(()),
+            tear_types::wire::Response::Err(e) => Err(io::Error::new(
+                reject_kind,
+                format!("tear-daemon rejected {label}: {e:?}"),
+            )),
             other => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("tear-daemon returned unexpected response to IdentifyClient: {other:?}"),
+                io::ErrorKind::InvalidData,
+                format!("tear-daemon returned unexpected response to {label}: {other:?}"),
             )),
         }
     }
@@ -1638,5 +1647,90 @@ mod tests {
             Ok(s) => panic!("got a frame after drop: {s}"),
         }
         daemon.stop();
+    }
+
+    // ── #5 / #2 round-trip handshake helpers ─────────────────────
+
+    /// `authenticate(wrong)` on a tokened daemon must surface
+    /// `PermissionDenied`. Hand-driven against
+    /// `serve_connection_with_auth` so we don't have to mutate the
+    /// process env (this crate forbids unsafe blocks). Drives the
+    /// round_trip_ok error path that authenticate() composes.
+    #[test]
+    fn authenticate_with_wrong_token_returns_permission_denied() {
+        use std::os::unix::net::UnixStream;
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-auth-bad-{pid}.sock"));
+            p
+        };
+        let _ = std::fs::remove_file(&socket);
+
+        // Spin up a one-off accept loop in-test that hands every
+        // accepted stream into serve_connection_with_auth with a
+        // known required_token. Avoids the env-var dance.
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let socket_for_thread = socket.clone();
+        let server = thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let inproc = Arc::new(tear_core::InProcess::new());
+                let live = Arc::new(tear_config::LiveConfig::default());
+                let _ = tear_daemon::serve_connection_with_auth(
+                    stream,
+                    inproc,
+                    live,
+                    None,
+                    Some("correct-secret".into()),
+                );
+            }
+            let _ = std::fs::remove_file(&socket_for_thread);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let stream = UnixStream::connect(&socket).unwrap();
+        let mut me = Client {
+            inner: parking_lot::Mutex::new(ClientInner {
+                reader: BufReader::new(TransportStream::Unix(stream.try_clone().unwrap())),
+                writer: BufWriter::new(TransportStream::Unix(stream)),
+            }),
+            socket_path: socket.clone(),
+            transport: Transport::Unix(socket.clone()),
+        };
+        let err = match me.authenticate("wrong-secret") {
+            Ok(()) => panic!("bad token must error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        // Drop the client to send EOF to the server thread; without
+        // this the server's serve_connection_with_auth loops in
+        // read_msg forever and join() never returns.
+        drop(me);
+        let _ = server.join();
+    }
+
+    /// identify_as on a daemon with no leader-policy pane is a
+    /// silent Ok — proves idempotency + no-op path.
+    #[test]
+    fn identify_as_is_noop_when_no_leader_policy_in_play() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-ident-noop-{pid}.sock"));
+            p
+        };
+        let _ = std::fs::remove_file(&socket);
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start(socket.clone(), inproc).expect("start");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let mut client = Client::connect_transport(Transport::Unix(socket.clone())).unwrap();
+        client.identify_as(42).expect("identify");
+        client.identify_as(99).expect("identify again");
+        // After both, normal RPCs still work.
+        assert!(client.list_sessions().unwrap().is_empty());
+
+        daemon.stop();
+        let _ = std::fs::remove_file(&socket);
     }
 }

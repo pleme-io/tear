@@ -31,6 +31,8 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use std::io;
 use std::net::{SocketAddr, TcpListener};
@@ -496,7 +498,7 @@ pub fn serve_connection_with_auth<S: io::Read + io::Write>(
         // connection's client_id doesn't match, reject locally.
         if let Request::SendKeys { id, .. } = &req {
             if let Ok(pane) = inproc.get_pane(*id) {
-                if let tear_types::InputPolicy::Leader { id: want } = pane.input_policy {
+                if let Some(want) = pane.input_policy.leader_id() {
                     if client_id != Some(want) {
                         let resp = Response::Err(tear_types::wire::WireError::Rejected(
                             format!(
@@ -856,7 +858,7 @@ fn hash_str(s: &str) -> String {
 /// without a recording (export returns empty / NoSuchPane).
 fn flush_session_recordings(inproc: &InProcess, session: tear_types::SessionId, dir: &str) {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let expanded = shellexpand(dir);
+    let expanded = tear_types::path::expand_tilde(dir);
     if std::fs::create_dir_all(&expanded).is_err() {
         warn!(dir = %expanded, "auto-flush: mkdir failed; skipping");
         return;
@@ -890,18 +892,6 @@ fn flush_session_recordings(inproc: &InProcess, session: tear_types::SessionId, 
             Err(_) => continue,
         }
     }
-}
-
-/// Expand a leading `~/` in a path string. We deliberately don't
-/// pull in the `shellexpand` crate for one use — keep the
-/// dependency surface small.
-fn shellexpand(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-    s.to_string()
 }
 
 fn map_result<T, F: FnOnce(T) -> Response>(
@@ -1148,9 +1138,7 @@ mod tests {
 
     #[test]
     fn auth_required_rejects_other_requests_until_authenticate() {
-        // Drive serve_connection_with_auth through an in-memory
-        // bidirectional pipe of pre-encoded requests, then verify
-        // every response in order.
+        use crate::testing::{drain_responses, DuplexStream};
         use std::sync::mpsc::channel;
 
         // Pre-encode: (a) ListSessions before auth → Rejected.
@@ -1163,34 +1151,8 @@ mod tests {
         write_msg(&mut input, &Request::Authenticate("secret".into())).unwrap();
         write_msg(&mut input, &Request::ListSessions).unwrap();
 
-        struct DuplexStream {
-            r: Cursor<Vec<u8>>,
-            w: std::sync::mpsc::Sender<u8>,
-        }
-        impl io::Read for DuplexStream {
-            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-                self.r.read(buf)
-            }
-        }
-        impl io::Write for DuplexStream {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                for &b in buf {
-                    self.w.send(b).map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "rx dropped")
-                    })?;
-                }
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
         let (tx, rx) = channel::<u8>();
-        let stream = DuplexStream {
-            r: Cursor::new(input),
-            w: tx,
-        };
+        let stream = DuplexStream::new(input, tx);
         let inproc = Arc::new(InProcess::new());
         let live = Arc::new(LiveConfig::default());
         let _ = serve_connection_with_auth(
@@ -1201,70 +1163,169 @@ mod tests {
             Some("secret".into()),
         );
 
-        // Drain everything written, decode 4 framed responses.
-        let mut bytes = Vec::new();
-        while let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
-            bytes.push(b);
-        }
-        let mut cur = Cursor::new(bytes);
-        let r1: Response = read_msg(&mut cur).unwrap();
-        let r2: Response = read_msg(&mut cur).unwrap();
-        let r3: Response = read_msg(&mut cur).unwrap();
-        let r4: Response = read_msg(&mut cur).unwrap();
-
-        assert!(matches!(r1, Response::Err(WireError::Rejected(_))), "r1: {r1:?}");
-        assert!(matches!(r2, Response::Err(WireError::Rejected(_))), "r2: {r2:?}");
-        assert!(matches!(r3, Response::Ok), "r3: {r3:?}");
-        assert!(matches!(r4, Response::Sessions(_)), "r4: {r4:?}");
+        let resps = drain_responses(&rx);
+        assert_eq!(resps.len(), 4, "got: {resps:?}");
+        assert!(matches!(resps[0], Response::Err(WireError::Rejected(_))));
+        assert!(matches!(resps[1], Response::Err(WireError::Rejected(_))));
+        assert!(matches!(resps[2], Response::Ok));
+        assert!(matches!(resps[3], Response::Sessions(_)));
     }
 
     #[test]
     fn no_auth_required_accepts_requests_immediately() {
-        // Without required_token, ListSessions works on the first
-        // frame — auth is opt-in.
+        use crate::testing::{drain_responses, DuplexStream};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
         write_msg(&mut input, &Request::ListSessions).unwrap();
 
-        struct DuplexStream {
-            r: Cursor<Vec<u8>>,
-            w: std::sync::mpsc::Sender<u8>,
-        }
-        impl io::Read for DuplexStream {
-            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-                self.r.read(buf)
-            }
-        }
-        impl io::Write for DuplexStream {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                for &b in buf {
-                    self.w.send(b).map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "rx dropped")
-                    })?;
-                }
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
         let (tx, rx) = channel::<u8>();
-        let stream = DuplexStream {
-            r: Cursor::new(input),
-            w: tx,
-        };
+        let stream = DuplexStream::new(input, tx);
         let inproc = Arc::new(InProcess::new());
         let live = Arc::new(LiveConfig::default());
         let _ = serve_connection_with_auth(stream, inproc, live, None, None);
 
-        let mut bytes = Vec::new();
-        while let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
-            bytes.push(b);
-        }
-        let mut cur = Cursor::new(bytes);
-        let r: Response = read_msg(&mut cur).unwrap();
-        assert!(matches!(r, Response::Sessions(_)), "r: {r:?}");
+        let resps = drain_responses(&rx);
+        assert!(matches!(resps.first(), Some(Response::Sessions(_))), "got: {resps:?}");
+    }
+
+    // ── extra coverage: re-authenticate, empty token, identify_idempotent ──
+
+    #[test]
+    fn re_authenticate_after_success_returns_ok_again() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        write_msg(&mut input, &Request::Authenticate("k".into())).unwrap();
+        write_msg(&mut input, &Request::Authenticate("k".into())).unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let inproc = Arc::new(InProcess::new());
+        let live = Arc::new(LiveConfig::default());
+        let _ = serve_connection_with_auth(stream, inproc, live, None, Some("k".into()));
+
+        let resps = drain_responses(&rx);
+        assert_eq!(resps.len(), 2);
+        assert!(matches!(resps[0], Response::Ok));
+        assert!(matches!(resps[1], Response::Ok));
+    }
+
+    #[test]
+    fn pre_emptive_authenticate_on_no_auth_daemon_is_ok() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        write_msg(&mut input, &Request::Authenticate("anything".into())).unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let inproc = Arc::new(InProcess::new());
+        let live = Arc::new(LiveConfig::default());
+        let _ = serve_connection_with_auth(stream, inproc, live, None, None);
+
+        let resps = drain_responses(&rx);
+        assert!(matches!(resps.first(), Some(Response::Ok)), "got: {resps:?}");
+    }
+
+    #[test]
+    fn identify_client_is_idempotent_and_returns_ok() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        write_msg(&mut input, &Request::IdentifyClient(1)).unwrap();
+        write_msg(&mut input, &Request::IdentifyClient(99)).unwrap();
+        write_msg(&mut input, &Request::ListSessions).unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let inproc = Arc::new(InProcess::new());
+        let live = Arc::new(LiveConfig::default());
+        let _ = serve_connection_with_auth(stream, inproc, live, None, None);
+
+        let resps = drain_responses(&rx);
+        assert_eq!(resps.len(), 3);
+        assert!(matches!(resps[0], Response::Ok));
+        assert!(matches!(resps[1], Response::Ok));
+        assert!(matches!(resps[2], Response::Sessions(_)));
+    }
+
+    #[test]
+    fn resolve_required_token_missing_env_errors() {
+        let live = LiveConfig::default();
+        let mut cfg = tear_config::TearConfig::default();
+        // Pick an env var that is overwhelmingly unlikely to be set.
+        cfg.auth_token_env = Some("__TEAR_NO_SUCH_VAR_FOR_TESTS__".into());
+        live.replace(cfg);
+        let err = resolve_required_token(&live).expect_err("missing env must error");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        let msg = format!("{err}");
+        assert!(msg.contains("__TEAR_NO_SUCH_VAR_FOR_TESTS__"), "msg: {msg}");
+    }
+
+    #[test]
+    fn resolve_required_token_none_when_unset() {
+        let live = LiveConfig::default();
+        assert!(resolve_required_token(&live).unwrap().is_none());
+    }
+
+    // ── audit log emit-through-dispatch coverage ─────────────────────
+
+    #[test]
+    fn dispatch_with_config_set_config_emits_set_config_audit_event() {
+        let tmp = tempfile_path();
+        let log_path = tmp.join("audit.jsonl");
+        let audit = AuditLog::open(log_path.to_str().unwrap()).unwrap();
+        let inproc = InProcess::new();
+        let live = LiveConfig::default();
+
+        // SetConfig YAML must parse as a valid TearConfig — use
+        // the default round-tripped through YAML.
+        let yaml = serde_yaml_ng::to_string(&tear_config::TearConfig::default()).unwrap();
+        let resp = dispatch_with_config(
+            &inproc,
+            &live,
+            Request::SetConfig(yaml),
+            Some(&audit),
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        // Drop the audit handle so the file's BufWriter flushes.
+        drop(audit);
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("set_config"), "audit: {content}");
+        assert!(content.contains("config_hash"), "audit: {content}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dispatch_with_config_kill_session_emits_session_kill_event() {
+        let tmp = tempfile_path();
+        let log_path = tmp.join("audit.jsonl");
+        let audit = AuditLog::open(log_path.to_str().unwrap()).unwrap();
+        let inproc = InProcess::new();
+        let live = LiveConfig::default();
+
+        // Create a session, then kill it via dispatch_with_config.
+        let sid = inproc.new_session("audit-kill-test", "/bin/sh").unwrap();
+        let resp = dispatch_with_config(
+            &inproc,
+            &live,
+            Request::KillSession(sid),
+            Some(&audit),
+        );
+        assert!(matches!(resp, Response::Ok));
+        drop(audit);
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("session_kill"), "audit: {content}");
+        assert!(content.contains(&sid.to_string()), "audit: {content}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

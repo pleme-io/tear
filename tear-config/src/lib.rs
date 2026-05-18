@@ -542,4 +542,50 @@ mod tests {
         let after = live.load();
         assert_eq!(after.prefix, "ctrl+space");
     }
+
+    // ── round-trip coverage for the newest fields ──
+
+    #[test]
+    fn auth_token_env_round_trips_through_yaml() {
+        let mut cfg = TearConfig::default();
+        cfg.auth_token_env = Some("TEAR_AUTH_TOKEN".into());
+        let y = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert!(y.contains("TEAR_AUTH_TOKEN"), "yaml: {y}");
+        let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
+        assert_eq!(back.auth_token_env, Some("TEAR_AUTH_TOKEN".into()));
+    }
+
+    #[test]
+    fn audit_log_round_trips_through_yaml() {
+        let mut cfg = TearConfig::default();
+        cfg.audit_log = Some("~/.local/share/tear/audit.log".into());
+        let y = serde_yaml_ng::to_string(&cfg).unwrap();
+        let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
+        assert_eq!(back.audit_log.as_deref(), Some("~/.local/share/tear/audit.log"));
+    }
+
+    #[test]
+    fn ai_config_round_trips_through_yaml() {
+        let mut cfg = TearConfig::default();
+        cfg.ai = Some(AiConfig {
+            provider: "openai".into(),
+            model: "gpt-5-codex".into(),
+            endpoint: "https://api.openai.com/v1".into(),
+            api_key_env: Some("OPENAI_API_KEY".into()),
+            context_bytes: 4000,
+        });
+        let y = serde_yaml_ng::to_string(&cfg).unwrap();
+        let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
+        assert_eq!(back.ai, cfg.ai);
+    }
+
+    #[test]
+    fn empty_yaml_yields_defaults_for_new_fields() {
+        // A pre-existing operator's tear.yaml that predates #5 / #6
+        // must keep working; serde-default fills in the new fields.
+        let cfg: TearConfig = serde_yaml_ng::from_str("{}").unwrap();
+        assert_eq!(cfg.auth_token_env, None);
+        assert_eq!(cfg.audit_log, None);
+        assert_eq!(cfg.ai, None);
+    }
 }

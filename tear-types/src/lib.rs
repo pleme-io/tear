@@ -39,12 +39,14 @@
 #![doc(html_root_url = "https://docs.rs/tear-types/0.1.0")]
 
 pub mod block;
+pub mod cast;
 pub mod control;
 pub mod direction;
 pub mod id;
 pub mod keybind;
 pub mod layout;
 pub mod pane;
+pub mod path;
 pub mod pane_snapshot;
 pub mod session;
 pub mod statusbar;
@@ -58,6 +60,7 @@ pub use id::{PaneId, SessionId, WindowId};
 pub use keybind::{Action, KeyBind, KeyChord, KeyTable, KeyTableName};
 pub use layout::{LayoutKind, LayoutNode, Size};
 pub use block::Block;
+pub use cast::{CastParseError, CastRow, CastRowKind};
 pub use pane::{InputPolicy, PaneState, PaneStats, TearPane};
 pub use pane_snapshot::{
     ansi_256_color, default_ansi_palette, Cell, CellAttrs, Color, PaneSnapshot, ANSI_BRIGHT_COLORS,

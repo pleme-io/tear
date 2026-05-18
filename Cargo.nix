@@ -5539,7 +5539,9 @@ rec {
             packageId = "tracing";
           }
         ];
-
+        features = {
+        };
+        resolvedDefaultFeatures = [ "default" "testing" ];
       };
       "tear-tmux-backend" = rec {
         crateName = "tear-tmux-backend";
@@ -5594,14 +5596,12 @@ rec {
             features = [ "derive" ];
           }
           {
-            name = "thiserror";
-            packageId = "thiserror 2.0.18";
-          }
-        ];
-        devDependencies = [
-          {
             name = "serde_json";
             packageId = "serde_json";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
         ];
 

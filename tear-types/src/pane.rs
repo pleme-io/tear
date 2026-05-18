@@ -97,6 +97,24 @@ impl InputPolicy {
             InputPolicy::Leader { .. } => "leader",
         }
     }
+
+    /// Convenience constructor for `Leader { id }` so call sites
+    /// don't repeat the struct-literal shape.
+    #[must_use]
+    pub fn leader(id: u64) -> Self {
+        InputPolicy::Leader { id }
+    }
+
+    /// Returns the gating client id if this policy is `Leader`,
+    /// else `None`. Cheaper than `if let` at call sites that only
+    /// want to peek at the leader id.
+    #[must_use]
+    pub fn leader_id(&self) -> Option<u64> {
+        match self {
+            InputPolicy::Leader { id } => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 /// Pane lifecycle states.
@@ -158,7 +176,32 @@ mod tests {
     fn input_policy_label_covers_every_variant() {
         assert_eq!(InputPolicy::Free.label(), "free");
         assert_eq!(InputPolicy::Locked.label(), "locked");
-        assert_eq!(InputPolicy::Leader { id: 7 }.label(), "leader");
+        assert_eq!(InputPolicy::leader(7).label(), "leader");
+    }
+
+    #[test]
+    fn input_policy_leader_constructor_matches_struct_form() {
+        assert_eq!(InputPolicy::leader(99), InputPolicy::Leader { id: 99 });
+    }
+
+    #[test]
+    fn input_policy_leader_id_returns_some_for_leader_and_none_otherwise() {
+        assert_eq!(InputPolicy::leader(5).leader_id(), Some(5));
+        assert_eq!(InputPolicy::Free.leader_id(), None);
+        assert_eq!(InputPolicy::Locked.leader_id(), None);
+    }
+
+    #[test]
+    fn input_policy_serde_round_trips_every_variant() {
+        for p in [
+            InputPolicy::Free,
+            InputPolicy::Locked,
+            InputPolicy::leader(42),
+        ] {
+            let json = serde_json::to_string(&p).unwrap();
+            let back: InputPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(p, back, "round-trip failed for {p:?}");
+        }
     }
 
     #[test]

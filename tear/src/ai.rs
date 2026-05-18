@@ -224,21 +224,22 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
-// ── Mock (tests) ───────────────────────────────────────────────
-
-pub struct MockProvider {
-    pub canned: String,
-}
-
-impl LlmProvider for MockProvider {
-    fn generate(&self, _prompt: &str) -> Result<String> {
-        Ok(self.canned.clone())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Mock provider lives next to the tests that consume it ──
+
+    pub struct MockProvider {
+        pub canned: String,
+    }
+
+    impl LlmProvider for MockProvider {
+        fn generate(&self, _prompt: &str) -> Result<String> {
+            Ok(self.canned.clone())
+        }
+    }
+
 
     fn sample_block(cwd: Option<&str>) -> Block {
         Block {

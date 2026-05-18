@@ -738,7 +738,7 @@ fn cmd_pane_input(
                      (the permitted client will export TEAR_CLIENT_ID=<id>)"
                 )
             })?;
-            tear_types::InputPolicy::Leader { id }
+            tear_types::InputPolicy::leader(id)
         }
     };
     client.set_input_policy(pane_id, policy)?;
@@ -910,6 +910,9 @@ fn cmd_block(
 }
 
 /// `tear replay <cast>` — pure-Rust asciinema v2 .cast player.
+/// Streams rows via `CastPlayer` so the timing logic is reusable
+/// from any other consumer (TUI scrubbers, web playback, mado
+/// embedded replay).
 fn cmd_replay(
     cast: &std::path::Path,
     speed: f32,
@@ -918,68 +921,191 @@ fn cmd_replay(
     use std::io::Write;
     let content = std::fs::read_to_string(cast)
         .map_err(|e| anyhow::anyhow!("read {}: {e}", cast.display()))?;
-    let mut lines = content.lines();
-    // Header is optional; skip it if present (we don't need it
-    // for playback — width/height come from the operator's
-    // current terminal).
-    if let Some(first) = lines.next() {
-        // Header is a JSON object; data rows are JSON arrays.
-        if !first.trim_start().starts_with('[') {
-            // Skipped header.
-        } else {
-            // Header was missing — process first as a data row.
-            process_cast_row(first, &mut 0.0, speed, max_delay_ms)?;
-        }
-    }
-    let mut last_t = 0.0f64;
-    for line in lines {
+    let mut player = replay::CastPlayer::new(speed, max_delay_ms);
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for line in content.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        process_cast_row(line, &mut last_t, speed, max_delay_ms)?;
+        player.feed_line(line, &mut out)?;
     }
-    let _ = std::io::stdout().flush();
+    out.flush()?;
     Ok(())
 }
 
-fn process_cast_row(
-    line: &str,
-    last_t: &mut f64,
-    speed: f32,
-    max_delay_ms: u64,
-) -> Result<()> {
-    use std::io::Write;
+mod replay {
+    use std::io::{self, Write};
     use std::time::Duration;
-    let v: serde_json::Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
-    };
-    let arr = match v.as_array() {
-        Some(a) => a,
-        None => return Ok(()),
-    };
-    if arr.len() < 3 {
-        return Ok(());
+    use tear_types::cast::{CastParseError, CastRow, CastRowKind};
+
+    /// Timing-aware asciinema .cast replayer. Pure logic: takes
+    /// one row at a time, sleeps the inter-row delta (scaled by
+    /// `speed` and clamped by `max_delay_ms`), then writes the
+    /// row's bytes to the provided sink.
+    ///
+    /// `speed > 1.0` plays back faster; `speed < 1.0` slower.
+    /// `max_delay_ms` caps any single sleep so long pauses
+    /// (`sleep 30s` recorded into a cast) don't stall the player.
+    pub struct CastPlayer {
+        speed: f32,
+        max_delay_ms: u64,
+        last_t: f64,
     }
-    let t = arr[0].as_f64().unwrap_or(0.0);
-    let kind = arr[1].as_str().unwrap_or("");
-    let payload = arr[2].as_str().unwrap_or("");
-    // Only "o" (output) rows; "i" (input) rows are ignored.
-    if kind != "o" {
-        *last_t = t;
-        return Ok(());
+
+    impl CastPlayer {
+        #[must_use]
+        pub fn new(speed: f32, max_delay_ms: u64) -> Self {
+            Self {
+                speed,
+                max_delay_ms,
+                last_t: 0.0,
+            }
+        }
+
+        /// Parse + replay one line. Malformed rows are silently
+        /// skipped (matches `asciinema play`'s resilience); the
+        /// asciinema header (a JSON object on row 1) is also a
+        /// silent skip.
+        pub fn feed_line<W: Write>(
+            &mut self,
+            line: &str,
+            out: &mut W,
+        ) -> io::Result<()> {
+            match CastRow::parse(line) {
+                Ok(row) => self.feed_row(row, out),
+                Err(CastParseError::HeaderRow) => Ok(()),
+                Err(_) => Ok(()), // skip silently
+            }
+        }
+
+        /// Feed a pre-parsed row — used by tests and by consumers
+        /// that already hold a `CastRow` stream (e.g. a typed cast
+        /// store).
+        pub fn feed_row<W: Write>(
+            &mut self,
+            row: CastRow,
+            out: &mut W,
+        ) -> io::Result<()> {
+            let delay = self.compute_delay_ms(row.t);
+            if delay > 0 {
+                std::thread::sleep(Duration::from_millis(delay));
+            }
+            self.last_t = row.t;
+            if row.kind == CastRowKind::Output {
+                out.write_all(row.payload.as_bytes())?;
+                out.flush()?;
+            }
+            Ok(())
+        }
+
+        /// Pure timing math — useful in tests so we can assert the
+        /// sleep budget without actually sleeping.
+        #[must_use]
+        pub fn compute_delay_ms(&self, t: f64) -> u64 {
+            // Treat speed <= 0 as 1x to avoid div-by-zero or
+            // negative scaling. Pure math; never panics.
+            let speed = if self.speed <= 0.0 { 1.0 } else { f64::from(self.speed) };
+            let delta = (t - self.last_t).max(0.0) / speed;
+            let ms = (delta * 1000.0) as u64;
+            ms.min(self.max_delay_ms)
+        }
+
+        #[must_use]
+        pub fn last_t(&self) -> f64 {
+            self.last_t
+        }
     }
-    let delta = (t - *last_t).max(0.0) / speed as f64;
-    let cap_ms = max_delay_ms;
-    let delay_ms = ((delta * 1000.0) as u64).min(cap_ms);
-    if delay_ms > 0 {
-        std::thread::sleep(Duration::from_millis(delay_ms));
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn compute_delay_clamps_to_max_delay() {
+            let p = CastPlayer::new(1.0, 100);
+            // 5 second delta → 5000 ms, clamped to 100.
+            assert_eq!(p.compute_delay_ms(5.0), 100);
+        }
+
+        #[test]
+        fn compute_delay_scales_by_speed() {
+            let p = CastPlayer::new(2.0, 10_000);
+            // 1.0 sec at 2x = 500 ms.
+            assert_eq!(p.compute_delay_ms(1.0), 500);
+        }
+
+        #[test]
+        fn compute_delay_zero_speed_treated_as_one() {
+            let p = CastPlayer::new(0.0, 10_000);
+            assert_eq!(p.compute_delay_ms(1.0), 1_000);
+        }
+
+        #[test]
+        fn compute_delay_negative_delta_is_zero() {
+            let mut p = CastPlayer::new(1.0, 10_000);
+            p.last_t = 10.0;
+            // Row at t=5.0 (out of order) → 0 ms.
+            assert_eq!(p.compute_delay_ms(5.0), 0);
+        }
+
+        #[test]
+        fn feed_row_writes_output_payload() {
+            let mut p = CastPlayer::new(1.0, 0);
+            let row = CastRow {
+                t: 0.0,
+                kind: CastRowKind::Output,
+                payload: "hello".into(),
+            };
+            let mut buf = Vec::new();
+            p.feed_row(row, &mut buf).unwrap();
+            assert_eq!(&buf, b"hello");
+        }
+
+        #[test]
+        fn feed_row_ignores_input_payload() {
+            let mut p = CastPlayer::new(1.0, 0);
+            let row = CastRow {
+                t: 0.0,
+                kind: CastRowKind::Input,
+                payload: "typed".into(),
+            };
+            let mut buf = Vec::new();
+            p.feed_row(row, &mut buf).unwrap();
+            assert!(buf.is_empty());
+        }
+
+        #[test]
+        fn feed_line_skips_header_silently() {
+            let mut p = CastPlayer::new(1.0, 0);
+            let mut buf = Vec::new();
+            p.feed_line(r#"{"version":2}"#, &mut buf).unwrap();
+            assert!(buf.is_empty());
+        }
+
+        #[test]
+        fn feed_line_skips_malformed_silently() {
+            let mut p = CastPlayer::new(1.0, 0);
+            let mut buf = Vec::new();
+            p.feed_line("not json at all", &mut buf).unwrap();
+            assert!(buf.is_empty());
+        }
+
+        #[test]
+        fn feed_row_advances_last_t_for_input_rows_too() {
+            // last_t must advance on input rows so the next output's
+            // delta is computed from the correct anchor.
+            let mut p = CastPlayer::new(1.0, 0);
+            let r1 = CastRow { t: 1.5, kind: CastRowKind::Input, payload: "x".into() };
+            let r2 = CastRow { t: 2.0, kind: CastRowKind::Output, payload: "z".into() };
+            let mut buf = Vec::new();
+            p.feed_row(r1, &mut buf).unwrap();
+            assert_eq!(p.last_t(), 1.5);
+            p.feed_row(r2, &mut buf).unwrap();
+            assert_eq!(&buf, b"z");
+            assert_eq!(p.last_t(), 2.0);
+        }
     }
-    let mut out = std::io::stdout().lock();
-    out.write_all(payload.as_bytes())?;
-    out.flush()?;
-    *last_t = t;
-    Ok(())
 }
 
 /// `tear migrate` — auto-handoff wrapper. Ensures daemon up,
@@ -1124,7 +1250,7 @@ fn cmd_audit(
             let raw = cfg.audit_log.ok_or_else(|| {
                 anyhow::anyhow!("daemon has no audit_log configured (set services.tear.settings.audit_log in tear.yaml)")
             })?;
-            std::path::PathBuf::from(expand_tilde(&raw))
+            std::path::PathBuf::from(tear_types::path::expand_tilde(&raw))
         }
     };
     let content = std::fs::read_to_string(&log_path).map_err(|e| {
@@ -1185,15 +1311,6 @@ fn cmd_audit(
         }
     }
     Ok(())
-}
-
-fn expand_tilde(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-    s.to_string()
 }
 
 /// `tear ai <prompt>` — assemble block context + forward to LLM.
@@ -1609,4 +1726,45 @@ fn cmd_daemon(
     println!("\ntear-daemon shutting down...");
     handle.stop();
     Ok(())
+}
+
+#[cfg(test)]
+mod main_helper_tests {
+    use super::*;
+
+    #[test]
+    fn shell_single_quote_wraps_in_quotes() {
+        assert_eq!(shell_single_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_single_quote_escapes_embedded_single_quotes() {
+        // POSIX-safe escape: close, double-quoted-single, reopen.
+        assert_eq!(shell_single_quote("it's"), r#"'it'"'"'s'"#);
+    }
+
+    #[test]
+    fn shell_single_quote_passes_through_special_chars_safely() {
+        // Backticks, $, etc. are literal inside single quotes.
+        let q = shell_single_quote("$(rm -rf /)");
+        assert!(q.starts_with('\''));
+        assert!(q.ends_with('\''));
+        // The dangerous chars are inside the quotes, so the shell
+        // never expands them.
+        assert!(q.contains("$(rm -rf /)"));
+    }
+
+    #[test]
+    fn shell_single_quote_handles_empty_string() {
+        assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn default_session_name_uses_cwd_basename_when_possible() {
+        // We can't `cd` reliably without affecting other tests, so
+        // just verify the function returns a non-empty string. The
+        // fallback "tear" is also acceptable.
+        let name = default_session_name_for_cwd();
+        assert!(!name.is_empty());
+    }
 }
