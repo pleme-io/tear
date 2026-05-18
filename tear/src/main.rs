@@ -173,16 +173,24 @@ enum Cmd {
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
     },
-    /// Start a long-running tear-daemon listening on a UDS. The
-    /// daemon owns sessions across client disconnects; mado, the
-    /// `tear attach` CLI, and any other typed driver can connect.
-    /// Blocks until SIGINT.
+    /// Start a long-running tear-daemon listening on a UDS or TCP
+    /// port. The daemon owns sessions across client disconnects;
+    /// mado, the `tear attach` CLI, and any other typed driver can
+    /// connect. Blocks until SIGINT.
     Daemon {
         /// UDS path. Defaults to `$XDG_RUNTIME_DIR/tear.sock` (or
         /// `~/.local/share/tear/tear.sock`). The directory is created
         /// if missing; a stale socket file at the path is unlinked.
+        /// Ignored when `--tcp` is set.
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+        /// #5 — bind a TCP listener instead of a UDS. Operator
+        /// must front this with SSH-tunnel / WireGuard / TLS-proxy
+        /// for untrusted networks (the wire is unencrypted at
+        /// this layer). Use `0.0.0.0:5111` to listen on all
+        /// interfaces, `127.0.0.1:5111` for localhost-only.
+        #[arg(long)]
+        tcp: Option<std::net::SocketAddr>,
     },
     /// Print a pane's rendered cell grid (Phase 2 introspection).
     /// Useful for manually verifying that `send-keys` round-tripped
@@ -241,7 +249,7 @@ fn main() -> Result<()> {
         }
         Cmd::Render { backend } => cmd_render(backend),
         Cmd::Attach { target, socket } => cmd_attach(target, socket),
-        Cmd::Daemon { socket } => cmd_daemon(socket),
+        Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
         Cmd::Snapshot { pane, socket } => cmd_snapshot(&pane, socket),
     }
 }
@@ -251,19 +259,35 @@ fn main() -> Result<()> {
 /// "resolve socket → connect → error-message-with-hint" pattern.
 /// Returns the Client + the resolved socket path so callers can
 /// include the path in their output (helpful for the operator).
+///
+/// `socket` accepts either a filesystem path (UDS) or a
+/// `tcp://host:port` URL — see [`tear_client::Transport::parse`].
 fn connect_to_daemon(
     socket: Option<std::path::PathBuf>,
 ) -> Result<(tear_client::Client, std::path::PathBuf)> {
-    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
-    let client = tear_client::Client::connect(&socket_path).map_err(|e| {
+    // Resolve the typed transport. If the operator passed
+    // `tcp://...` as the --socket value, route via Tcp; else
+    // treat it as a UDS path. Backward-compat: a None input
+    // falls through to default_socket_path().
+    let raw = socket
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| {
+            tear_types::wire::default_socket_path()
+                .display()
+                .to_string()
+        });
+    let transport = tear_client::Transport::parse(&raw).map_err(|e| {
+        anyhow::anyhow!("invalid --socket value `{raw}`: {e}")
+    })?;
+    let client = tear_client::Client::connect_transport(transport.clone()).map_err(|e| {
         anyhow::anyhow!(
             "tear-daemon not reachable at {}: {}\nStart it with: tear daemon \
              (or enable the launchd/systemd user unit via the tear flake's HM module)",
-            socket_path.display(),
+            transport.display_string(),
             e
         )
     })?;
-    Ok((client, socket_path))
+    Ok((client, std::path::PathBuf::from(transport.display_string())))
 }
 
 fn init_tracing(verbose: bool) {
@@ -726,21 +750,32 @@ fn cmd_snapshot(pane: &str, socket: Option<std::path::PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_daemon(socket: Option<std::path::PathBuf>) -> Result<()> {
+fn cmd_daemon(
+    socket: Option<std::path::PathBuf>,
+    tcp: Option<std::net::SocketAddr>,
+) -> Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
     let inproc = Arc::new(InProcess::new());
-    let handle = tear_daemon::start(socket_path.clone(), inproc).map_err(|e| {
-        anyhow::anyhow!(
-            "tear-daemon failed to bind {}: {}",
-            socket_path.display(),
-            e
-        )
-    })?;
-    info!(socket = %socket_path.display(), "tear-daemon ready");
-    println!("tear-daemon listening on {}", socket_path.display());
+    let (handle, listen_addr) = if let Some(addr) = tcp {
+        let h = tear_daemon::start_tcp(addr, inproc)
+            .map_err(|e| anyhow::anyhow!("tear-daemon failed to bind tcp://{addr}: {e}"))?;
+        let disp = format!("tcp://{addr}");
+        (h, disp)
+    } else {
+        let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
+        let h = tear_daemon::start(socket_path.clone(), inproc).map_err(|e| {
+            anyhow::anyhow!(
+                "tear-daemon failed to bind {}: {}",
+                socket_path.display(),
+                e
+            )
+        })?;
+        (h, socket_path.display().to_string())
+    };
+    info!(listen = %listen_addr, "tear-daemon ready");
+    println!("tear-daemon listening on {listen_addr}");
 
     // Block until SIGINT / SIGTERM. The handle stops + cleans up the
     // socket on drop, so a panic or normal exit both leave the

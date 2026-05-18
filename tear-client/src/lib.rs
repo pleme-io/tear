@@ -29,7 +29,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +45,102 @@ use tear_types::{
     TearPane, TearSession, TearWindow, WindowId,
 };
 
+/// #5 — transport address. UDS for local daemons (~/.local/share/tear/
+/// tear.sock by default); Tcp for remote daemons reached via SSH
+/// tunnel, WireGuard, or a TLS proxy. Tear-client treats them
+/// identically — the same `MultiplexerControl` impl works over either.
+#[derive(Clone, Debug)]
+pub enum Transport {
+    Unix(PathBuf),
+    Tcp(SocketAddr),
+}
+
+impl Transport {
+    /// Parse a `tcp://host:port` URL or treat anything else as a
+    /// filesystem path (UDS). Convenience for CLI surfaces that
+    /// take a single `--socket <str>` flag.
+    ///
+    /// # Errors
+    /// Returns `io::Error` when the TCP form resolves to no
+    /// addresses.
+    pub fn parse(s: &str) -> io::Result<Self> {
+        if let Some(rest) = s.strip_prefix("tcp://") {
+            let mut addrs = rest.to_socket_addrs()?;
+            let first = addrs
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addrs"))?;
+            return Ok(Transport::Tcp(first));
+        }
+        Ok(Transport::Unix(PathBuf::from(s)))
+    }
+
+    fn connect(&self) -> io::Result<TransportStream> {
+        match self {
+            Transport::Unix(p) => UnixStream::connect(p).map(TransportStream::Unix),
+            Transport::Tcp(addr) => TcpStream::connect(addr).map(TransportStream::Tcp),
+        }
+    }
+
+    /// Operator-facing display string — also the canonical form for
+    /// the `--socket` flag.
+    #[must_use]
+    pub fn display_string(&self) -> String {
+        match self {
+            Transport::Unix(p) => p.display().to_string(),
+            Transport::Tcp(addr) => format!("tcp://{addr}"),
+        }
+    }
+}
+
+/// A stream that's either a Unix UDS or a TCP connection. Both
+/// implement `Read + Write + try_clone + shutdown` — the small
+/// shim below adapts them under one type so the rest of the
+/// client doesn't care.
+pub enum TransportStream {
+    Unix(UnixStream),
+    Tcp(TcpStream),
+}
+
+impl TransportStream {
+    fn try_clone(&self) -> io::Result<Self> {
+        match self {
+            TransportStream::Unix(s) => s.try_clone().map(TransportStream::Unix),
+            TransportStream::Tcp(s) => s.try_clone().map(TransportStream::Tcp),
+        }
+    }
+
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        match self {
+            TransportStream::Unix(s) => s.shutdown(how),
+            TransportStream::Tcp(s) => s.shutdown(how),
+        }
+    }
+}
+
+impl Read for TransportStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            TransportStream::Unix(s) => s.read(buf),
+            TransportStream::Tcp(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for TransportStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            TransportStream::Unix(s) => s.write(buf),
+            TransportStream::Tcp(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            TransportStream::Unix(s) => s.flush(),
+            TransportStream::Tcp(s) => s.flush(),
+        }
+    }
+}
+
 /// A connected tear-daemon client. Implements [`MultiplexerControl`]
 /// so consumer code can take `&dyn MultiplexerControl` and not care
 /// whether the backend is local (`tear_core::InProcess`) or remote
@@ -52,8 +149,11 @@ pub struct Client {
     inner: Mutex<ClientInner>,
     /// Path the client connected to. Subscriptions need to dial
     /// the same daemon on a fresh socket because Subscribe consumes
-    /// the connection.
+    /// the connection. For TCP connections this is the display
+    /// string (`tcp://addr:port`) so log lines stay legible.
     socket_path: PathBuf,
+    /// Typed transport — used by subscribe / re-connect paths.
+    transport: Transport,
 }
 
 /// Handle returned by [`Client::subscribe_pane_bytes`] and
@@ -66,7 +166,7 @@ pub struct SubscribeHandle {
     /// [`signal_and_join`] can call `shutdown(Both)` and unblock the
     /// reader thread, which is otherwise stuck in `read_msg`
     /// (the `stop` AtomicBool only fires *between* reads).
-    socket: UnixStream,
+    socket: TransportStream,
     join: Option<thread::JoinHandle<()>>,
 }
 
@@ -79,11 +179,11 @@ impl SubscribeHandle {
 
     fn signal_and_join(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        // Slam the socket shut — this is the *load-bearing* step
-        // that unblocks the reader thread, which is otherwise in
-        // a blocking read on the BufReader<UnixStream> we cloned
-        // into it. Without this, j.join() deadlocks forever.
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        // Sever the socket so the reader thread's blocking
+        // read_msg returns immediately. Without this,
+        // j.join() deadlocks because the AtomicBool only
+        // fires between reads.
+        let _ = self.socket.shutdown(Shutdown::Both);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -98,37 +198,63 @@ impl Drop for SubscribeHandle {
     }
 }
 
-/// The buffered halves of the UDS stream. Buffered so the framed
-/// reads/writes don't translate into a syscall per byte.
+/// The buffered halves of the transport stream. Buffered so the
+/// framed reads/writes don't translate into a syscall per byte.
 struct ClientInner {
-    reader: BufReader<UnixStream>,
-    writer: BufWriter<UnixStream>,
+    reader: BufReader<TransportStream>,
+    writer: BufWriter<TransportStream>,
 }
 
 impl Client {
-    /// Connect to a tear-daemon listening at `path`.
+    /// Connect to a tear-daemon listening at a Unix domain socket
+    /// at `path`.
     ///
-    /// Returns the `io::Error` from the underlying `UnixStream::connect`
+    /// Returns the `io::Error` from the underlying connect call
     /// unchanged so callers can distinguish "no daemon there"
     /// (`NotFound`) from "permission" (`PermissionDenied`) etc.
     pub fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path_buf = path.as_ref().to_path_buf();
-        let stream = UnixStream::connect(&path_buf)?;
+        Self::connect_transport(Transport::Unix(path.as_ref().to_path_buf()))
+    }
+
+    /// #5 — connect to a remote tear-daemon over TCP. The address
+    /// can be anything `ToSocketAddrs` accepts (`"127.0.0.1:5111"`,
+    /// `"plo:5111"`, etc.). For untrusted networks, tunnel through
+    /// SSH (`ssh -L 5111:localhost:5111 plo`) or run behind a TLS
+    /// proxy — the wire is CBOR-over-TCP unencrypted at this layer.
+    pub fn connect_tcp(addr: impl ToSocketAddrs) -> io::Result<Self> {
+        let mut addrs = addr.to_socket_addrs()?;
+        let first = addrs
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addrs"))?;
+        Self::connect_transport(Transport::Tcp(first))
+    }
+
+    /// Connect using a typed [`Transport`]. Used by the CLI's
+    /// `--socket <str>` flag after `Transport::parse`.
+    pub fn connect_transport(transport: Transport) -> io::Result<Self> {
+        let stream = transport.connect()?;
         let reader_stream = stream.try_clone()?;
         Ok(Self {
             inner: Mutex::new(ClientInner {
                 reader: BufReader::new(reader_stream),
                 writer: BufWriter::new(stream),
             }),
-            socket_path: path_buf,
+            socket_path: PathBuf::from(transport.display_string()),
+            transport,
         })
     }
 
-    /// Path the client is connected to. Mostly useful for the
-    /// subscribe API which needs to open a second connection to
-    /// the same daemon.
+    /// Path the client is connected to. For UDS connections this is
+    /// the filesystem path; for TCP it's the `tcp://addr:port`
+    /// display form (so log lines stay legible).
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// Underlying transport — useful for log lines and for the
+    /// subscribe code paths that need to open a second connection.
+    pub fn transport(&self) -> &Transport {
+        &self.transport
     }
 
     /// Subscribe to a pane's PTY byte stream. Opens a fresh UDS
@@ -152,7 +278,9 @@ impl Client {
         // Subscriptions ride a separate connection because they
         // consume the stream — the control connection has to stay
         // free for further RPCs.
-        let stream = UnixStream::connect(&self.socket_path)
+        let stream = self
+            .transport
+            .connect()
             .map_err(|e| ControlError::Transport(e.to_string()))?;
         // `socket_for_handle` is held in the SubscribeHandle so
         // Drop can `shutdown(Both)` and unblock the reader thread
@@ -227,7 +355,9 @@ impl Client {
     where
         F: FnMut(Arc<tear_config::TearConfig>) + Send + 'static,
     {
-        let stream = UnixStream::connect(&self.socket_path)
+        let stream = self
+            .transport
+            .connect()
             .map_err(|e| ControlError::Transport(e.to_string()))?;
         let socket_for_handle = stream
             .try_clone()
@@ -1258,6 +1388,47 @@ mod tests {
         assert_eq!(got_a, vec!["C-fan-1", "C-fan-2"], "subscriber A");
         assert_eq!(got_b, vec!["C-fan-1", "C-fan-2"], "subscriber B");
         daemon.stop();
+    }
+
+    // ── #5 TCP transport ───────────────────────────────────────
+
+    /// End-to-end: TCP-bound tear-daemon + Client::connect_tcp +
+    /// the full new_session / list / kill cycle. Proves the wire
+    /// is transport-agnostic.
+    #[test]
+    fn tcp_transport_full_lifecycle() {
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start_tcp(addr, inproc).expect("daemon tcp");
+        // The daemon's socket_path is "tcp://<bound>"; parse the
+        // resolved address out and re-connect to it.
+        let bound = daemon
+            .socket_path()
+            .display()
+            .to_string()
+            .strip_prefix("tcp://")
+            .unwrap()
+            .parse::<std::net::SocketAddr>()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let client = Client::connect_tcp(bound).expect("connect");
+        let sid = client.new_session("tcp-test", "/bin/sh").unwrap();
+        let sessions = client.list_sessions().unwrap();
+        assert!(sessions.iter().any(|s| s.id == sid));
+        client.kill_session(sid).unwrap();
+        let after = client.list_sessions().unwrap();
+        assert!(after.iter().all(|s| s.id != sid));
+        daemon.stop();
+    }
+
+    /// Transport::parse accepts both UDS paths and tcp:// URLs.
+    #[test]
+    fn transport_parse_handles_both_forms() {
+        let t = Transport::parse("/tmp/foo.sock").unwrap();
+        assert!(matches!(t, Transport::Unix(_)));
+        let t2 = Transport::parse("tcp://127.0.0.1:5111").unwrap();
+        assert!(matches!(t2, Transport::Tcp(_)));
     }
 
     // ── #3 migration — subscriber count ────────────────────────

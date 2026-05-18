@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 use std::io;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -130,6 +131,63 @@ pub fn start(socket_path: PathBuf, inproc: Arc<InProcess>) -> io::Result<DaemonH
 /// Like [`start`] but accepts an explicit `LiveConfig` so callers
 /// can substitute a test-friendly config + opt in to / out of the
 /// file watcher.
+/// #5 — start a TCP-bound tear-daemon. Same wire (CBOR) as the
+/// UDS variant; serve_connection is already generic over `Read +
+/// Write`. For untrusted networks tunnel through SSH or run
+/// behind a TLS proxy — this layer is unencrypted.
+pub fn start_tcp(addr: SocketAddr, inproc: Arc<InProcess>) -> io::Result<DaemonHandle> {
+    let live = LiveConfig::default();
+    start_tcp_with_config(addr, inproc, Arc::new(live))
+}
+
+/// #5 — like [`start_tcp`] but with an explicit `LiveConfig`.
+pub fn start_tcp_with_config(
+    addr: SocketAddr,
+    inproc: Arc<InProcess>,
+    live_config: Arc<LiveConfig>,
+) -> io::Result<DaemonHandle> {
+    let listener = TcpListener::bind(addr)?;
+    let bound = listener.local_addr()?;
+    info!(addr = %bound, "tear-daemon listening (tcp)");
+
+    let watcher = match live_config.spawn_watcher() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            warn!(error = %e, "config file watcher could not start (tcp daemon)");
+            None
+        }
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_accept = stop.clone();
+    let inproc_for_accept = inproc.clone();
+    let config_for_accept = live_config.clone();
+
+    let accept_thread = thread::Builder::new()
+        .name("tear-daemon-accept-tcp".into())
+        .spawn(move || {
+            accept_loop_tcp(
+                listener,
+                stop_for_accept,
+                inproc_for_accept,
+                config_for_accept,
+            )
+        })?;
+
+    // Use a synthetic socket_path so DaemonHandle.signal_and_join's
+    // UDS-self-connect nudge is a no-op for TCP. The accept loop
+    // checks `stop` on a short timeout via set_nonblocking, so the
+    // wake-up doesn't need to be filesystem-mediated.
+    Ok(DaemonHandle {
+        socket_path: PathBuf::from(format!("tcp://{bound}")),
+        stop,
+        accept_thread: Some(accept_thread),
+        _inproc: inproc,
+        config: live_config,
+        _config_watcher: watcher,
+    })
+}
+
 pub fn start_with_config(
     socket_path: PathBuf,
     inproc: Arc<InProcess>,
@@ -181,6 +239,54 @@ pub fn start_with_config(
         config: live_config,
         _config_watcher: watcher,
     })
+}
+
+/// TCP accept loop — mirrors `accept_loop` but reads from a
+/// TcpListener. Uses `set_nonblocking` + a short sleep so the
+/// stop flag can fire promptly (no UDS-self-connect trick for
+/// TCP).
+fn accept_loop_tcp(
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+    inproc: Arc<InProcess>,
+    config: Arc<LiveConfig>,
+) {
+    listener
+        .set_nonblocking(true)
+        .expect("set_nonblocking on TcpListener");
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            debug!("accept loop (tcp): stop requested");
+            return;
+        }
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                debug!(peer = %peer, "tcp connection accepted");
+                let inproc_for_conn = inproc.clone();
+                let config_for_conn = config.clone();
+                let _ = thread::Builder::new()
+                    .name("tear-daemon-conn-tcp".into())
+                    .spawn(move || {
+                        // Per-connection: switch back to blocking
+                        // mode (set_nonblocking on TcpListener is
+                        // inherited by accepted TcpStream).
+                        let _ = stream.set_nonblocking(false);
+                        if let Err(e) = serve_connection(stream, inproc_for_conn, config_for_conn) {
+                            if e.kind() != io::ErrorKind::UnexpectedEof {
+                                warn!(error = %e, "tcp connection ended");
+                            }
+                        }
+                    });
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                error!(error = %e, "tcp accept failed");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
 }
 
 fn accept_loop(
