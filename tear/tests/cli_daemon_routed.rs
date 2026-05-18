@@ -291,6 +291,81 @@ fn replay_ignores_input_rows() {
     assert!(stdout.contains("output"), "got: {stdout}");
 }
 
+// ── #2 Leader input policy ──────────────────────────────────────────
+
+#[test]
+fn leader_policy_gates_send_keys_by_client_identity() {
+    let h = DaemonHarness::new("leader-gate");
+
+    // Create a session, find its pane.
+    let (up_stdout, _, _) = h.run(&["up", "--name", "leader-test"]);
+    let sid_line = up_stdout.lines().find(|l| l.contains("created session")).unwrap();
+    let _sid_token = sid_line.split_whitespace().nth(2).unwrap();
+    let (list_stdout, _, _) = h.run(&["list"]);
+    // Parse "<sid> leader-test  windows=1 panes=1 ..." — get pane id.
+    use tear_types::MultiplexerControl;
+    let sessions = {
+        let client = tear_client::Client::connect_transport(
+            tear_client::Transport::Unix(h.socket.clone()),
+        )
+        .unwrap();
+        client.list_sessions().unwrap()
+    };
+    let pane_id = sessions[0].panes.keys().next().copied().unwrap();
+    assert!(list_stdout.contains("leader-test"));
+
+    // Set Leader policy with id=42.
+    let pane_str = format!("{pane_id}");
+    let (out_input, err_input, code_input) = h.run(&[
+        "pane-input",
+        &pane_str,
+        "leader",
+        "--leader-id",
+        "42",
+    ]);
+    assert_eq!(code_input, 0, "stderr: {err_input}");
+    assert!(out_input.contains("leader"), "out: {out_input}");
+
+    // Naive client without TEAR_CLIENT_ID: SendKeys must be rejected.
+    {
+        let client = tear_client::Client::connect_transport(
+            tear_client::Transport::Unix(h.socket.clone()),
+        )
+        .unwrap();
+        let err = client.send_keys(pane_id, b"hello").expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("leader") || msg.contains("Rejected"),
+            "unexpected err: {msg}"
+        );
+    }
+
+    // Authorized leader: identify_as(42) then SendKeys → Ok.
+    {
+        let mut client = tear_client::Client::connect_transport(
+            tear_client::Transport::Unix(h.socket.clone()),
+        )
+        .unwrap();
+        client.identify_as(42).unwrap();
+        client.send_keys(pane_id, b"hello").expect("authorized leader");
+    }
+
+    // Wrong identity: identify_as(99) then SendKeys → still rejected.
+    {
+        let mut client = tear_client::Client::connect_transport(
+            tear_client::Transport::Unix(h.socket.clone()),
+        )
+        .unwrap();
+        client.identify_as(99).unwrap();
+        let err = client.send_keys(pane_id, b"hi").expect_err("99 != 42");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("leader") || msg.contains("Rejected"),
+            "unexpected err: {msg}"
+        );
+    }
+}
+
 // ── #5 TCP/WS auth tokens ───────────────────────────────────────────
 
 #[test]

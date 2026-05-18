@@ -103,13 +103,19 @@ enum Cmd {
         socket: Option<std::path::PathBuf>,
     },
     /// Set a pane's typed input policy. `lock` → Locked (rejects
-    /// every send_keys until unlocked); `unlock` → Free (default).
+    /// every send_keys until unlocked); `unlock` → Free (default);
+    /// `leader` → only the client whose connection identified with
+    /// the matching `--leader-id` (e.g. an AI agent) may send keys.
     /// Useful for observer / demo sessions, agent-only panes, and
     /// the migration handoff window.
     PaneInput {
         pane: String,
         #[arg(value_enum)]
         action: PaneInputAction,
+        /// Required when `action == leader`. 64-bit identity the
+        /// permitted client uses in `TEAR_CLIENT_ID`.
+        #[arg(long)]
+        leader_id: Option<u64>,
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
     },
@@ -379,6 +385,8 @@ enum PaneInputAction {
     Lock,
     /// Restore the default Free policy.
     Unlock,
+    /// #2 — only the client identified by --leader-id may send keys.
+    Leader,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -398,7 +406,9 @@ fn main() -> Result<()> {
         Cmd::List { yaml, socket, source } => cmd_list(yaml, socket, source),
         Cmd::Kill { id, name, socket } => cmd_kill(&id, name, socket),
         Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
-        Cmd::PaneInput { pane, action, socket } => cmd_pane_input(&pane, action, socket),
+        Cmd::PaneInput { pane, action, leader_id, socket } => {
+            cmd_pane_input(&pane, action, leader_id, socket)
+        }
         Cmd::PaneInfo { pane, socket, json } => cmd_pane_info(&pane, socket, json),
         Cmd::PaneRecord { pane, action, socket, out } => cmd_pane_record(&pane, action, socket, out),
         Cmd::Blocks { pane, since, limit, socket, json } => {
@@ -473,7 +483,7 @@ fn connect_to_daemon(
     let auth_token = std::env::var("TEAR_AUTH_TOKEN")
         .ok()
         .filter(|s| !s.is_empty());
-    let client = tear_client::Client::connect_transport_with_auth(
+    let mut client = tear_client::Client::connect_transport_with_auth(
         transport.clone(),
         auth_token,
     )
@@ -485,6 +495,19 @@ fn connect_to_daemon(
             e
         )
     })?;
+    // #2 — opt-in client identity for Leader policy. Parse as u64;
+    // an unparseable value is operator misconfiguration and bubbles
+    // up as a clear anyhow error.
+    if let Ok(raw) = std::env::var("TEAR_CLIENT_ID") {
+        if !raw.is_empty() {
+            let id: u64 = raw.parse().map_err(|e| {
+                anyhow::anyhow!("TEAR_CLIENT_ID={raw} must parse as u64: {e}")
+            })?;
+            client.identify_as(id).map_err(|e| {
+                anyhow::anyhow!("tear-daemon rejected IdentifyClient({id}): {e}")
+            })?;
+        }
+    }
     Ok((client, std::path::PathBuf::from(transport.display_string())))
 }
 
@@ -698,6 +721,7 @@ fn resolve_session_id(
 fn cmd_pane_input(
     pane: &str,
     action: PaneInputAction,
+    leader_id: Option<u64>,
     socket: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
@@ -707,6 +731,15 @@ fn cmd_pane_input(
     let policy = match action {
         PaneInputAction::Lock => tear_types::InputPolicy::Locked,
         PaneInputAction::Unlock => tear_types::InputPolicy::Free,
+        PaneInputAction::Leader => {
+            let id = leader_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--leader-id <u64> is required when `action == leader` \
+                     (the permitted client will export TEAR_CLIENT_ID=<id>)"
+                )
+            })?;
+            tear_types::InputPolicy::Leader { id }
+        }
     };
     client.set_input_policy(pane_id, policy)?;
     println!("pane {pane_id} input_policy={}", policy.label());
@@ -883,7 +916,6 @@ fn cmd_replay(
     max_delay_ms: u64,
 ) -> Result<()> {
     use std::io::Write;
-    use std::time::Duration;
     let content = std::fs::read_to_string(cast)
         .map_err(|e| anyhow::anyhow!("read {}: {e}", cast.display()))?;
     let mut lines = content.lines();

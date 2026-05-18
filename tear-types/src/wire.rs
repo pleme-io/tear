@@ -194,6 +194,14 @@ pub enum Request {
     /// that does not require auth is silently accepted (forward-
     /// compatible).
     Authenticate(String),
+    /// #2 — tag this connection with a 64-bit client identity. Used
+    /// by `InputPolicy::Leader(id)` to gate `SendKeys`: only the
+    /// connection whose IdentifyClient matches the pane's leader id
+    /// may send keys; all other clients get `WireError::Rejected`.
+    /// Sending to a daemon with no Leader-policy pane is a silent
+    /// Ok. Idempotent — calling again overwrites the connection's
+    /// identity. Default identity is `None` (anonymous).
+    IdentifyClient(u64),
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always

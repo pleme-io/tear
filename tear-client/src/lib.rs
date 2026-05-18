@@ -286,6 +286,29 @@ impl Client {
         }
     }
 
+    /// #2 — tag this connection with a 64-bit client identity used
+    /// by `InputPolicy::Leader(id)` to gate `SendKeys`. Idempotent —
+    /// the daemon overwrites the prior identity each call. Returns
+    /// `io::Error(Other)` if the daemon responds with anything other
+    /// than `Ok` (defensive — the daemon's current implementation
+    /// always returns Ok here).
+    pub fn identify_as(&mut self, id: u64) -> io::Result<()> {
+        let mut inner = self.inner.lock();
+        tear_types::wire::write_msg(
+            &mut inner.writer,
+            &tear_types::wire::Request::IdentifyClient(id),
+        )?;
+        let resp: tear_types::wire::Response =
+            tear_types::wire::read_msg(&mut inner.reader)?;
+        match resp {
+            tear_types::wire::Response::Ok => Ok(()),
+            other => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("tear-daemon returned unexpected response to IdentifyClient: {other:?}"),
+            )),
+        }
+    }
+
     /// Path the client is connected to. For UDS connections this is
     /// the filesystem path; for TCP it's the `tcp://addr:port`
     /// display form (so log lines stay legible).

@@ -67,6 +67,18 @@ pub enum InputPolicy {
     /// gets output, but no one can type. Lifted via
     /// `Request::SetInputPolicy(pane, InputPolicy::Free)`.
     Locked,
+    /// #2 — only the client whose connection identified itself with
+    /// `Request::IdentifyClient(id)` matching this leader id may
+    /// send keys; every other client is `Rejected`. Use case: an AI
+    /// agent owns a pane and a human can watch (mado subscriber)
+    /// without interleaving keystrokes. The leader id is operator-
+    /// chosen — a stable 64-bit token your agent surfaces via
+    /// `TEAR_CLIENT_ID`.
+    ///
+    /// Encoded as a struct variant so serde's internally-tagged
+    /// representation can carry the integer payload (tagged
+    /// representation can't hold a primitive in a tuple variant).
+    Leader { id: u64 },
 }
 
 impl Default for InputPolicy {
@@ -82,6 +94,7 @@ impl InputPolicy {
         match self {
             InputPolicy::Free => "free",
             InputPolicy::Locked => "locked",
+            InputPolicy::Leader { .. } => "leader",
         }
     }
 }
@@ -131,6 +144,21 @@ mod tests {
     #[test]
     fn pane_state_default_is_spawning() {
         assert_eq!(PaneState::default(), PaneState::Spawning);
+    }
+
+    #[test]
+    fn input_policy_leader_serialises_as_kind_tag() {
+        let p = InputPolicy::Leader { id: 42 };
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains("\"kind\":\"leader\""), "got: {s}");
+        assert!(s.contains("42"), "got: {s}");
+    }
+
+    #[test]
+    fn input_policy_label_covers_every_variant() {
+        assert_eq!(InputPolicy::Free.label(), "free");
+        assert_eq!(InputPolicy::Locked.label(), "locked");
+        assert_eq!(InputPolicy::Leader { id: 7 }.label(), "leader");
     }
 
     #[test]

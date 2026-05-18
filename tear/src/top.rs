@@ -213,6 +213,10 @@ impl DashboardState {
         let new = match current {
             InputPolicy::Free => InputPolicy::Locked,
             InputPolicy::Locked => InputPolicy::Free,
+            // Leader policy is operator-set with an explicit id; the
+            // dashboard's `t` toggle returns the pane to Free rather
+            // than guess a leader.
+            InputPolicy::Leader { .. } => InputPolicy::Free,
         };
         if let Err(e) = client.set_input_policy(pane_id, new) {
             self.last_error = Some(format!("set_input_policy: {e}"));
@@ -332,6 +336,10 @@ fn policy_span(p: InputPolicy) -> Span<'static> {
     match p {
         InputPolicy::Free => Span::styled("free", Style::default().fg(Color::Green)),
         InputPolicy::Locked => Span::styled("locked", Style::default().fg(Color::Red)),
+        InputPolicy::Leader { id } => Span::styled(
+            format!("leader({id})"),
+            Style::default().fg(Color::Yellow),
+        ),
     }
 }
 

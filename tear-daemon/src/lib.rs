@@ -33,7 +33,7 @@
 pub mod audit;
 
 use std::io;
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -449,6 +449,9 @@ pub fn serve_connection_with_auth<S: io::Read + io::Write>(
     required_token: Option<String>,
 ) -> io::Result<()> {
     let mut authed = required_token.is_none();
+    // #2 — per-connection client identity. Set by IdentifyClient;
+    // read on SendKeys to enforce Leader policy.
+    let mut client_id: Option<u64> = None;
     loop {
         let req: Request = match read_msg(&mut stream) {
             Ok(r) => r,
@@ -479,6 +482,33 @@ pub fn serve_connection_with_auth<S: io::Read + io::Write>(
             ));
             write_msg(&mut stream, &resp)?;
             continue;
+        }
+        // #2 — IdentifyClient sets the per-connection client_id and
+        // returns Ok. No-op for daemons whose panes are all Free/Locked.
+        if let Request::IdentifyClient(id) = &req {
+            client_id = Some(*id);
+            write_msg(&mut stream, &Response::Ok)?;
+            continue;
+        }
+        // #2 — Leader-policy gate. Before forwarding SendKeys to the
+        // InProcess (whose own `Locked` check still runs after), peek
+        // at the pane's input_policy. If it's `Leader(want)` and the
+        // connection's client_id doesn't match, reject locally.
+        if let Request::SendKeys { id, .. } = &req {
+            if let Ok(pane) = inproc.get_pane(*id) {
+                if let tear_types::InputPolicy::Leader { id: want } = pane.input_policy {
+                    if client_id != Some(want) {
+                        let resp = Response::Err(tear_types::wire::WireError::Rejected(
+                            format!(
+                                "leader policy: pane {id:?} requires client_id={want}, \
+                                 connection identified as {client_id:?}"
+                            ),
+                        ));
+                        write_msg(&mut stream, &resp)?;
+                        continue;
+                    }
+                }
+            }
         }
         // Subscribe promotes the connection to push mode.
         if let Request::Subscribe(pane) = req {
@@ -684,6 +714,11 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         // Authenticate — accept it as a no-op so test ergonomics
         // don't suffer.
         Request::Authenticate(_) => Response::Ok,
+        // #2 — IdentifyClient is intercepted in serve_connection_with_auth
+        // (it sets per-connection state). Reaching dispatch directly is
+        // a test-only path; accept as Ok so tests can construct request
+        // streams that include IdentifyClient frames.
+        Request::IdentifyClient(_) => Response::Ok,
     }
 }
 
