@@ -604,11 +604,20 @@ fn cmd_status(
     json: bool,
     quiet: bool,
 ) -> Result<()> {
-    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
-    let socket_str = socket_path.to_string_lossy().to_string();
+    let raw = socket
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| {
+            tear_types::wire::default_socket_path()
+                .display()
+                .to_string()
+        });
+    let transport = tear_client::Transport::parse(&raw).map_err(|e| {
+        anyhow::anyhow!("invalid --socket value `{raw}`: {e}")
+    })?;
+    let socket_str = transport.display_string();
     let version = env!("CARGO_PKG_VERSION");
 
-    let probe = tear_client::Client::connect(&socket_path);
+    let probe = tear_client::Client::connect_transport(transport);
     match probe {
         Ok(client) => {
             let sessions = client.list_sessions().unwrap_or_default();
