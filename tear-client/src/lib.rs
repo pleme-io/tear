@@ -595,6 +595,20 @@ impl MultiplexerControl for Client {
             other => Err(unexpected("SubscriberCount", other)),
         }
     }
+
+    fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
+        match self.rpc(Request::PaneSnapshot(id))? {
+            Response::PaneSnapshot(snap) => Ok(snap),
+            other => Err(unexpected("PaneSnapshot", other)),
+        }
+    }
+
+    fn pane_resize_absolute(&self, id: PaneId, cols: u16, rows: u16) -> ControlResult<()> {
+        match self.rpc(Request::PaneResizeAbsolute { id, cols, rows })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
 }
 
 impl Client {
@@ -633,20 +647,6 @@ impl Client {
         match self.rpc(Request::PaneRecordingStatus(id))? {
             Response::RecordingStatus { enabled, events } => Ok((enabled, events)),
             other => Err(unexpected("RecordingStatus", other)),
-        }
-    }
-
-    fn pane_snapshot(&self, id: PaneId) -> ControlResult<PaneSnapshot> {
-        match self.rpc(Request::PaneSnapshot(id))? {
-            Response::PaneSnapshot(snap) => Ok(snap),
-            other => Err(unexpected("PaneSnapshot", other)),
-        }
-    }
-
-    fn pane_resize_absolute(&self, id: PaneId, cols: u16, rows: u16) -> ControlResult<()> {
-        match self.rpc(Request::PaneResizeAbsolute { id, cols, rows })? {
-            Response::Ok => Ok(()),
-            other => Err(unexpected("Ok", other)),
         }
     }
 }
