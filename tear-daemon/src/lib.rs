@@ -169,12 +169,14 @@ pub fn start_tcp_with_config(
     };
 
     let audit = open_audit_from_config(&live_config);
+    let required_token = resolve_required_token(&live_config)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
     let inproc_for_accept = inproc.clone();
     let config_for_accept = live_config.clone();
     let audit_for_accept = audit.clone();
+    let token_for_accept = required_token.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept-tcp".into())
@@ -185,6 +187,7 @@ pub fn start_tcp_with_config(
                 inproc_for_accept,
                 config_for_accept,
                 audit_for_accept,
+                token_for_accept,
             )
         })?;
 
@@ -218,6 +221,34 @@ fn open_audit_from_config(live: &LiveConfig) -> Option<AuditLog> {
     }
 }
 
+/// #5 — resolve the required auth token from the env var named in
+/// the live config. Returns Some(token) only when the config sets
+/// `auth_token_env` AND the env var is non-empty. A configured env
+/// var that is missing or empty fails startup loudly (operator
+/// misconfiguration) by returning an io::Error from the caller.
+fn resolve_required_token(live: &LiveConfig) -> io::Result<Option<String>> {
+    let Some(name) = live.load().auth_token_env.clone() else {
+        return Ok(None);
+    };
+    match std::env::var(&name) {
+        Ok(v) if !v.is_empty() => {
+            info!(env_var = %name, "auth: requiring token on every client connection");
+            Ok(Some(v))
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("auth_token_env={name} is set but the env var is empty"),
+        )),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "auth_token_env={name} is set but the env var is not present; \
+                 export it before starting `tear daemon`"
+            ),
+        )),
+    }
+}
+
 pub fn start_with_config(
     socket_path: PathBuf,
     inproc: Arc<InProcess>,
@@ -244,6 +275,7 @@ pub fn start_with_config(
     };
 
     let audit = open_audit_from_config(&live_config);
+    let required_token = resolve_required_token(&live_config)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
@@ -251,6 +283,7 @@ pub fn start_with_config(
     let socket_for_accept = socket_path.clone();
     let config_for_accept = live_config.clone();
     let audit_for_accept = audit.clone();
+    let token_for_accept = required_token.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept".into())
@@ -262,6 +295,7 @@ pub fn start_with_config(
                 config_for_accept,
                 socket_for_accept,
                 audit_for_accept,
+                token_for_accept,
             )
         })?;
 
@@ -286,6 +320,7 @@ fn accept_loop_tcp(
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
     audit: Option<AuditLog>,
+    required_token: Option<String>,
 ) {
     listener
         .set_nonblocking(true)
@@ -301,6 +336,7 @@ fn accept_loop_tcp(
                 let inproc_for_conn = inproc.clone();
                 let config_for_conn = config.clone();
                 let audit_for_conn = audit.clone();
+                let token_for_conn = required_token.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn-tcp".into())
                     .spawn(move || {
@@ -308,11 +344,12 @@ fn accept_loop_tcp(
                         // mode (set_nonblocking on TcpListener is
                         // inherited by accepted TcpStream).
                         let _ = stream.set_nonblocking(false);
-                        if let Err(e) = serve_connection(
+                        if let Err(e) = serve_connection_with_auth(
                             stream,
                             inproc_for_conn,
                             config_for_conn,
                             audit_for_conn,
+                            token_for_conn,
                         ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "tcp connection ended");
@@ -338,6 +375,7 @@ fn accept_loop(
     config: Arc<LiveConfig>,
     _socket_path: PathBuf,
     audit: Option<AuditLog>,
+    required_token: Option<String>,
 ) {
     for incoming in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
@@ -349,14 +387,16 @@ fn accept_loop(
                 let inproc_for_conn = inproc.clone();
                 let config_for_conn = config.clone();
                 let audit_for_conn = audit.clone();
+                let token_for_conn = required_token.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn".into())
                     .spawn(move || {
-                        if let Err(e) = serve_connection(
+                        if let Err(e) = serve_connection_with_auth(
                             stream,
                             inproc_for_conn,
                             config_for_conn,
                             audit_for_conn,
+                            token_for_conn,
                         ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "connection ended");
@@ -386,17 +426,60 @@ fn accept_loop(
 /// want to hand-stitch transports beyond UDS) can drive it
 /// directly with their own `Read + Write` stream.
 pub fn serve_connection<S: io::Read + io::Write>(
-    mut stream: S,
+    stream: S,
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
     audit: Option<AuditLog>,
 ) -> io::Result<()> {
+    serve_connection_with_auth(stream, inproc, config, audit, None)
+}
+
+/// #5 — like `serve_connection` but enforces an optional
+/// shared-secret auth token. When `required_token` is `Some`, the
+/// connection rejects every request with `WireError::Rejected(...)`
+/// until it receives a matching `Request::Authenticate(token)`.
+/// When `None`, behaves exactly like `serve_connection`. Sending
+/// Authenticate to an unauth'd-required daemon is silently `Ok`
+/// (forward-compatible with clients that pre-emptively authenticate).
+pub fn serve_connection_with_auth<S: io::Read + io::Write>(
+    mut stream: S,
+    inproc: Arc<InProcess>,
+    config: Arc<LiveConfig>,
+    audit: Option<AuditLog>,
+    required_token: Option<String>,
+) -> io::Result<()> {
+    let mut authed = required_token.is_none();
     loop {
         let req: Request = match read_msg(&mut stream) {
             Ok(r) => r,
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
         };
+        // Handle Authenticate first so a pre-emptive token works
+        // on either kind of daemon. Constant-time compare to avoid
+        // a timing oracle (every byte compared regardless of mismatch
+        // position).
+        if let Request::Authenticate(presented) = &req {
+            let resp = match &required_token {
+                Some(expected) if ct_eq(expected.as_bytes(), presented.as_bytes()) => {
+                    authed = true;
+                    Response::Ok
+                }
+                Some(_) => Response::Err(tear_types::wire::WireError::Rejected(
+                    "auth failed".into(),
+                )),
+                None => Response::Ok,
+            };
+            write_msg(&mut stream, &resp)?;
+            continue;
+        }
+        if !authed {
+            let resp = Response::Err(tear_types::wire::WireError::Rejected(
+                "authentication required: send Authenticate(token) first".into(),
+            ));
+            write_msg(&mut stream, &resp)?;
+            continue;
+        }
         // Subscribe promotes the connection to push mode.
         if let Request::Subscribe(pane) = req {
             return serve_subscription(stream, inproc, pane);
@@ -409,6 +492,20 @@ pub fn serve_connection<S: io::Read + io::Write>(
         let resp = dispatch_with_config(&inproc, &config, req, audit.as_ref());
         write_msg(&mut stream, &resp)?;
     }
+}
+
+/// Constant-time byte-slice equality. Returns false for differing
+/// lengths without comparing further; otherwise compares every byte
+/// and folds. Cheap and adequate for short shared-secret tokens.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Push-mode handler invoked after a `Request::Subscribe`. Writes
@@ -581,6 +678,12 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             "SubscribeConfigChange must be handled by serve_connection (push mode), not dispatch"
                 .into(),
         )),
+        // #5 — Authenticate is intercepted in serve_connection_with_auth
+        // before dispatch ever sees it. Reaching this arm means a
+        // test (or in-process consumer) called dispatch directly with
+        // Authenticate — accept it as a no-op so test ergonomics
+        // don't suffer.
+        Request::Authenticate(_) => Response::Ok,
     }
 }
 
@@ -991,5 +1094,142 @@ mod tests {
         p.push(format!("tear-auto-flush-{pid}-{nonce}"));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    // ── #5 auth ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ct_eq_returns_true_for_matching_bytes() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(ct_eq(b"", b""));
+    }
+
+    #[test]
+    fn ct_eq_returns_false_for_differing_bytes_or_lengths() {
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(!ct_eq(b"abc", b""));
+    }
+
+    #[test]
+    fn auth_required_rejects_other_requests_until_authenticate() {
+        // Drive serve_connection_with_auth through an in-memory
+        // bidirectional pipe of pre-encoded requests, then verify
+        // every response in order.
+        use std::sync::mpsc::channel;
+
+        // Pre-encode: (a) ListSessions before auth → Rejected.
+        //             (b) Authenticate("wrong")     → Rejected.
+        //             (c) Authenticate("secret")    → Ok.
+        //             (d) ListSessions after auth   → Sessions([]).
+        let mut input = Vec::new();
+        write_msg(&mut input, &Request::ListSessions).unwrap();
+        write_msg(&mut input, &Request::Authenticate("wrong".into())).unwrap();
+        write_msg(&mut input, &Request::Authenticate("secret".into())).unwrap();
+        write_msg(&mut input, &Request::ListSessions).unwrap();
+
+        struct DuplexStream {
+            r: Cursor<Vec<u8>>,
+            w: std::sync::mpsc::Sender<u8>,
+        }
+        impl io::Read for DuplexStream {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.r.read(buf)
+            }
+        }
+        impl io::Write for DuplexStream {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                for &b in buf {
+                    self.w.send(b).map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "rx dropped")
+                    })?;
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream {
+            r: Cursor::new(input),
+            w: tx,
+        };
+        let inproc = Arc::new(InProcess::new());
+        let live = Arc::new(LiveConfig::default());
+        let _ = serve_connection_with_auth(
+            stream,
+            inproc,
+            live,
+            None,
+            Some("secret".into()),
+        );
+
+        // Drain everything written, decode 4 framed responses.
+        let mut bytes = Vec::new();
+        while let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
+            bytes.push(b);
+        }
+        let mut cur = Cursor::new(bytes);
+        let r1: Response = read_msg(&mut cur).unwrap();
+        let r2: Response = read_msg(&mut cur).unwrap();
+        let r3: Response = read_msg(&mut cur).unwrap();
+        let r4: Response = read_msg(&mut cur).unwrap();
+
+        assert!(matches!(r1, Response::Err(WireError::Rejected(_))), "r1: {r1:?}");
+        assert!(matches!(r2, Response::Err(WireError::Rejected(_))), "r2: {r2:?}");
+        assert!(matches!(r3, Response::Ok), "r3: {r3:?}");
+        assert!(matches!(r4, Response::Sessions(_)), "r4: {r4:?}");
+    }
+
+    #[test]
+    fn no_auth_required_accepts_requests_immediately() {
+        // Without required_token, ListSessions works on the first
+        // frame — auth is opt-in.
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        write_msg(&mut input, &Request::ListSessions).unwrap();
+
+        struct DuplexStream {
+            r: Cursor<Vec<u8>>,
+            w: std::sync::mpsc::Sender<u8>,
+        }
+        impl io::Read for DuplexStream {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.r.read(buf)
+            }
+        }
+        impl io::Write for DuplexStream {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                for &b in buf {
+                    self.w.send(b).map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "rx dropped")
+                    })?;
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream {
+            r: Cursor::new(input),
+            w: tx,
+        };
+        let inproc = Arc::new(InProcess::new());
+        let live = Arc::new(LiveConfig::default());
+        let _ = serve_connection_with_auth(stream, inproc, live, None, None);
+
+        let mut bytes = Vec::new();
+        while let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
+            bytes.push(b);
+        }
+        let mut cur = Cursor::new(bytes);
+        let r: Response = read_msg(&mut cur).unwrap();
+        assert!(matches!(r, Response::Sessions(_)), "r: {r:?}");
     }
 }

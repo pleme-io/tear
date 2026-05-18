@@ -136,6 +136,22 @@ pub struct TearConfig {
     /// `~/.local/share/tear/audit.log`.
     #[serde(default)]
     pub audit_log: Option<String>,
+
+    /// #5 — name of an env var that holds a shared-secret auth
+    /// token. When set, the daemon resolves the env var at startup
+    /// and requires every client connection to send the matching
+    /// `Request::Authenticate(token)` as its first request. Used
+    /// for TCP-bound daemons reachable from a network — UDS
+    /// daemons can still set this for defence-in-depth, though
+    /// filesystem perms are usually enough for local-only sockets.
+    ///
+    /// Operator workflow:
+    /// 1. `openssl rand -hex 32 > ~/.config/tear/auth-token`
+    /// 2. `export TEAR_AUTH_TOKEN="$(cat ~/.config/tear/auth-token)"`
+    /// 3. Set `auth_token_env: TEAR_AUTH_TOKEN` in tear.yaml
+    /// 4. Every client inherits the env var via the shell session.
+    #[serde(default)]
+    pub auth_token_env: Option<String>,
 }
 
 /// `tear ai` provider + model. Lives in `tear-config` so it
@@ -207,6 +223,7 @@ impl Default for TearConfig {
             recording_auto_dir: None,
             ai: None,
             audit_log: None,
+            auth_token_env: None,
         }
     }
 }

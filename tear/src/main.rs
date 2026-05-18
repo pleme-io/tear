@@ -460,7 +460,24 @@ fn connect_to_daemon(
     let transport = tear_client::Transport::parse(&raw).map_err(|e| {
         anyhow::anyhow!("invalid --socket value `{raw}`: {e}")
     })?;
-    let client = tear_client::Client::connect_transport(transport.clone()).map_err(|e| {
+    // #5 — auth token passes through the env var. The daemon checks
+    // `config.auth_token_env` and resolves the *same* env var on its
+    // side; an explicit name (e.g. `TEAR_AUTH_TOKEN`) is the canonical
+    // shape, but we don't hardcode it here — we read whatever the
+    // operator exported as `TEAR_AUTH_TOKEN`. Daemons without an
+    // `auth_token_env` configured silently accept the Authenticate;
+    // daemons with one configured but a *different* env name still
+    // work via the same env var name `TEAR_AUTH_TOKEN` so long as
+    // operators stick to the convention. Custom env names: export the
+    // same value under `TEAR_AUTH_TOKEN` on the client side.
+    let auth_token = std::env::var("TEAR_AUTH_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let client = tear_client::Client::connect_transport_with_auth(
+        transport.clone(),
+        auth_token,
+    )
+    .map_err(|e| {
         anyhow::anyhow!(
             "tear-daemon not reachable at {}: {}\nStart it with: tear daemon \
              (or enable the launchd/systemd user unit via the tear flake's HM module)",

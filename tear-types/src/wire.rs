@@ -186,6 +186,14 @@ pub enum Request {
     /// moment, broadcast-style: typed config hot-reload to every
     /// connected client.
     SubscribeConfigChange,
+    /// #5 — authenticate this connection. Only used when the
+    /// daemon was started with `auth_token_env` set in its
+    /// `TearConfig`. Must be the first request on the connection;
+    /// every other request returns `WireError::Rejected(...)` until
+    /// authentication succeeds. Sending an Authenticate to a daemon
+    /// that does not require auth is silently accepted (forward-
+    /// compatible).
+    Authenticate(String),
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always

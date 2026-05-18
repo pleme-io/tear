@@ -291,6 +291,75 @@ fn replay_ignores_input_rows() {
     assert!(stdout.contains("output"), "got: {stdout}");
 }
 
+// ── #5 TCP/WS auth tokens ───────────────────────────────────────────
+
+#[test]
+fn client_can_authenticate_against_auth_required_daemon() {
+    // Start a UDS daemon with an in-memory config requiring auth.
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let pid = std::process::id();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut socket = std::env::temp_dir();
+    socket.push(format!("tear-auth-{pid}-{seq}.sock"));
+    let _ = std::fs::remove_file(&socket);
+
+    // Pre-export the env var that the daemon resolves; same value
+    // is what the client sends through Authenticate. Use a process-
+    // unique env name so parallel test workers don't collide.
+    let env_name = format!("TEAR_AUTH_TOKEN_TEST_{pid}_{seq}");
+    let token = "s3cret-deadbeef";
+    // SAFETY: tests run in a single-threaded section here; no
+    // concurrent reader observes the env mutation. The 2024-edition
+    // `set_var` unsafety contract is satisfied because we're not
+    // racing other threads on this env var.
+    unsafe { std::env::set_var(&env_name, token); }
+
+    let mut cfg = tear_config::TearConfig::default();
+    cfg.auth_token_env = Some(env_name.clone());
+    let live = std::sync::Arc::new(tear_config::LiveConfig::default());
+    live.replace(cfg);
+
+    let inproc = std::sync::Arc::new(tear_core::InProcess::new());
+    let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live)
+        .expect("daemon start");
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Auth-aware client: passes the token. ListSessions should succeed.
+    {
+        let transport = tear_client::Transport::Unix(socket.clone());
+        let client = tear_client::Client::connect_transport_with_auth(
+            transport,
+            Some(token.into()),
+        )
+        .expect("auth connect");
+        use tear_types::MultiplexerControl;
+        let sessions = client.list_sessions().expect("list");
+        assert!(sessions.is_empty());
+    }
+
+    // Naive client: no token → first request returns Rejected.
+    // Rejected travels through the trait as ControlError::Rejected.
+    {
+        let transport = tear_client::Transport::Unix(socket.clone());
+        let client = tear_client::Client::connect_transport(transport)
+            .expect("connect (unauthed)");
+        use tear_types::MultiplexerControl;
+        let err = client.list_sessions().expect_err("must reject");
+        // Smoke-check the message routes through the Rejected path.
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("auth") || msg.contains("Rejected"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    drop(daemon);
+    // SAFETY: see set_var above — single-threaded teardown.
+    unsafe { std::env::remove_var(&env_name); }
+    let _ = std::fs::remove_file(&socket);
+}
+
 // ── #3 tear migrate (handoff wrapper) ───────────────────────────────
 
 #[test]

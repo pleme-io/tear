@@ -232,16 +232,58 @@ impl Client {
     /// Connect using a typed [`Transport`]. Used by the CLI's
     /// `--socket <str>` flag after `Transport::parse`.
     pub fn connect_transport(transport: Transport) -> io::Result<Self> {
+        Self::connect_transport_with_auth(transport, None)
+    }
+
+    /// #5 — connect with an optional shared-secret auth token. When
+    /// `Some`, the client sends `Request::Authenticate(token)`
+    /// immediately and surfaces a `PermissionDenied` error if the
+    /// daemon rejects. Safe to pass `Some` even when the daemon does
+    /// not require auth (the daemon silently accepts). The CLI reads
+    /// `TEAR_AUTH_TOKEN` from the env and forwards via this path.
+    pub fn connect_transport_with_auth(
+        transport: Transport,
+        auth_token: Option<String>,
+    ) -> io::Result<Self> {
         let stream = transport.connect()?;
         let reader_stream = stream.try_clone()?;
-        Ok(Self {
+        let mut me = Self {
             inner: Mutex::new(ClientInner {
                 reader: BufReader::new(reader_stream),
                 writer: BufWriter::new(stream),
             }),
             socket_path: PathBuf::from(transport.display_string()),
             transport,
-        })
+        };
+        if let Some(token) = auth_token {
+            me.authenticate(&token)?;
+        }
+        Ok(me)
+    }
+
+    /// Send `Request::Authenticate(token)` and assert the daemon's
+    /// `Response::Ok`. Returns `io::Error(PermissionDenied)` on
+    /// rejection. Intended for the connect path; also exposed so
+    /// long-lived clients can re-authenticate after a config rotation.
+    pub fn authenticate(&mut self, token: &str) -> io::Result<()> {
+        let mut inner = self.inner.lock();
+        tear_types::wire::write_msg(
+            &mut inner.writer,
+            &tear_types::wire::Request::Authenticate(token.to_string()),
+        )?;
+        let resp: tear_types::wire::Response =
+            tear_types::wire::read_msg(&mut inner.reader)?;
+        match resp {
+            tear_types::wire::Response::Ok => Ok(()),
+            tear_types::wire::Response::Err(e) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("tear-daemon rejected Authenticate: {e:?}"),
+            )),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("tear-daemon returned unexpected response to Authenticate: {other:?}"),
+            )),
+        }
     }
 
     /// Path the client is connected to. For UDS connections this is
