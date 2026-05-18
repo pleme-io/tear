@@ -155,6 +155,42 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// #3 — handoff wrapper. Designed for the end of `.zshrc`:
+    /// ensures a tear-daemon is running (auto-spawns one with
+    /// `--start-daemon`), ensures a session of the given name exists
+    /// (creates if missing), and emits a `eval`-able shell snippet
+    /// (`export TEAR_SESSION=<id> ...`) so the calling shell can
+    /// surface session identity in its prompt.
+    ///
+    /// Idempotent: re-running for the same `--name` returns the
+    /// existing session id without creating a duplicate. Drop into
+    /// your shell init:
+    ///
+    /// ```sh
+    /// # at the end of .zshrc
+    /// [ -z "$TEAR_SESSION" ] && command -v tear >/dev/null \
+    ///   && eval "$(tear migrate --shell-snippet --start-daemon)"
+    /// ```
+    Migrate {
+        /// Session name. Defaults to the current directory's basename.
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Shell to spawn if a new session is created.
+        #[arg(short, long)]
+        shell: Option<String>,
+        /// If the daemon isn't reachable, spawn a detached `tear
+        /// daemon` and poll until it accepts a connection (up to 3s).
+        #[arg(long)]
+        start_daemon: bool,
+        /// Emit `export TEAR_SESSION=... TEAR_SESSION_NAME=...` to
+        /// stdout (silently); print nothing else. Designed for
+        /// `eval "$(tear migrate --shell-snippet)"`.
+        #[arg(long)]
+        shell_snippet: bool,
+        /// Daemon UDS path. Defaults to the standard XDG location.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
     /// #4 — replay an asciinema v2 .cast to the current terminal
     /// with timing fidelity. Pure-Rust player; no asciinema CLI
     /// dep. `--speed 2.0` plays back at 2x; `--max-delay-ms 200`
@@ -381,6 +417,9 @@ fn main() -> Result<()> {
             cmd_audit(path, since_secs, kind, limit, socket, json)
         }
         Cmd::Replay { cast, speed, max_delay_ms } => cmd_replay(&cast, speed, max_delay_ms),
+        Cmd::Migrate { name, shell, start_daemon, shell_snippet, socket } => {
+            cmd_migrate(name, shell, start_daemon, shell_snippet, socket)
+        }
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
         Cmd::ConfigCheck => cmd_config_check(),
@@ -892,6 +931,129 @@ fn process_cast_row(
     out.flush()?;
     *last_t = t;
     Ok(())
+}
+
+/// `tear migrate` — auto-handoff wrapper. Ensures daemon up,
+/// ensures session of `name` exists (creates if missing), and
+/// optionally emits a shell snippet that the caller `eval`s to
+/// surface session identity (`TEAR_SESSION`, `TEAR_SESSION_NAME`)
+/// in their prompt environment.
+fn cmd_migrate(
+    name: Option<String>,
+    shell: Option<String>,
+    start_daemon: bool,
+    shell_snippet: bool,
+    socket: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let name = name.unwrap_or_else(default_session_name_for_cwd);
+    let shell = shell.unwrap_or_else(|| {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    });
+
+    let (client, socket_path) = match connect_to_daemon(socket.clone()) {
+        Ok(pair) => pair,
+        Err(orig) => {
+            if !start_daemon {
+                return Err(orig);
+            }
+            spawn_detached_daemon(socket.as_deref())?;
+            // Poll for readiness up to ~3 s.
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(3);
+            loop {
+                if let Ok(pair) = connect_to_daemon(socket.clone()) {
+                    break pair;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(anyhow::anyhow!(
+                        "tear migrate: spawned daemon but it did not become \
+                         ready within 3s"
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    };
+
+    let existing = client.list_sessions().map_err(|e| {
+        anyhow::anyhow!("tear migrate: list_sessions failed: {e}")
+    })?;
+    let sid = if let Some(found) = existing.iter().find(|s| s.name == name) {
+        found.id.to_string()
+    } else {
+        client
+            .new_session_with_source(
+                &name,
+                &shell,
+                tear_types::SessionSource::Human,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("tear migrate: new_session failed: {e}")
+            })?
+            .to_string()
+    };
+
+    if shell_snippet {
+        // Silent eval-friendly output only.
+        let shell_quoted_name = shell_single_quote(&name);
+        println!("export TEAR_SESSION={sid} TEAR_SESSION_NAME={shell_quoted_name}");
+    } else {
+        println!(
+            "migrate: session {sid} ({name}) ready on {}",
+            socket_path.display()
+        );
+        println!("hint: eval \"$(tear migrate --shell-snippet)\" in .zshrc");
+    }
+    Ok(())
+}
+
+/// Spawn a detached `tear daemon` so the CLI can return immediately
+/// while the daemon takes over the socket. Uses the current
+/// executable so version drift can't happen.
+fn spawn_detached_daemon(socket: Option<&std::path::Path>) -> Result<()> {
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| {
+        anyhow::anyhow!("tear migrate: cannot resolve current exe: {e}")
+    })?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(p) = socket {
+        cmd.arg("--socket").arg(p);
+    }
+    cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("tear migrate: spawn daemon: {e}"))?;
+    Ok(())
+}
+
+/// Default session name = basename of CWD, falling back to "tear".
+/// Used by `tear migrate` so re-entering the same directory's shell
+/// reattaches to the same session without operator ceremony.
+fn default_session_name_for_cwd() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "tear".to_string())
+}
+
+/// Quote a string for safe inclusion in a single-quoted POSIX shell
+/// literal. Conservative: wraps in single quotes and replaces every
+/// embedded single quote with `'"'"'`.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\"'\"'");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// `tear audit` — read + filter the daemon's JSONL audit log.

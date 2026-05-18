@@ -291,6 +291,72 @@ fn replay_ignores_input_rows() {
     assert!(stdout.contains("output"), "got: {stdout}");
 }
 
+// ── #3 tear migrate (handoff wrapper) ───────────────────────────────
+
+#[test]
+fn migrate_creates_session_if_missing() {
+    let h = DaemonHarness::new("migrate-creates");
+    let (stdout, stderr, code) = h.run(&["migrate", "--name", "demo"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("migrate: session"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("demo"), "stdout: {stdout}");
+    // Sanity: the session is actually listed by the daemon.
+    let (list_stdout, _, list_code) = h.run(&["list"]);
+    assert_eq!(list_code, 0);
+    assert!(list_stdout.contains("demo"), "list: {list_stdout}");
+}
+
+#[test]
+fn migrate_is_idempotent_for_same_name() {
+    let h = DaemonHarness::new("migrate-idempotent");
+    let (out1, _, code1) = h.run(&["migrate", "--name", "samesame"]);
+    let (out2, _, code2) = h.run(&["migrate", "--name", "samesame"]);
+    assert_eq!(code1, 0);
+    assert_eq!(code2, 0);
+    // Extract the session id (16-hex token after "session ") from each.
+    let sid = |s: &str| {
+        s.lines()
+            .find(|ln| ln.contains("migrate: session"))
+            .and_then(|ln| ln.split_whitespace().nth(2).map(|t| t.to_string()))
+            .unwrap_or_default()
+    };
+    let a = sid(&out1);
+    let b = sid(&out2);
+    assert!(!a.is_empty(), "out1: {out1}");
+    assert_eq!(a, b, "ids differ: a={a} b={b}");
+    // Only one session should exist with that name.
+    let (list_stdout, _, _) = h.run(&["list"]);
+    let count = list_stdout
+        .lines()
+        .filter(|ln| ln.contains("samesame"))
+        .count();
+    assert_eq!(count, 1, "list dupes: {list_stdout}");
+}
+
+#[test]
+fn migrate_shell_snippet_emits_exports() {
+    let h = DaemonHarness::new("migrate-snippet");
+    let (stdout, stderr, code) =
+        h.run(&["migrate", "--name", "snip", "--shell-snippet"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("export TEAR_SESSION="),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("TEAR_SESSION_NAME='snip'"),
+        "stdout: {stdout}"
+    );
+    // No human-friendly hint should leak when --shell-snippet is on.
+    assert!(
+        !stdout.contains("hint:"),
+        "snippet output should be silent: {stdout}"
+    );
+}
+
 // ── #4 LLM proxy (tear ai) ──────────────────────────────────────────
 
 #[test]
