@@ -271,26 +271,23 @@ pub fn start_with_config(
     // and starship rely on it for prompt visibility + re-discovery.
     inproc.set_socket_path(socket_path.clone());
 
-    // Orphan-session pruner. Daemon-side safety net for the
-    // common bug where a consumer (mado, mcp, etc.) creates a
-    // session and then crashes / is force-quit without calling
-    // kill_session. Without pruning, the orphan accumulates
-    // pty-reader threads + scrollback memory and slows every
-    // subsequent `new_session_with_source` (fork copies the
-    // bloated address space).
+    // Orphan-session pruner. Daemon-side safety net for crashes
+    // / force-quits / SIGTERM where the consumer (mado, mcp,
+    // etc.) couldn't call kill_session. Without pruning, each
+    // orphan keeps a live pty + reader thread + scrollback;
+    // every subsequent `new_session_with_source` then forks the
+    // bloated address space (linearly slower per orphan —
+    // measured ~700 ms per orphan on macOS at 10+ sessions).
     //
-    // Policy: every 30 seconds, scan sessions. For each session
-    // with source != Human (Human sessions are intentionally
-    // long-lived per tmux convention), check pane_subscriber_count
-    // for every pane. If ZERO subscribers across the whole
-    // session AND the session has been subscriber-empty for the
-    // grace period (60 s), kill it. Human sessions are immune —
-    // operators `tear up` them and expect them to outlive any
-    // attached client.
+    // Policy: tick every 5 s. For each session:
+    //   * Human (`tear up`) → never auto-prune (operator
+    //     expectation: outlive any attached client)
+    //   * Named(_) (mado-spawned) → 10 s grace after the last
+    //     subscriber leaves
+    //   * Agent (MCP-spawned) → 30 s grace (agents may attach
+    //     briefly then detach repeatedly during a workflow)
     {
         let inproc_for_prune = inproc.clone();
-        let stop_for_prune = Arc::new(AtomicBool::new(false));
-        let _ = stop_for_prune.clone();  // keep alive for future
         thread::Builder::new()
             .name("tear-orphan-prune".into())
             .spawn(move || {
@@ -299,18 +296,10 @@ pub fn start_with_config(
                     tear_types::SessionId,
                     std::time::Instant,
                 > = std::collections::HashMap::new();
-                let grace = std::time::Duration::from_secs(60);
-                let tick = std::time::Duration::from_secs(30);
-                let mut first_warmup = true;
+                let tick = std::time::Duration::from_secs(5);
+                let named_grace = std::time::Duration::from_secs(10);
+                let agent_grace = std::time::Duration::from_secs(30);
                 loop {
-                    // Skip the first sweep — gives mado on
-                    // launch a minute to spawn its session +
-                    // attach without the pruner racing it.
-                    if first_warmup {
-                        first_warmup = false;
-                        std::thread::sleep(grace);
-                        continue;
-                    }
                     std::thread::sleep(tick);
                     let sessions = match inproc_for_prune.list_sessions() {
                         Ok(s) => s,
@@ -320,11 +309,14 @@ pub fn start_with_config(
                     let mut alive_ids = std::collections::HashSet::new();
                     for s in &sessions {
                         alive_ids.insert(s.id);
-                        if matches!(s.source, SessionSource::Human) {
-                            empty_since.remove(&s.id);
-                            continue;
-                        }
-                        // Any subscribers anywhere in the session?
+                        let grace = match &s.source {
+                            SessionSource::Human => {
+                                empty_since.remove(&s.id);
+                                continue;
+                            }
+                            SessionSource::Named(_) => named_grace,
+                            SessionSource::Agent => agent_grace,
+                        };
                         let any_subs = s.panes.keys().any(|pid| {
                             inproc_for_prune
                                 .pane_subscriber_count(*pid)
@@ -340,7 +332,8 @@ pub fn start_with_config(
                                     session = %s.id,
                                     name = %s.name,
                                     source = %s.source.label(),
-                                    "orphan pruner: killing session (no subscribers for grace period)"
+                                    grace_secs = grace.as_secs(),
+                                    "orphan pruner: killing session"
                                 );
                                 let _ = inproc_for_prune.kill_session(s.id);
                                 empty_since.remove(&s.id);
