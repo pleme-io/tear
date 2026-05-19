@@ -39,6 +39,16 @@ crossterm = "0.28"
 # style). Pure rustls TLS — no native OpenSSL link dep.
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
+# `tear mcp` — stdio MCP server for perf + introspection. Opt-in
+# subcommand wired into Claude Code's MCP server list so agents
+# can interrogate the daemon (sessions / panes / bytes / CPU /
+# RSS) over JSON-RPC without scraping `tear list` output.
+rmcp = { version = "0.15", features = ["server", "transport-io"] }
+schemars = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util"] }
+sysinfo = "0.32"
+shidou = { git = "https://github.com/pleme-io/shidou" }
+
 [dev-dependencies]
 tempfile = "3"
 # Enables tear_daemon::testing::{DaemonHarness, DuplexStream}

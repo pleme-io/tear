@@ -28,6 +28,7 @@ use tear_types::MultiplexerControl;
 use tracing::info;
 
 mod ai;
+mod mcp;
 mod top;
 
 #[derive(Parser, Debug)]
@@ -340,6 +341,16 @@ enum Cmd {
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
     },
+    /// Run as MCP server (stdio transport) — exposes daemon /
+    /// session / pane perf introspection over JSON-RPC for
+    /// Claude Code agents. Stdout is the protocol channel;
+    /// tracing routes to stderr only.
+    Mcp {
+        /// Daemon UDS path to query. Defaults to the standard
+        /// XDG location.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
     /// Start a long-running tear-daemon listening on a UDS or TCP
     /// port. The daemon owns sessions across client disconnects;
     /// mado, the `tear attach` CLI, and any other typed driver can
@@ -432,6 +443,7 @@ fn main() -> Result<()> {
         }
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
         Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
+        Cmd::Mcp { socket } => cmd_mcp(socket),
         Cmd::ConfigCheck => cmd_config_check(),
         Cmd::ConfigPath => {
             let p = tear_config::default_config_path();
@@ -1680,6 +1692,15 @@ fn cmd_snapshot(pane: &str, socket: Option<std::path::PathBuf>) -> Result<()> {
     }
     println!("─ cursor: row {} col {} ─", snap.cursor_row, snap.cursor_col);
     Ok(())
+}
+
+fn cmd_mcp(socket: Option<std::path::PathBuf>) -> Result<()> {
+    // Stderr-only tracing — stdout is the MCP JSON-RPC framing
+    // channel. Any tracing line on stdout would break the
+    // protocol the way it does for mado mcp / rust-analyzer.
+    shidou::init_tracing_to_stderr();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(mcp::run(socket))
 }
 
 fn cmd_daemon(
