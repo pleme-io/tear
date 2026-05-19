@@ -10,16 +10,24 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use parking_lot::Mutex;
-use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use tracing::warn;
 
 /// Handle to one pane's PTY. The master side is held inside an
 /// `Arc<Mutex<...>>` so the reader thread and the writer thread (or
-/// `send_keys` caller) can share it. The child process is owned by
-/// the master end of `MasterPty`; dropping the handle reaps it.
+/// `send_keys` caller) can share it. The child process handle is
+/// retained so `Drop` can explicitly `kill()` it — without this,
+/// dropping the master Arc doesn't kill the shell (the reader
+/// thread holds a cloned master fd that keeps the slave open),
+/// shells accumulate as orphans, and every subsequent fork copies
+/// a bloated address space.
 pub struct PtyHandle {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Child handle retained for explicit kill on drop. Wrapped
+    /// in Mutex<Option<...>> so `kill()` can take ownership while
+    /// still leaving the slot in a valid (None) state after.
+    child: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
     /// Reader thread joins on `drop()`.
     reader_join: Option<JoinHandle<()>>,
     /// Total bytes consumed by the on-pane VT parser since spawn.
@@ -53,7 +61,15 @@ impl PtyHandle {
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let _child = pair.slave.spawn_command(cmd)?;
+        // Retain the child handle so Drop can kill() it. Without
+        // this the shell becomes an orphan after PtyHandle drops:
+        // closing the master fd would normally SIGHUP the child,
+        // but the reader thread (below) holds a separate cloned
+        // master fd that keeps the slave open, so the shell never
+        // sees HUP. Accumulating orphan shells bloats the daemon
+        // and slows every fork.
+        let child = pair.slave.spawn_command(cmd)?;
+        let child = Arc::new(Mutex::new(Some(child)));
         // Slave fd retained by the child; once it exits the master
         // reader hits EOF.
         drop(pair.slave);
@@ -88,6 +104,7 @@ impl PtyHandle {
         Ok(Self {
             master,
             writer,
+            child,
             reader_join: Some(reader_join),
             bytes_consumed,
         })
@@ -115,9 +132,23 @@ impl PtyHandle {
 
 impl Drop for PtyHandle {
     fn drop(&mut self) {
+        // Explicitly kill the child shell first. Dropping the
+        // master Arc alone is NOT enough — the reader thread
+        // holds a cloned master fd that keeps the slave alive,
+        // so the shell never sees SIGHUP. kill() sends SIGKILL
+        // (portable_pty's behavior on Unix), the shell exits,
+        // the slave fd closes, and the reader's read() returns
+        // Ok(0). The reader thread then exits the loop and the
+        // JoinHandle drop below completes immediately.
+        if let Some(mut child) = self.child.lock().take() {
+            if let Err(e) = child.kill() {
+                warn!(error = %e, "tear pty child kill failed (already exited?)");
+            }
+            // Reap the zombie so we don't leave defunct processes
+            // pinned to the daemon's pid table.
+            let _ = child.wait();
+        }
         if let Some(j) = self.reader_join.take() {
-            // Closing the master end of the PTY signals EOF to the
-            // reader; the join will return shortly.
             drop(j);
         }
     }
