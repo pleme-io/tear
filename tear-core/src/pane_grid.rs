@@ -25,11 +25,20 @@ use vte::{Params, Parser, Perform};
 
 pub use tear_types::pane_snapshot::{Cell, PaneSnapshot};
 
-/// Maximum scrollback rows kept off-screen. 1,000 rows is the
-/// xterm-traditional default; consumers that want more (mado's
-/// 10,000-row default) override at construction via
-/// [`PaneGrid::with_scrollback`].
-pub const DEFAULT_SCROLLBACK_ROWS: usize = 1_000;
+/// Maximum scrollback rows kept off-screen.
+///
+/// **Default: `usize::MAX` — unlimited.** The operator-facing
+/// contract is "never lose anything"; the only ceiling is host
+/// RAM. Consumers that want bounded retention (low-RAM systems,
+/// log panes that emit billions of lines) override at construction
+/// via [`PaneGrid::with_scrollback`].
+///
+/// Pre-2026-05 default was 1,000 rows (xterm tradition); changed to
+/// match operator expectation of "I can always scroll back to
+/// anything I've seen in this pane." See
+/// `tear-config/src/lib.rs::ScrollbackConfig` for the operator-
+/// facing tunable surface and the documented opt-in to bounded mode.
+pub const DEFAULT_SCROLLBACK_ROWS: usize = usize::MAX;
 
 /// Live grid + cursor + the parser that feeds them. Owns mutable
 /// state, so callers wrap it in `Mutex` (the `InProcess` does this
@@ -114,7 +123,13 @@ impl GridState {
             primary: VecDeque::from(vec![vec![Cell::BLANK; cols]; rows]),
             alternate: vec![vec![Cell::BLANK; cols]; rows],
             alt_active: false,
-            scrollback: VecDeque::with_capacity(scrollback_cap.min(64)),
+            // Allocate a modest initial capacity even when
+            // scrollback_cap is unlimited (usize::MAX). VecDeque
+            // grows on push, so the initial size is just an
+            // amortisation hint; allocating usize::MAX directly
+            // would OOM the host. 64 rows is a fine warm-up
+            // budget — the deque doubles from there on demand.
+            scrollback: VecDeque::with_capacity(64.min(scrollback_cap)),
             scrollback_cap,
             cursor_row: 0,
             cursor_col: 0,

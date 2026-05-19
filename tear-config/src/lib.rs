@@ -156,6 +156,104 @@ pub struct TearConfig {
     /// 4. Every client inherits the env var via the shell session.
     #[serde(default)]
     pub auth_token_env: Option<String>,
+
+    /// Per-pane scrollback configuration — the full operator-tunable
+    /// surface for "how much history do I keep, and across which
+    /// events." Defaults to effectively-unlimited scrollback (1M
+    /// rows) that survives clear-screen, doesn't accumulate during
+    /// alt-screen sessions (vim/htop), and uses no byte cap. See
+    /// [`ScrollbackConfig`] for the per-knob detail.
+    ///
+    /// Mado pushes its own preferred value via SetConfig at attach
+    /// time so tear sessions spawned/attached via mado inherit the
+    /// "huge scrollback" default automatically. See
+    /// `theory/CONFIGURATION-MANAGEMENT.md` § III for the
+    /// cross-tool composition pattern.
+    #[serde(default)]
+    pub scrollback: ScrollbackConfig,
+}
+
+/// Per-pane scrollback policy. Every knob is operator-tunable;
+/// every default targets "the operator never has to think about
+/// it on a modern machine."
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScrollbackConfig {
+    /// Maximum number of off-screen rows retained per pane.
+    ///
+    /// **Default: `usize::MAX` — unlimited.** The operator-facing
+    /// contract is "never lose anything." Rows accumulate in a
+    /// `VecDeque` that grows on demand; the only ceiling is host
+    /// RAM. On a 64 GB Mac with typical 100-col cells (≈ 50
+    /// bytes/cell × 100 cols = 5 KB/row), that's ~12 million
+    /// rows before the OS even notices.
+    ///
+    /// `0` disables scrollback entirely (top rows are dropped on
+    /// scroll — matches the xterm `-sl 0` flag). Operators on
+    /// low-RAM systems or with daemon panes that emit billions
+    /// of lines override to a finite number (10_000–50_000 is
+    /// typical for the bounded case).
+    #[serde(default = "default_scrollback_rows")]
+    pub rows: usize,
+
+    /// Optional hard byte cap. When set, the pane evicts the
+    /// oldest rows once `bytes_estimate > max_bytes` regardless
+    /// of `rows`. Default `None` — operators rely on the row cap
+    /// alone. Useful for binary-log streams (Kitty image escape
+    /// payloads, hex dumps) where one "row" can blow past the
+    /// expected ~50-byte average.
+    ///
+    /// Estimate is `cells × ~50 bytes` per row; not exact —
+    /// designed as a generous ceiling, not a precise limit.
+    #[serde(default)]
+    pub max_bytes: Option<usize>,
+
+    /// Keep scrollback rows through a full-screen clear
+    /// (`\x1b[2J`, `\x1b[3J`, `Ctrl-L`). **Default: true** — the
+    /// near-universal operator expectation; `clear` is for
+    /// "shove current view down out of sight", not "erase my
+    /// history." Set `false` to mimic naive xterm behavior.
+    #[serde(default = "default_keep_on_clear")]
+    pub keep_on_clear: bool,
+
+    /// Push rows to scrollback while the alt-screen buffer
+    /// (`\x1b[?1049h`, used by vim/htop/less/btop) is active.
+    /// **Default: false** — matches xterm's tradition: alt-screen
+    /// is a separate scratch surface and its scrollback would
+    /// pollute the primary scrollback that operators actually
+    /// want to scroll through. Set `true` for "remember
+    /// everything ever displayed in this pane."
+    #[serde(default)]
+    pub on_alt_screen: bool,
+
+    /// Drop rows that contain only blank cells (no printable
+    /// content) before pushing to scrollback. **Default: false** —
+    /// preserves exact terminal history (blank rows between
+    /// `printf` outputs, padding from `cat /dev/zero | head`).
+    /// Set `true` to compact scrollback on chatty sessions.
+    #[serde(default)]
+    pub skip_blank_rows: bool,
+
+    /// On grid resize (e.g., font-size change, window resize),
+    /// reflow scrollback rows to the new column width. **Default:
+    /// true** — operators expect long lines to re-wrap after
+    /// resize. Set `false` for "scrollback is immutable history"
+    /// behavior (matches kitty's default; alacritty also defaults
+    /// to true).
+    #[serde(default = "default_reflow_on_resize")]
+    pub reflow_on_resize: bool,
+}
+
+impl Default for ScrollbackConfig {
+    fn default() -> Self {
+        Self {
+            rows: default_scrollback_rows(),
+            max_bytes: None,
+            keep_on_clear: default_keep_on_clear(),
+            on_alt_screen: false,
+            skip_blank_rows: false,
+            reflow_on_resize: default_reflow_on_resize(),
+        }
+    }
 }
 
 /// `tear ai` provider + model. Lives in `tear-config` so it
@@ -228,6 +326,7 @@ impl Default for TearConfig {
             ai: None,
             audit_log: None,
             auth_token_env: None,
+            scrollback: ScrollbackConfig::default(),
         }
     }
 }
@@ -243,6 +342,23 @@ fn default_mouse() -> bool {
 }
 fn default_base_index() -> u16 {
     1
+}
+fn default_scrollback_rows() -> usize {
+    // "Never lose anything" — the cap is the host's RAM, not a
+    // hard-coded row count. Operators opt back in to bounded
+    // retention by setting a finite number; the runtime treats
+    // usize::MAX as the "do not enforce a row cap" sentinel.
+    usize::MAX
+}
+fn default_keep_on_clear() -> bool {
+    // Operators expect Ctrl-L to push current view down, not to
+    // erase history.
+    true
+}
+fn default_reflow_on_resize() -> bool {
+    // Alacritty + kitty default; the post-resize "wait, where did
+    // my long line go" surprise comes from `false`.
+    true
 }
 fn default_debounce() -> u64 {
     250
