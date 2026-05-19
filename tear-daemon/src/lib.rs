@@ -296,9 +296,9 @@ pub fn start_with_config(
                     tear_types::SessionId,
                     std::time::Instant,
                 > = std::collections::HashMap::new();
-                let tick = std::time::Duration::from_secs(5);
-                let named_grace = std::time::Duration::from_secs(10);
-                let agent_grace = std::time::Duration::from_secs(30);
+                let tick = std::time::Duration::from_secs(2);
+                let named_grace = std::time::Duration::from_secs(3);
+                let agent_grace = std::time::Duration::from_secs(15);
                 loop {
                     std::thread::sleep(tick);
                     let sessions = match inproc_for_prune.list_sessions() {
