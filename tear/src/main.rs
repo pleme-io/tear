@@ -410,6 +410,18 @@ enum PaneRecordAction {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // MCP must dispatch BEFORE the global tracing init below.
+    // The default `init_tracing` writes to stdout, but stdout is
+    // the JSON-RPC framing channel for `tear mcp` — any tracing
+    // line would break protocol. cmd_mcp installs its own
+    // stderr-only subscriber via shidou; doing it after the
+    // stdout-fmt init would also double-set the global default
+    // and panic.
+    if let Cmd::Mcp { ref socket } = cli.command {
+        return cmd_mcp(socket.clone());
+    }
+
     init_tracing(cli.verbose);
 
     match cli.command {
