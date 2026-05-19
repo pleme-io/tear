@@ -21,3 +21,10 @@ tracing = { workspace = true }
 arc-swap = { workspace = true }
 notify = { workspace = true }
 once_cell = { workspace = true }
+# M1 (four-tool ecosystem migration): tear-config now wraps
+# shikumi::ConfigStore under the LiveConfig public API.
+# Eliminates the hand-rolled ArcSwap+notify duplication; tear
+# becomes shikumi consumer #3 (after mado + frost). Resolves
+# via the workspace shikumi pin (git@pleme-io/shikumi) so we
+# always run against the same rev the rest of the fleet uses.
+shikumi.workspace = true

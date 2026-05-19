@@ -50,7 +50,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{info, warn};
@@ -68,6 +67,11 @@ pub enum ConfigError {
     Yaml(#[from] serde_yaml_ng::Error),
     #[error("watcher failed: {0}")]
     Watch(#[from] notify::Error),
+    /// M1: shikumi's load/reload errors surface through this
+    /// variant so the LiveConfig public API (which returns
+    /// Result<(), ConfigError>) stays stable for callers.
+    #[error("shikumi error: {0}")]
+    Shikumi(#[from] shikumi::ShikumiError),
 }
 
 /// The full live tear configuration.
@@ -396,9 +400,24 @@ pub fn load_or_default() -> Arc<TearConfig> {
 /// `SetConfig` RPCs + explicit `reload()`s). The pleme-io fleet uses
 /// this to push theme/keybind changes to every attached mado at the
 /// same moment, broadcast-style.
+///
+/// ## M1 — shikumi-backed (2026-05-19)
+///
+/// The internal storage is now `Arc<shikumi::ConfigStore<TearConfig>>`,
+/// the same primitive mado and frost use. The public API is
+/// preserved (LiveConfig + load + subscribe + replace + reload +
+/// spawn_watcher) but the atomic-swap + bookkeeping flow through
+/// shikumi's `ConfigStore::replace` / `reload`. Eliminates the
+/// hand-rolled ArcSwap+notify duplication; tear becomes shikumi
+/// consumer #3 (after mado + frost) — same operator UX, same
+/// hot-reload semantics, same env-override grammar fleet-wide.
 #[derive(Clone)]
 pub struct LiveConfig {
-    inner: Arc<ArcSwap<TearConfig>>,
+    /// Shikumi store — owns the inner `Arc<ArcSwap<TearConfig>>`
+    /// + generation counter + last-publish bookkeeping. We
+    /// delegate every atomic-swap to its `replace()` / `reload()`
+    /// methods so observability stays consistent across the fleet.
+    store: Arc<shikumi::ConfigStore<TearConfig>>,
     /// Per-subscriber senders. Cloning a LiveConfig clones the Arc
     /// (so daemon + watcher + RPC handlers see the same subscriber
     /// list). Mutex<Vec<Sender>> is enough — fan-out is rare (only
@@ -409,18 +428,47 @@ pub struct LiveConfig {
 
 impl Default for LiveConfig {
     fn default() -> Self {
+        let path = default_config_path();
+        // shikumi::ConfigStore::load handles missing-file gracefully
+        // (serde defaults fill in) — same contract as the prior
+        // load_or_default(). Env-prefix `TEAR_` lets operators
+        // override any nested key via env without touching YAML.
+        let store = match shikumi::ConfigStore::<TearConfig>::load(&path, "TEAR_") {
+            Ok(s) => s,
+            Err(err) => {
+                // Same fall-through as the pre-M1 load_or_default():
+                // operator-broken YAML should not crash the daemon;
+                // log + use defaults. Tests cover both branches.
+                warn!(error = %err, path = %path.display(),
+                    "tear-config: shikumi load failed; using defaults");
+                // Synthesize a defaults-only store via a tempfile so
+                // shikumi's bookkeeping (generation, last_publish_at)
+                // is still wired up — replace() can then push fresh
+                // configs over the top.
+                shikumi::ConfigStore::<TearConfig>::load(
+                    std::path::Path::new("/dev/null/tear-defaults-missing"),
+                    "TEAR_",
+                )
+                .unwrap_or_else(|_| panic!(
+                    "shikumi defaults-only load failed (both real path \
+                     and synthetic path errored); please file a bug"
+                ))
+            }
+        };
         Self {
-            inner: Arc::new(ArcSwap::from(load_or_default())),
+            store: Arc::new(store),
             subscribers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
 
 impl LiveConfig {
-    /// Get the current config — Arc clone, no lock.
+    /// Get the current config — Arc clone, no lock. Delegates to
+    /// shikumi's `ConfigStore::get` which returns a Guard that we
+    /// upgrade to a long-lived Arc via Guard's deref.
     #[must_use]
     pub fn load(&self) -> Arc<TearConfig> {
-        self.inner.load_full()
+        Arc::clone(&self.store.get())
     }
 
     /// Register a config-change subscriber. Returns the receiver
@@ -440,26 +488,39 @@ impl LiveConfig {
     /// broadcast).
     pub fn replace(&self, cfg: TearConfig) {
         info!("tear-config: applying new config");
-        let new_arc = Arc::new(cfg);
-        self.inner.store(new_arc.clone());
-        let mut subs = self.subscribers.lock().expect("subscribers poisoned");
-        let mut i = 0;
-        while i < subs.len() {
-            if subs[i].send(new_arc.clone()).is_err() {
-                subs.swap_remove(i);
-            } else {
-                i += 1;
-            }
-        }
+        // shikumi's replace() does the atomic swap + bookkeeping;
+        // we follow with our own fan-out to the mpsc subscribers
+        // (shikumi has only a single on_reload callback, which
+        // doesn't fit the mado-multi-subscriber pattern).
+        self.store.replace(cfg);
+        let new_arc = self.load();
+        Self::fan_out(&self.subscribers, new_arc);
     }
 
     /// Reload from the canonical path. Logs success/failure; on
     /// failure the previous config remains in place.
     pub fn reload(&self) -> Result<(), ConfigError> {
-        let path = default_config_path();
-        let cfg = load_from(&path)?;
-        self.replace(cfg);
+        self.store.reload()?;
+        let new_arc = self.load();
+        Self::fan_out(&self.subscribers, new_arc);
         Ok(())
+    }
+
+    /// Internal fan-out helper. Mirrors the pre-M1 swap-remove
+    /// loop that prunes dead senders in place.
+    fn fan_out(
+        subscribers: &Arc<Mutex<Vec<mpsc::Sender<Arc<TearConfig>>>>>,
+        snap: Arc<TearConfig>,
+    ) {
+        let mut subs = subscribers.lock().expect("subscribers poisoned");
+        let mut i = 0;
+        while i < subs.len() {
+            if subs[i].send(snap.clone()).is_err() {
+                subs.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Spawn a background watcher that reloads on file change.
