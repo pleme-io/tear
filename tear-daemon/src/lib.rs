@@ -271,6 +271,87 @@ pub fn start_with_config(
     // and starship rely on it for prompt visibility + re-discovery.
     inproc.set_socket_path(socket_path.clone());
 
+    // Orphan-session pruner. Daemon-side safety net for the
+    // common bug where a consumer (mado, mcp, etc.) creates a
+    // session and then crashes / is force-quit without calling
+    // kill_session. Without pruning, the orphan accumulates
+    // pty-reader threads + scrollback memory and slows every
+    // subsequent `new_session_with_source` (fork copies the
+    // bloated address space).
+    //
+    // Policy: every 30 seconds, scan sessions. For each session
+    // with source != Human (Human sessions are intentionally
+    // long-lived per tmux convention), check pane_subscriber_count
+    // for every pane. If ZERO subscribers across the whole
+    // session AND the session has been subscriber-empty for the
+    // grace period (60 s), kill it. Human sessions are immune —
+    // operators `tear up` them and expect them to outlive any
+    // attached client.
+    {
+        let inproc_for_prune = inproc.clone();
+        let stop_for_prune = Arc::new(AtomicBool::new(false));
+        let _ = stop_for_prune.clone();  // keep alive for future
+        thread::Builder::new()
+            .name("tear-orphan-prune".into())
+            .spawn(move || {
+                use tear_types::{MultiplexerControl, SessionSource};
+                let mut empty_since: std::collections::HashMap<
+                    tear_types::SessionId,
+                    std::time::Instant,
+                > = std::collections::HashMap::new();
+                let grace = std::time::Duration::from_secs(60);
+                let tick = std::time::Duration::from_secs(30);
+                let mut first_warmup = true;
+                loop {
+                    // Skip the first sweep — gives mado on
+                    // launch a minute to spawn its session +
+                    // attach without the pruner racing it.
+                    if first_warmup {
+                        first_warmup = false;
+                        std::thread::sleep(grace);
+                        continue;
+                    }
+                    std::thread::sleep(tick);
+                    let sessions = match inproc_for_prune.list_sessions() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let now = std::time::Instant::now();
+                    let mut alive_ids = std::collections::HashSet::new();
+                    for s in &sessions {
+                        alive_ids.insert(s.id);
+                        if matches!(s.source, SessionSource::Human) {
+                            empty_since.remove(&s.id);
+                            continue;
+                        }
+                        // Any subscribers anywhere in the session?
+                        let any_subs = s.panes.keys().any(|pid| {
+                            inproc_for_prune
+                                .pane_subscriber_count(*pid)
+                                .map(|n| n > 0)
+                                .unwrap_or(false)
+                        });
+                        if any_subs {
+                            empty_since.remove(&s.id);
+                        } else {
+                            let started = empty_since.entry(s.id).or_insert(now);
+                            if now.duration_since(*started) >= grace {
+                                info!(
+                                    session = %s.id,
+                                    name = %s.name,
+                                    source = %s.source.label(),
+                                    "orphan pruner: killing session (no subscribers for grace period)"
+                                );
+                                let _ = inproc_for_prune.kill_session(s.id);
+                                empty_since.remove(&s.id);
+                            }
+                        }
+                    }
+                    empty_since.retain(|k, _| alive_ids.contains(k));
+                }
+            })?;
+    }
+
     // Best-effort notify watcher. If spawn_watcher fails (e.g.
     // config dir doesn't exist on a brand-new fleet host) we log
     // and continue — operators can still ReloadConfig via the RPC.
