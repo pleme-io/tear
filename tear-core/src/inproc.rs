@@ -59,6 +59,11 @@ pub struct InProcess {
     /// deep-copy the chunk. Recording is opt-in via
     /// `enable_pane_recording`.
     recordings: Arc<Mutex<BTreeMap<PaneId, Arc<PaneRecording>>>>,
+    /// UDS path the tear-daemon bound to. Stamped onto every PTY
+    /// child's `TEAR_SOCKET` env var so shells / prompts /
+    /// child processes can re-discover the daemon without
+    /// scanning the XDG runtime dir.
+    socket_path: Arc<RwLock<Option<std::path::PathBuf>>>,
 }
 
 impl Default for InProcess {
@@ -76,7 +81,20 @@ impl InProcess {
             grids: Arc::new(Mutex::new(BTreeMap::new())),
             subscribers: Arc::new(Mutex::new(BTreeMap::new())),
             recordings: Arc::new(Mutex::new(BTreeMap::new())),
+            socket_path: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Record the UDS path the daemon bound to. Subsequent PTY
+    /// spawns stamp `TEAR_SOCKET=<path>` on the child env. Called
+    /// by `tear-daemon::start*` immediately after `bind`.
+    pub fn set_socket_path(&self, path: std::path::PathBuf) {
+        *self.socket_path.write() = Some(path);
+    }
+
+    /// Borrow the recorded socket path, if any.
+    pub fn socket_path(&self) -> Option<std::path::PathBuf> {
+        self.socket_path.read().clone()
     }
 
     /// Enable recording for `pane_id`. Idempotent — calling on an
@@ -253,7 +271,9 @@ impl InProcess {
 
     /// Spawn a PTY for the given pane. Caller pre-creates the typed
     /// pane via the registry; this attaches the runtime + installs
-    /// the per-pane VT parser.
+    /// the per-pane VT parser AND injects the `TEAR_*` env vars so
+    /// shells and prompts (starship) can see they're running inside
+    /// a tear session.
     fn spawn_pty_for(&self, pane_id: PaneId, shell: &str, size: (u16, u16)) -> anyhow::Result<()> {
         let pty_size = PtySize {
             rows: size.1,
@@ -261,6 +281,28 @@ impl InProcess {
             pixel_width: 0,
             pixel_height: 0,
         };
+        // Resolve the session this pane belongs to so we can stamp
+        // TEAR_SESSION_{ID,NAME} on the child's env. Look-up is
+        // cheap (BTreeMap walk over typically <10 sessions); the
+        // alternative — caller threading session_id in — would
+        // bloat every call site.
+        let (session_id, session_name) = {
+            let r = self.registry.read();
+            r.sessions
+                .values()
+                .find(|s| s.panes.contains_key(&pane_id))
+                .map(|s| (s.id.to_string(), s.name.clone()))
+                .unwrap_or_else(|| (String::new(), String::new()))
+        };
+        let mut env: Vec<(String, String)> = vec![
+            ("TEAR".into(), "1".into()),
+            ("TEAR_SESSION_ID".into(), session_id),
+            ("TEAR_SESSION_NAME".into(), session_name),
+            ("TEAR_PANE_ID".into(), pane_id.to_string()),
+        ];
+        if let Some(p) = self.socket_path() {
+            env.push(("TEAR_SOCKET".into(), p.to_string_lossy().to_string()));
+        }
         // Allocate the per-pane grid and register it BEFORE spawning
         // the PTY — the reader thread starts immediately on spawn,
         // and we want the first bytes to find their grid.
@@ -297,7 +339,7 @@ impl InProcess {
             }
             debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid + subscribers");
         });
-        let pty = PtyHandle::spawn(shell, &[], None, &[], pty_size, on_bytes)?;
+        let pty = PtyHandle::spawn(shell, &[], None, &env, pty_size, on_bytes)?;
         self.ptys.lock().insert(pane_id, pty);
         Ok(())
     }
@@ -684,6 +726,56 @@ mod tests {
         let inproc = InProcess::new();
         let sessions = inproc.list_sessions().unwrap();
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn pty_env_includes_tear_session_pane_socket_vars() {
+        // Spawn a fresh shell that prints the TEAR_* env vars + a
+        // sentinel string, then subscribe to its bytes and assert
+        // we see the sentinel + the env values land. Proves the
+        // spawn_pty_for env injection works end-to-end (the
+        // shell's child PROCESS observes them).
+        let inproc = Arc::new(InProcess::new());
+        inproc.set_socket_path(std::path::PathBuf::from("/tmp/tear-test-env.sock"));
+
+        let sid = inproc
+            .new_session("env-test", "/bin/sh")
+            .expect("new_session");
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        inproc.subscribers.lock().entry(pane).or_default().push(tx);
+
+        inproc
+            .send_keys(
+                pane,
+                b"printf 'SENTINEL[T=%s][S=%s][P=%s][SOCK=%s]\\n' \"${TEAR}\" \"${TEAR_SESSION_NAME}\" \"${TEAR_PANE_ID}\" \"${TEAR_SOCKET}\"\n",
+            )
+            .expect("send_keys");
+
+        // Collect output for up to 2 seconds.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut buf = Vec::<u8>::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                if let Ok(s) = std::str::from_utf8(&buf) {
+                    if s.contains("SENTINEL[") && s.contains(']') {
+                        // Wait briefly for the rest of the line to arrive.
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        while let Ok(more) = rx.try_recv() {
+                            buf.extend_from_slice(&more);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("SENTINEL["), "no sentinel in output: {text:?}");
+        assert!(text.contains("T=1"), "TEAR=1 not present: {text:?}");
+        assert!(text.contains("S=env-test"), "TEAR_SESSION_NAME wrong: {text:?}");
+        assert!(text.contains("SOCK=/tmp/tear-test-env.sock"), "TEAR_SOCKET wrong: {text:?}");
     }
 
     #[test]

@@ -265,6 +265,12 @@ pub fn start_with_config(
     let listener = UnixListener::bind(&socket_path)?;
     info!(path = %socket_path.display(), "tear-daemon listening");
 
+    // Stamp the bound socket path on the InProcess backend so
+    // every PTY child it spawns can inherit `TEAR_SOCKET=<path>`
+    // (alongside TEAR_SESSION_ID/NAME and TEAR_PANE_ID) — shells
+    // and starship rely on it for prompt visibility + re-discovery.
+    inproc.set_socket_path(socket_path.clone());
+
     // Best-effort notify watcher. If spawn_watcher fails (e.g.
     // config dir doesn't exist on a brand-new fleet host) we log
     // and continue — operators can still ReloadConfig via the RPC.
