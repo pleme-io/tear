@@ -294,14 +294,35 @@ impl InProcess {
                 .map(|s| (s.id.to_string(), s.name.clone()))
                 .unwrap_or_else(|| (String::new(), String::new()))
         };
-        let mut env: Vec<(String, String)> = vec![
-            ("TEAR".into(), "1".into()),
-            ("TEAR_SESSION_ID".into(), session_id),
-            ("TEAR_SESSION_NAME".into(), session_name),
-            ("TEAR_PANE_ID".into(), pane_id.to_string()),
-        ];
+        // portable_pty's CommandBuilder uses an explicit env-vec
+        // — any env we pass REPLACES the parent process's env
+        // rather than augmenting it. The tear-daemon typically
+        // runs under launchd (macOS) / systemd-user (Linux) with
+        // a minimal env, so we MUST inherit the daemon's env
+        // first (which carries PATH from blackmatter-shell's
+        // session-vars), THEN stamp TEAR_* on top, THEN ensure
+        // TERM is set so terminfo-based programs (`clear`, vi,
+        // anything that reads $TERM) work.
+        let mut env: Vec<(String, String)> = std::env::vars().collect();
+        env.push(("TEAR".into(), "1".into()));
+        env.push(("TEAR_SESSION_ID".into(), session_id));
+        env.push(("TEAR_SESSION_NAME".into(), session_name));
+        env.push(("TEAR_PANE_ID".into(), pane_id.to_string()));
         if let Some(p) = self.socket_path() {
             env.push(("TEAR_SOCKET".into(), p.to_string_lossy().to_string()));
+        }
+        // TERM fallback — if the daemon was spawned by launchd
+        // and doesn't have TERM set, every shell inside tear
+        // would see `TERM environment variable not set` and
+        // `clear` / `tput` / readline arrow keys would break.
+        // xterm-256color is the modern conservative default.
+        if !env.iter().any(|(k, _)| k == "TERM") {
+            env.push(("TERM".into(), "xterm-256color".into()));
+        }
+        // COLORTERM advertises 24-bit colour support to apps
+        // that opt-in (newer vim/neovim, modern btop, etc.).
+        if !env.iter().any(|(k, _)| k == "COLORTERM") {
+            env.push(("COLORTERM".into(), "truecolor".into()));
         }
         // Allocate the per-pane grid and register it BEFORE spawning
         // the PTY — the reader thread starts immediately on spawn,
@@ -726,6 +747,45 @@ mod tests {
         let inproc = InProcess::new();
         let sessions = inproc.list_sessions().unwrap();
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn pty_env_provides_term_default_when_parent_lacks_it() {
+        // Reproduces the production bug where launchd-spawned
+        // tear-daemons had no TERM in their env, so every shell
+        // they spawned reported "TERM environment variable not
+        // set" and `clear`/arrow keys broke. We can't perfectly
+        // simulate the launchd-clean env in-process, but we can
+        // assert TERM is always non-empty in the spawned child.
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc.new_session("term-test", "/bin/sh").unwrap();
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        inproc.subscribers.lock().entry(pane).or_default().push(tx);
+
+        inproc
+            .send_keys(pane, b"printf 'TERM=[%s]\\n' \"${TERM:-MISSING}\"\n")
+            .expect("send_keys");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut buf = Vec::<u8>::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                if let Ok(s) = std::str::from_utf8(&buf) {
+                    if s.contains("TERM=[") && s.contains("]\n") {
+                        break;
+                    }
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("TERM=["), "no TERM output: {text:?}");
+        assert!(
+            !text.contains("TERM=[MISSING]"),
+            "TERM unset in child shell — terminfo would fail: {text:?}"
+        );
     }
 
     #[test]
