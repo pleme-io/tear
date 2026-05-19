@@ -324,6 +324,62 @@ impl InProcess {
         if !env.iter().any(|(k, _)| k == "COLORTERM") {
             env.push(("COLORTERM".into(), "truecolor".into()));
         }
+        // PATH augmentation — when the daemon is spawned by
+        // launchd (macOS) / systemd-user (Linux), its inherited
+        // PATH is the minimal `/usr/bin:/bin:/usr/sbin:/sbin`.
+        // Shells that try to invoke `tear` from a starship custom
+        // block, or any home-manager-installed binary, fail —
+        // and starship's prompt rendering hangs / errors silently.
+        // We prepend the operator's home-manager + nix-profile
+        // bin dirs to whatever PATH was inherited so the shell
+        // can find the same binaries the user sees outside tear.
+        if let Some(home) = env.iter().find(|(k, _)| k == "HOME").map(|(_, v)| v.clone()) {
+            let user = env
+                .iter()
+                .find(|(k, _)| k == "USER")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            let extra_paths = [
+                format!("/etc/profiles/per-user/{user}/bin"),
+                format!("{home}/.nix-profile/bin"),
+                "/run/current-system/sw/bin".to_string(),
+                "/nix/var/nix/profiles/default/bin".to_string(),
+                "/usr/local/bin".to_string(),
+            ];
+            // Find existing PATH entry to prepend to; if missing,
+            // build PATH from scratch with sensible defaults.
+            let existing_path = env
+                .iter()
+                .find(|(k, _)| k == "PATH")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_string());
+            // Prepend extras that aren't already in PATH (de-dupe
+            // so we don't bloat PATH on every nested spawn).
+            let mut new_path = String::new();
+            for p in &extra_paths {
+                if !existing_path
+                    .split(':')
+                    .any(|seg| seg == p.as_str())
+                {
+                    if !new_path.is_empty() {
+                        new_path.push(':');
+                    }
+                    new_path.push_str(p);
+                }
+            }
+            if !new_path.is_empty() {
+                new_path.push(':');
+                new_path.push_str(&existing_path);
+            } else {
+                new_path = existing_path;
+            }
+            // Replace existing PATH entry (or append if missing).
+            if let Some(slot) = env.iter_mut().find(|(k, _)| k == "PATH") {
+                slot.1 = new_path;
+            } else {
+                env.push(("PATH".into(), new_path));
+            }
+        }
         // Allocate the per-pane grid and register it BEFORE spawning
         // the PTY — the reader thread starts immediately on spawn,
         // and we want the first bytes to find their grid.
@@ -747,6 +803,45 @@ mod tests {
         let inproc = InProcess::new();
         let sessions = inproc.list_sessions().unwrap();
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn pty_env_path_includes_nix_profile_dirs() {
+        // Reproduces the production bug where the launchd-spawned
+        // tear-daemon inherited PATH = "/usr/bin:/bin:/usr/sbin:
+        // /sbin" — every shell tear spawned then couldn't find
+        // `tear` (or any home-manager binary), and starship's
+        // [custom.tear] prompt block hung trying to invoke it.
+        // The fix prepends /etc/profiles/per-user/$USER/bin +
+        // ~/.nix-profile/bin + /run/current-system/sw/bin so
+        // home-manager binaries resolve.
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc.new_session("path-test", "/bin/sh").unwrap();
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        inproc.subscribers.lock().entry(pane).or_default().push(tx);
+
+        inproc.send_keys(pane, b"printf 'PATH=[%s]\\n' \"$PATH\"\n").expect("send_keys");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut buf = Vec::<u8>::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                if let Ok(s) = std::str::from_utf8(&buf) {
+                    if s.contains("PATH=[") && s.contains("]\n") { break; }
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("PATH=["), "no PATH output: {text:?}");
+        assert!(
+            text.contains("/etc/profiles/per-user/")
+                || text.contains("/.nix-profile/bin")
+                || text.contains("/run/current-system/sw/bin"),
+            "PATH missing Nix profile dirs — home-manager binaries (tear, starship, etc.) wouldn't resolve: {text:?}"
+        );
     }
 
     #[test]
