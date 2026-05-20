@@ -18,6 +18,8 @@
 #![forbid(unsafe_code)]
 
 pub mod blocks;
+#[cfg(feature = "engate")]
+pub mod engate_producer;
 pub mod inproc;
 pub mod pane_grid;
 pub mod pty;

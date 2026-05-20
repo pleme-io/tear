@@ -29,6 +29,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "engate")]
+pub mod engate_producer;
+
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;

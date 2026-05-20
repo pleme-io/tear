@@ -591,6 +591,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "drop_bomb"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bda8e21c04aca2ae33ffc2fd8c23134f3cac46db123ba97bd9d3f3b8a4a85e1"
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -601,6 +607,28 @@ name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+
+[[package]]
+name = "engate-attach"
+version = "0.1.0"
+source = "git+https://github.com/pleme-io/engate?branch=main#43931c1fa16bf28d506cbdb6f1a72f7df2d03a8d"
+dependencies = [
+ "drop_bomb",
+ "engate-types",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+ "typed-builder",
+]
+
+[[package]]
+name = "engate-types"
+version = "0.1.0"
+source = "git+https://github.com/pleme-io/engate?branch=main#43931c1fa16bf28d506cbdb6f1a72f7df2d03a8d"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "equivalent"
@@ -2197,6 +2225,8 @@ dependencies = [
 name = "tear-client"
 version = "0.1.0"
 dependencies = [
+ "engate-attach",
+ "engate-types",
  "parking_lot",
  "serde_yaml_ng",
  "tear-config",
@@ -2227,6 +2257,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "engate-attach",
+ "engate-types",
  "once_cell",
  "parking_lot",
  "portable-pty",
@@ -2572,6 +2604,26 @@ dependencies = [
  "sha1",
  "thiserror 2.0.18",
  "utf-8",
+]
+
+[[package]]
+name = "typed-builder"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fef81aec2ca29576f9f6ae8755108640d0a86dd3161b2e8bca6cfa554e98f77d"
+dependencies = [
+ "typed-builder-macro",
+]
+
+[[package]]
+name = "typed-builder-macro"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ecb9ecf7799210407c14a8cfdfe0173365780968dc57973ed082211958e0b18"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

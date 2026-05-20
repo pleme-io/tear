@@ -11,11 +11,18 @@ description = "Typed RPC client for tear-daemon. Consumed by the tear bin, mado 
 [lints]
 workspace = true
 
+[features]
+default = []
+# Opt-in engate Producer impl over the daemon-mode subscribe path.
+engate = ["dep:engate-types", "dep:engate-attach"]
+
 [dependencies]
 tear-types = { workspace = true }
 tear-config = { workspace = true }
 parking_lot = { workspace = true }
 serde_yaml_ng = { workspace = true }
+engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true }
+engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true }
 
 [dev-dependencies]
 tear-core = { workspace = true }

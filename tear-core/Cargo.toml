@@ -11,6 +11,13 @@ description = "Runtime logic for the tear multiplexer — InProcess MultiplexerC
 [lints]
 workspace = true
 
+[features]
+default = []
+# Opt-in engate Producer impl. Off by default so consumers that only
+# use tear-core's MultiplexerControl path don't pull in engate's
+# typestate machinery + drop_bomb + typed-builder.
+engate = ["dep:engate-types", "dep:engate-attach"]
+
 [dependencies]
 tear-types = { workspace = true }
 tear-config = { workspace = true }
@@ -24,6 +31,8 @@ portable-pty = { workspace = true }
 once_cell = { workspace = true }
 blake3 = { workspace = true }
 vte = { workspace = true }
+engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true }
+engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true }
 
 [dev-dependencies]
 proptest = "1"
