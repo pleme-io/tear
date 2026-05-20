@@ -7,6 +7,7 @@
 //! constructs these via `PaneGrid::snapshot()`.
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 
 // ── Color ──────────────────────────────────────────────────────────
 
@@ -218,4 +219,156 @@ impl PaneSnapshot {
     pub fn to_text(&self) -> String {
         self.to_text_rows().join("\n")
     }
+
+    /// Serialize the snapshot as a stream of ANSI bytes that, when
+    /// fed into a fresh VT parser, reproduces the snapshot state
+    /// (cells, colors, attrs, cursor, alt-screen, cursor-visibility).
+    ///
+    /// The bug class this kills: a producer (tear pane) starts
+    /// emitting before a consumer (mado terminal model) attaches via
+    /// `subscribe_pane_bytes`. The early bytes (shell prompt, vim
+    /// initial frame) reach tear's grid but never the consumer; the
+    /// consumer's local model stays empty even though tear's snapshot
+    /// shows the right content. Calling `to_ansi()` and feeding the
+    /// result into the consumer's VT parser BEFORE the live byte
+    /// stream begins guarantees the consumer's model matches the
+    /// producer's grid at attach time.
+    ///
+    /// Long-term home: this lives in `engate` as the canonical
+    /// "history replay" operation in the typed attach protocol —
+    /// `EngateAttach<Synced>` is constructed by feeding `to_ansi()`
+    /// bytes through the consumer's parser, then subscribing to the
+    /// live stream.
+    #[must_use]
+    pub fn to_ansi(&self) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::with_capacity(self.rows * self.cols * 4 + 64);
+        // Enter alt-screen first if the pane is in alt-screen mode
+        // (vim / htop / less). Without this the cells would paint over
+        // the primary screen, corrupting it when the app exits alt.
+        if self.alt_screen_active {
+            buf.extend_from_slice(b"\x1b[?1049h");
+        }
+        // Reset SGR, clear screen, home cursor.
+        buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
+        // Track current SGR state so we only emit deltas.
+        let mut cur_fg = Color::WHITE;
+        let mut cur_bg = Color::BLACK;
+        let mut cur_attrs = CellAttrs::NONE;
+        for (r, row) in self.cells.iter().enumerate() {
+            // Move to start of this row (1-based CSI).
+            let _ = write!(buf, "\x1b[{};1H", r + 1);
+            for cell in row {
+                if cell.attrs != cur_attrs {
+                    // Attrs only get cleared by full SGR reset — emit
+                    // reset + re-establish colors + new attrs.
+                    buf.extend_from_slice(b"\x1b[0m");
+                    cur_fg = Color::WHITE;
+                    cur_bg = Color::BLACK;
+                    write_sgr_attrs(&mut buf, cell.attrs);
+                    cur_attrs = cell.attrs;
+                }
+                if cell.fg != cur_fg {
+                    let _ = write!(buf, "\x1b[38;2;{};{};{}m", cell.fg.r, cell.fg.g, cell.fg.b);
+                    cur_fg = cell.fg;
+                }
+                if cell.bg != cur_bg {
+                    let _ = write!(buf, "\x1b[48;2;{};{};{}m", cell.bg.r, cell.bg.g, cell.bg.b);
+                    cur_bg = cell.bg;
+                }
+                let mut tmp = [0u8; 4];
+                buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
+            }
+        }
+        // Position cursor (CSI is 1-based).
+        let _ = write!(
+            buf,
+            "\x1b[{};{}H",
+            self.cursor_row + 1,
+            self.cursor_col + 1
+        );
+        // Cursor visibility.
+        if !self.cursor_visible {
+            buf.extend_from_slice(b"\x1b[?25l");
+        }
+        buf
+    }
+}
+
+/// Emit SGR attribute bytes for the given attr set (does NOT include
+/// the leading reset — caller resets first if previous state had
+/// attrs the new state doesn't). Each attr gets its own CSI sequence
+/// for simplicity; size cost is negligible vs the cell payload.
+#[cfg(test)]
+mod to_ansi_tests {
+    use super::*;
+
+    fn snap_with(rows: usize, cols: usize, ch: char) -> PaneSnapshot {
+        PaneSnapshot {
+            rows,
+            cols,
+            cells: (0..rows)
+                .map(|_| (0..cols).map(|_| Cell { ch, ..Cell::BLANK }).collect())
+                .collect(),
+            cursor_row: 0,
+            cursor_col: 0,
+            alt_screen_active: false,
+            cursor_visible: true,
+            title: None,
+        }
+    }
+
+    #[test]
+    fn empty_grid_emits_clear_and_home() {
+        let s = snap_with(2, 3, ' ');
+        let bytes = s.to_ansi();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\x1b[0m"));
+        assert!(text.contains("\x1b[2J"));
+        assert!(text.contains("\x1b[H"));
+        assert!(text.contains("\x1b[1;1H"));
+    }
+
+    #[test]
+    fn cells_appear_in_output() {
+        let mut s = snap_with(1, 5, 'x');
+        s.cells[0][2].ch = 'Y';
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("xxYxx"), "got: {text:?}");
+    }
+
+    #[test]
+    fn cursor_position_emitted_one_based() {
+        let mut s = snap_with(5, 5, ' ');
+        s.cursor_row = 3;
+        s.cursor_col = 2;
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("\x1b[4;3H"), "got: {text:?}");
+    }
+
+    #[test]
+    fn alt_screen_active_prepends_csi_1049h() {
+        let mut s = snap_with(1, 1, ' ');
+        s.alt_screen_active = true;
+        let bytes = s.to_ansi();
+        assert!(bytes.starts_with(b"\x1b[?1049h"));
+    }
+
+    #[test]
+    fn invisible_cursor_emits_csi_25l() {
+        let mut s = snap_with(1, 1, ' ');
+        s.cursor_visible = false;
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("\x1b[?25l"));
+    }
+}
+
+fn write_sgr_attrs(buf: &mut Vec<u8>, attrs: CellAttrs) {
+    if attrs.contains(CellAttrs::BOLD)          { buf.extend_from_slice(b"\x1b[1m"); }
+    if attrs.contains(CellAttrs::DIM)           { buf.extend_from_slice(b"\x1b[2m"); }
+    if attrs.contains(CellAttrs::ITALIC)        { buf.extend_from_slice(b"\x1b[3m"); }
+    if attrs.contains(CellAttrs::UNDERLINE)     { buf.extend_from_slice(b"\x1b[4m"); }
+    if attrs.contains(CellAttrs::BLINK)         { buf.extend_from_slice(b"\x1b[5m"); }
+    if attrs.contains(CellAttrs::INVERSE)       { buf.extend_from_slice(b"\x1b[7m"); }
+    if attrs.contains(CellAttrs::HIDDEN)        { buf.extend_from_slice(b"\x1b[8m"); }
+    if attrs.contains(CellAttrs::STRIKETHROUGH) { buf.extend_from_slice(b"\x1b[9m"); }
 }

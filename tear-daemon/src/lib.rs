@@ -640,6 +640,46 @@ fn serve_subscription<S: io::Read + io::Write>(
         }
     };
     write_msg(&mut stream, &Response::Ok)?;
+    // ── engate M0: initial-grid replay ──────────────────────────────
+    //
+    // Race the daemon used to lose: shell prints prompt at t=0;
+    // mado attaches at t+10ms; mado's subscribe channel only sees
+    // bytes emitted AFTER attach; mado's local terminal model stays
+    // empty even though tear's grid is full. Fix: snapshot the
+    // pane's current grid right after subscribe, serialize as ANSI
+    // bytes (`PaneSnapshot::to_ansi()`), and emit as a single
+    // `PaneBytes` frame BEFORE entering the live stream loop.
+    // Consumers feed it through their VT parser unchanged — their
+    // model converges to the current grid before the first redraw.
+    //
+    // The snapshot+subscribe ordering matters: subscribe FIRST so
+    // no bytes that arrive between snapshot and subscribe-register
+    // are lost. The snapshot may include a few bytes of overlap
+    // with the live stream — harmless, since ANSI sequences are
+    // idempotent at the parser level (re-rendering the same cells
+    // is a no-op).
+    //
+    // Long-term: engate M1 lifts this into a typed
+    // `SubscribeResponse { initial_grid, then_stream }` shape,
+    // statig-enforced typestate, loom-tested across all
+    // (subscribe, emit) interleavings.
+    match inproc.pane_snapshot(pane) {
+        Ok(snap) => {
+            let bytes = snap.to_ansi();
+            if !bytes.is_empty()
+                && write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err()
+            {
+                return Ok(());
+            }
+        }
+        Err(e) => {
+            // Pane vanished between subscribe and snapshot — rare,
+            // but possible if the shell exited in that window. Let
+            // the live-stream loop handle the closure path; the
+            // consumer just won't get an initial replay.
+            tracing::debug!(?e, %pane, "pane_snapshot failed at subscribe time — skipping initial replay");
+        }
+    }
     // Drain the receiver synchronously — recv blocks until either a
     // chunk arrives or every sender has been dropped (pane killed).
     loop {
