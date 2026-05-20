@@ -360,6 +360,160 @@ mod to_ansi_tests {
         let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
         assert!(text.contains("\x1b[?25l"));
     }
+
+    // ── Expanded coverage: colors ─────────────────────────────────
+
+    #[test]
+    fn fg_color_change_emits_truecolor_sgr() {
+        let mut s = snap_with(1, 1, 'r');
+        s.cells[0][0].fg = Color::new(255, 100, 0); // orange
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("\x1b[38;2;255;100;0m"), "got: {text:?}");
+    }
+
+    #[test]
+    fn bg_color_change_emits_truecolor_sgr() {
+        let mut s = snap_with(1, 1, ' ');
+        s.cells[0][0].bg = Color::new(0, 50, 100);
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("\x1b[48;2;0;50;100m"), "got: {text:?}");
+    }
+
+    #[test]
+    fn both_fg_and_bg_change_in_one_cell() {
+        let mut s = snap_with(1, 1, '!');
+        s.cells[0][0].fg = Color::new(10, 20, 30);
+        s.cells[0][0].bg = Color::new(200, 150, 100);
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("\x1b[38;2;10;20;30m"));
+        assert!(text.contains("\x1b[48;2;200;150;100m"));
+        assert!(text.contains('!'));
+    }
+
+    // ── Expanded coverage: each CellAttrs flag ────────────────────
+
+    #[test]
+    fn each_cellattr_flag_emits_matching_sgr() {
+        let cases: &[(CellAttrs, &str)] = &[
+            (CellAttrs::BOLD,          "\x1b[1m"),
+            (CellAttrs::DIM,           "\x1b[2m"),
+            (CellAttrs::ITALIC,        "\x1b[3m"),
+            (CellAttrs::UNDERLINE,     "\x1b[4m"),
+            (CellAttrs::BLINK,         "\x1b[5m"),
+            (CellAttrs::INVERSE,       "\x1b[7m"),
+            (CellAttrs::HIDDEN,        "\x1b[8m"),
+            (CellAttrs::STRIKETHROUGH, "\x1b[9m"),
+        ];
+        for (attr, expected_sgr) in cases {
+            let mut s = snap_with(1, 1, 'a');
+            s.cells[0][0].attrs = *attr;
+            let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+            assert!(
+                text.contains(expected_sgr),
+                "attr {:?} should emit {:?}, got {text:?}",
+                attr,
+                expected_sgr
+            );
+        }
+    }
+
+    #[test]
+    fn combined_attrs_emit_all_sgr_codes() {
+        let mut s = snap_with(1, 1, 'a');
+        let mut combined = CellAttrs::NONE;
+        combined.insert(CellAttrs::BOLD);
+        combined.insert(CellAttrs::UNDERLINE);
+        combined.insert(CellAttrs::ITALIC);
+        s.cells[0][0].attrs = combined;
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("\x1b[1m"));
+        assert!(text.contains("\x1b[3m"));
+        assert!(text.contains("\x1b[4m"));
+    }
+
+    // ── Expanded coverage: SGR delta-encoding ─────────────────────
+
+    #[test]
+    fn identical_runs_do_not_re_emit_sgr() {
+        // Three cells with the same SGR state should emit the SGR
+        // sequence at most once for the row, not three times.
+        let mut s = snap_with(1, 3, 'x');
+        for c in &mut s.cells[0] {
+            c.fg = Color::new(50, 100, 150);
+        }
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        let count = text.matches("\x1b[38;2;50;100;150m").count();
+        assert_eq!(count, 1, "expected 1 fg SGR for identical run, got {count}");
+    }
+
+    #[test]
+    fn fg_change_mid_row_re_emits_sgr_once() {
+        let mut s = snap_with(1, 4, 'a');
+        s.cells[0][0].fg = Color::new(255, 0, 0);
+        s.cells[0][1].fg = Color::new(255, 0, 0);
+        s.cells[0][2].fg = Color::new(0, 255, 0);
+        s.cells[0][3].fg = Color::new(0, 255, 0);
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert_eq!(text.matches("\x1b[38;2;255;0;0m").count(), 1);
+        assert_eq!(text.matches("\x1b[38;2;0;255;0m").count(), 1);
+    }
+
+    // ── Expanded coverage: layout edge cases ──────────────────────
+
+    #[test]
+    fn each_row_gets_explicit_cursor_position() {
+        let s = snap_with(3, 2, '.');
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        // Row 1, row 2, row 3 each emitted with CSI <r>;1H.
+        assert!(text.contains("\x1b[1;1H"));
+        assert!(text.contains("\x1b[2;1H"));
+        assert!(text.contains("\x1b[3;1H"));
+    }
+
+    #[test]
+    fn utf8_multibyte_chars_round_trip() {
+        let mut s = snap_with(1, 5, '·');
+        s.cells[0][0].ch = '日';
+        s.cells[0][1].ch = '本';
+        s.cells[0][2].ch = '語';
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(text.contains("日本語"), "got: {text:?}");
+    }
+
+    #[test]
+    fn alt_screen_plus_cursor_hidden_combine() {
+        let mut s = snap_with(1, 1, ' ');
+        s.alt_screen_active = true;
+        s.cursor_visible = false;
+        let bytes = s.to_ansi();
+        let text = String::from_utf8_lossy(&bytes);
+        // alt-screen prelude first.
+        assert!(bytes.starts_with(b"\x1b[?1049h"));
+        // cursor-hide somewhere after.
+        assert!(text.contains("\x1b[?25l"));
+        // Ordering invariant: cursor-hide comes after final cursor
+        // position so the hidden cursor sits at the recorded coords
+        // (matters when the consumer later toggles visible again).
+        let pos_idx = text.find("\x1b[1;1H").unwrap();
+        let hide_idx = text.find("\x1b[?25l").unwrap();
+        assert!(hide_idx > pos_idx, "cursor hide must follow position");
+    }
+
+    #[test]
+    fn wide_grid_emits_proportional_bytes() {
+        // 80x24 = 1920 cells. Output should be at least that many
+        // chars (one byte per cell minimum). Sanity check that we
+        // don't accidentally truncate or omit rows.
+        let s = snap_with(24, 80, '*');
+        let bytes = s.to_ansi();
+        assert!(bytes.len() >= 1920, "expected >=1920 bytes, got {}", bytes.len());
+        // All 24 row-position CSI sequences present.
+        let text = String::from_utf8_lossy(&bytes);
+        for row in 1..=24 {
+            let csi = format!("\x1b[{row};1H");
+            assert!(text.contains(&csi), "row {row} CSI missing");
+        }
+    }
 }
 
 fn write_sgr_attrs(buf: &mut Vec<u8>, attrs: CellAttrs) {
