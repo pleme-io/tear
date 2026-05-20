@@ -539,10 +539,23 @@ impl MultiplexerControl for Client {
         shell: &str,
         source: tear_types::SessionSource,
     ) -> ControlResult<SessionId> {
+        // Defer to new_session_with_source_and_size with the
+        // default (80, 24) so the wire path is one method.
+        self.new_session_with_source_and_size(name, shell, source, (80, 24))
+    }
+
+    fn new_session_with_source_and_size(
+        &self,
+        name: &str,
+        shell: &str,
+        source: tear_types::SessionSource,
+        size_cells: (u16, u16),
+    ) -> ControlResult<SessionId> {
         match self.rpc(Request::NewSession {
             name: name.to_owned(),
             shell: shell.to_owned(),
             source: Some(source),
+            size_cells: Some(size_cells),
         })? {
             Response::SessionId(id) => Ok(id),
             other => Err(unexpected("SessionId", other)),

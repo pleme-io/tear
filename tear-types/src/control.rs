@@ -91,11 +91,37 @@ pub trait MultiplexerControl: Send + Sync {
     /// daemon stores this on the [`TearSession`] so `tear list`
     /// can group by provenance and operators can audit
     /// agent-created sessions.
+    ///
+    /// Pane size defaults to 80×24. For consumers that already
+    /// know the target geometry (mado, attaching renderers),
+    /// prefer [`Self::new_session_with_source_and_size`] so the
+    /// shell spawns at the right size from t=0 — no
+    /// SIGWINCH-during-first-prompt redraw.
     fn new_session_with_source(
         &self,
         name: &str,
         shell: &str,
         source: crate::session::SessionSource,
+    ) -> ControlResult<SessionId> {
+        self.new_session_with_source_and_size(name, shell, source, (80, 24))
+    }
+
+    /// Same as [`Self::new_session_with_source`] but the first
+    /// pane is created at the given `(cols, rows)` size. The
+    /// child shell's TIOCGWINSZ returns these values on first
+    /// query — TUI apps render at the correct grid from
+    /// the very first prompt, no resize-flicker on attach.
+    ///
+    /// Defaults to (80, 24) when the consumer doesn't know the
+    /// target geometry; otherwise the consumer should pass the
+    /// renderer's exact cell grid (e.g. mado's
+    /// `TerminalRenderer::cells_for_window_phys(...)`).
+    fn new_session_with_source_and_size(
+        &self,
+        name: &str,
+        shell: &str,
+        source: crate::session::SessionSource,
+        size_cells: (u16, u16),
     ) -> ControlResult<SessionId>;
 
     /// Rename a session. Idempotent — renaming to the current name

@@ -456,12 +456,14 @@ impl MultiplexerControl for InProcess {
         Err(ControlError::NoSuchPane(id))
     }
 
-    fn new_session_with_source(
+    fn new_session_with_source_and_size(
         &self,
         name: &str,
         shell: &str,
         source: tear_types::SessionSource,
+        size_cells: (u16, u16),
     ) -> ControlResult<SessionId> {
+        let size = (size_cells.0.max(1), size_cells.1.max(1));
         let mut r = self.registry.write();
         let sid = r.create_session(name);
         // Stamp provenance on the typed session entry. The
@@ -471,19 +473,27 @@ impl MultiplexerControl for InProcess {
         if let Some(s) = r.sessions.get_mut(&sid) {
             s.source = source.clone();
         }
-        let Some((_wid, pane_id)) = r.add_window(sid, "main", shell, (80, 24)) else {
+        let Some((_wid, pane_id)) = r.add_window(sid, "main", shell, size) else {
             return Err(ControlError::Internal(anyhow::anyhow!(
                 "registry.add_window returned None after fresh create_session"
             )));
         };
         drop(r); // release write lock before spawning PTY
-        if let Err(e) = self.spawn_pty_for(pane_id, shell, (80, 24)) {
+        if let Err(e) = self.spawn_pty_for(pane_id, shell, size) {
             // Roll back the session — registry is small, easier to
             // remove than to leave a sessionless typed entry.
             self.registry.write().sessions.remove(&sid);
             return Err(ControlError::Internal(e));
         }
-        info!(session = %sid, name, shell, source = %source.label(), "tear-core: new session");
+        info!(
+            session = %sid,
+            name,
+            shell,
+            source = %source.label(),
+            cols = size.0,
+            rows = size.1,
+            "tear-core: new session"
+        );
         Ok(sid)
     }
 

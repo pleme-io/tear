@@ -709,10 +709,11 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             window: w,
         }),
         Request::GetPane(id) => map_result(inproc.get_pane(id), Response::Pane),
-        Request::NewSession { name, shell, source } => {
+        Request::NewSession { name, shell, source, size_cells } => {
             let src = source.unwrap_or_default();
+            let size = size_cells.unwrap_or((80, 24));
             map_result(
-                inproc.new_session_with_source(&name, &shell, src),
+                inproc.new_session_with_source_and_size(&name, &shell, src, size),
                 Response::SessionId,
             )
         }
@@ -867,9 +868,10 @@ pub fn dispatch_with_config(
             }
             resp
         }
-        Request::NewSession { name, shell, source } => {
+        Request::NewSession { name, shell, source, size_cells } => {
             let src = source.unwrap_or_default();
-            let result = inproc.new_session_with_source(&name, &shell, src.clone());
+            let size = size_cells.unwrap_or((80, 24));
+            let result = inproc.new_session_with_source_and_size(&name, &shell, src.clone(), size);
             if let Ok(sid) = &result {
                 if let Some(a) = audit {
                     a.emit(&AuditEvent::SessionCreate {
@@ -1015,6 +1017,7 @@ mod tests {
                 name: "work".into(),
                 shell: "/bin/sh".into(),
                 source: None,
+                size_cells: None,
             },
         );
         let session_id = match resp {
@@ -1115,6 +1118,7 @@ mod tests {
                 name: "x".into(),
                 shell: "/bin/sh".into(),
                 source: None,
+                size_cells: None,
             },
         ) {
             Response::SessionId(s) => s,

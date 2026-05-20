@@ -57,6 +57,14 @@ pub enum Request {
         /// so `tear list` can group by source.
         #[serde(default)]
         source: Option<crate::session::SessionSource>,
+        /// Optional initial pane size in cells. Defaults to None
+        /// for backwards-compat (older clients omit this field;
+        /// daemon falls back to 80×24). mado attaches at known
+        /// geometry — passing Some((cols, rows)) here means the
+        /// shell's TIOCGWINSZ returns the right size on first
+        /// query, no resize-flicker on attach.
+        #[serde(default)]
+        size_cells: Option<(u16, u16)>,
     },
     RenameSession {
         id: SessionId,
