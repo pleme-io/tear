@@ -22,8 +22,9 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use engate_attach::{Consumer, Producer};
-use engate_types::{AttachError, Snapshot};
-use tear_types::{PaneId, PaneSnapshot};
+use engate_types::AttachError;
+use tear_types::PaneId;
+use tear_types::engate_wrap::PaneSnapshotWrap;
 
 use crate::inproc::InProcess;
 
@@ -41,34 +42,6 @@ impl PaneProducer {
     #[must_use]
     pub fn new(inproc: Arc<InProcess>, pane: PaneId) -> Self {
         Self { inproc, pane }
-    }
-}
-
-// Wire PaneSnapshot into engate's Snapshot trait.
-impl Snapshot for PaneSnapshotWrap {
-    fn size_bytes(&self) -> usize {
-        // Approximate — cells × ~4 bytes each (char + fg/bg/attrs).
-        self.0.cells.iter().map(|r| r.len() * 4).sum()
-    }
-}
-
-/// Wrapper so we can implement engate's Snapshot trait on a
-/// foreign type (PaneSnapshot lives in tear-types). Transparent.
-pub struct PaneSnapshotWrap(pub PaneSnapshot);
-
-impl PaneSnapshotWrap {
-    /// Borrow the ANSI replay bytes — same bytes the daemon-mode
-    /// path delivers as the first PaneBytes frame after Subscribe.
-    /// Consumers feed this through their VT parser to converge to
-    /// the producer's grid state.
-    #[must_use]
-    pub fn to_ansi(&self) -> Vec<u8> {
-        self.0.to_ansi()
-    }
-
-    #[must_use]
-    pub fn into_inner(self) -> PaneSnapshot {
-        self.0
     }
 }
 

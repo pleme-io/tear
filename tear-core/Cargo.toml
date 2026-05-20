@@ -16,7 +16,7 @@ default = []
 # Opt-in engate Producer impl. Off by default so consumers that only
 # use tear-core's MultiplexerControl path don't pull in engate's
 # typestate machinery + drop_bomb + typed-builder.
-engate = ["dep:engate-types", "dep:engate-attach"]
+engate = ["dep:engate-types", "dep:engate-attach", "tear-types/engate"]
 
 [dependencies]
 tear-types = { workspace = true }

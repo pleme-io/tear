@@ -41,6 +41,8 @@
 pub mod block;
 pub mod cast;
 pub mod control;
+#[cfg(feature = "engate")]
+pub mod engate_wrap;
 pub mod direction;
 pub mod id;
 pub mod keybind;

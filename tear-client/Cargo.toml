@@ -14,7 +14,7 @@ workspace = true
 [features]
 default = []
 # Opt-in engate Producer impl over the daemon-mode subscribe path.
-engate = ["dep:engate-types", "dep:engate-attach"]
+engate = ["dep:engate-types", "dep:engate-attach", "tear-types/engate"]
 
 [dependencies]
 tear-types = { workspace = true }

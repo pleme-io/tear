@@ -11,6 +11,14 @@ description = "Pure types for the tear multiplexer — TearSession/Window/Pane/L
 [lints]
 workspace = true
 
+[features]
+default = []
+# Opt-in PaneSnapshotWrap that impls engate::Snapshot. Lets every
+# engate Producer over a tear pane (tear-core embedded, tear-client
+# daemon, future tear-web) share ONE Snap type so consumers like
+# mado need only one Consumer impl across all backends.
+engate = ["dep:engate-types"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,3 +26,4 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
+engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true }

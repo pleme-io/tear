@@ -21,8 +21,9 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 
 use engate_attach::Producer;
-use engate_types::{AttachError, Snapshot};
-use tear_types::{MultiplexerControl, PaneId, PaneSnapshot};
+use engate_types::AttachError;
+use tear_types::engate_wrap::PaneSnapshotWrap;
+use tear_types::{MultiplexerControl, PaneId};
 
 use crate::Client;
 
@@ -44,28 +45,6 @@ impl PaneProducer {
             pane,
             handle: Mutex::new(None),
         }
-    }
-}
-
-/// Wrapper so we can implement engate's Snapshot trait on the
-/// foreign PaneSnapshot type.
-pub struct PaneSnapshotWrap(pub PaneSnapshot);
-
-impl Snapshot for PaneSnapshotWrap {
-    fn size_bytes(&self) -> usize {
-        self.0.cells.iter().map(|r| r.len() * 4).sum()
-    }
-}
-
-impl PaneSnapshotWrap {
-    #[must_use]
-    pub fn to_ansi(&self) -> Vec<u8> {
-        self.0.to_ansi()
-    }
-
-    #[must_use]
-    pub fn into_inner(self) -> PaneSnapshot {
-        self.0
     }
 }
 
