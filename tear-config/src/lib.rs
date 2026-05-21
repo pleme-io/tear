@@ -332,7 +332,17 @@ impl Default for TearConfig {
 }
 
 fn default_prefix() -> String {
-    "ctrl+b".into()
+    // Source the multiplexer prefix from the fleet atlas rather than
+    // hard-coding "ctrl+b" here. The atlas declares it as "C-b"
+    // (tmux-shorthand canonical); tear-types' KeyChord::from_tmux
+    // normalizes to the long form ("ctrl+b") that the rest of tear's
+    // chord-dispatch path expects. Atlas drift → tear default prefix
+    // changes fleet-wide on next compile, no hand-edit here required.
+    //
+    // Operators who want a different prefix continue to override via
+    // ~/.config/tear/tear.yaml's `prefix:` field — the atlas is the
+    // prescribed-default tier, not a hard-cap.
+    tear_types::KeyChord::from_tmux(ishou_tokens::FleetKeybinds::prescribed().multiplexer_prefix).0
 }
 fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
@@ -837,6 +847,35 @@ mod tiered_tests {
         assert_eq!(p.provider, "ollama");
         assert_eq!(p.context_bytes, 2000);
     }
+
+    #[test]
+    fn prefix_chord_converges_with_fleet_keybinds_atlas() {
+        // Closes the loop on the 2026-05-21 chord-drift class of bug
+        // for tear's multiplexer surface: the prescribed prefix MUST
+        // come from `ishou_tokens::FleetKeybinds::multiplexer_prefix`
+        // routed through KeyChord::from_tmux. Drift in either direction
+        // (atlas changes vs tear hard-codes) fails here loudly rather
+        // than at operator-press time.
+        let atlas_chord = ishou_tokens::FleetKeybinds::prescribed().multiplexer_prefix;
+        let normalized = tear_types::KeyChord::from_tmux(atlas_chord).0;
+        let prescribed = <TearConfig as TieredConfig>::prescribed_default();
+        assert_eq!(
+            prescribed.prefix, normalized,
+            "tear prefix drifted from FleetKeybinds atlas: prescribed={:?}, atlas-normalized={:?}",
+            prescribed.prefix, normalized,
+        );
+    }
+
+    // NOTE: ishou_tokens::convergence::Guard's `expect_multiplexer_prefix`
+    // compares the supplied string against the atlas's raw "C-b" form.
+    // Tear's prefix is in the long-form "ctrl+b" after KeyChord::from_tmux
+    // normalization. The two notations refer to the same chord but the
+    // Guard's string-equality check rejects them as drift. The fix lives
+    // in a future ishou_tokens release (Guard.normalize via tear-types'
+    // canonical-form coercion) and is tracked separately. Tear's
+    // convergence is meanwhile pinned by the atlas-routing assertion
+    // above (`prefix_chord_converges_with_fleet_keybinds_atlas`) which
+    // performs the exact normalization both sides need.
 }
 
 #[cfg(test)]

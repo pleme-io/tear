@@ -28,3 +28,10 @@ once_cell = { workspace = true }
 # via the workspace shikumi pin (git@pleme-io/shikumi) so we
 # always run against the same rev the rest of the fleet uses.
 shikumi.workspace = true
+# Fleet keybind atlas — tear's multiplexer prefix is sourced from
+# `ishou_tokens::FleetKeybinds::prescribed().multiplexer_prefix`
+# (canonical chord "C-b", normalized through KeyChord::from_tmux
+# to "ctrl+b"). Atlas drift → tear default prefix changes fleet-wide
+# on next compile. Closes the 2026-05-21 chord-drift class of bug
+# for the multiplexer surface.
+ishou-tokens = { workspace = true }

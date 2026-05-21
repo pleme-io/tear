@@ -1,6 +1,7 @@
 {
   "git+https://github.com/pleme-io/engate?branch=main#engate-attach@0.1.0": "1c62kzyznxxf71r9byvy02sq7yhwbg8rb3ngyd898rmnzcazwyz8",
   "git+https://github.com/pleme-io/engate?branch=main#engate-types@0.1.0": "1c62kzyznxxf71r9byvy02sq7yhwbg8rb3ngyd898rmnzcazwyz8",
+  "git+https://github.com/pleme-io/ishou#ishou-tokens@0.1.0": "17mxwzyhs06i64kpzbz897zl7vmx0pf8cp4g21qmk8svicfy2k7s",
   "git+https://github.com/pleme-io/shidou#0.1.0": "10nkqrw2wrjmimdq1jr5kgibnsi5hqp73dbsj58z8skp739g8hdr",
   "git+https://github.com/pleme-io/shikumi#0.1.0": "0b9f23kykr858ghc36fl3w0v6ywm59pbgrrzpbiyjlw6chhasw9b",
   "git+https://github.com/pleme-io/shikumi?branch=main#0.1.0": "1nim2cs1gcwix77bgqmk3ry83svvcg3bwfzkm672scbjiq9f96ic"

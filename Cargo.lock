@@ -1098,10 +1098,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "irodori"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dc14b88cf12196c0f37995676c3cd75c34511436be9c41f7877edb8b1cfcb1e"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "ishou-tokens"
+version = "0.1.0"
+source = "git+https://github.com/pleme-io/ishou#563aebb7f61b5ee4e8b9e91ab4e54cee7c80d085"
+dependencies = [
+ "irodori",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "itertools"
@@ -2260,6 +2279,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "ishou-tokens",
  "notify",
  "once_cell",
  "serde",
