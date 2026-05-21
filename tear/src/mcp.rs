@@ -273,6 +273,134 @@ impl TearMcp {
         serde_json::to_string_pretty(&rows).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
+    #[tool(description = "Capture a pane's currently-rendered cell grid as text. Returns rows × cols of unicode (one string per row), plus cursor_row / cursor_col / cursor_visible and pane size. The 'what does the screen look like RIGHT NOW' tool — use to verify a TUI is rendering correctly, see what prompt is showing, confirm a command output landed, or debug 'mado shows X but tear says Y' divergence. Strips color/attrs (use mado's snapshot_grid for those). Returns {error} if pane id is invalid or daemon refuses (passthrough backends like tear-tmux-backend can't snapshot).")]
+    async fn pane_snapshot_text(
+        &self,
+        params: rmcp::handler::server::wrapper::Parameters<PaneIdInput>,
+    ) -> String {
+        let pane_id_str = &params.0.pane_id;
+        let pane_id: tear_types::PaneId = match pane_id_str.parse() {
+            Ok(p) => p,
+            Err(e) => return format!("{{\"error\":\"invalid pane_id `{pane_id_str}`: {e}\"}}"),
+        };
+        let c = match self.client() {
+            Ok(c) => c,
+            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+        };
+        let snap = match c.pane_snapshot(pane_id) {
+            Ok(s) => s,
+            Err(e) => return format!("{{\"error\":\"pane_snapshot: {e}\"}}"),
+        };
+        let rows: Vec<String> = snap
+            .cells
+            .iter()
+            .map(|row| {
+                let s: String = row.iter().map(|c| c.ch).collect();
+                // Trim trailing blanks (NULs and spaces) for compact output;
+                // cursor_col is still authoritative for cursor position.
+                s.trim_end_matches(|c: char| c == ' ' || c == '\0').to_string()
+            })
+            .collect();
+        #[derive(Serialize)]
+        struct Snap {
+            pane_id: String,
+            rows: usize,
+            cols: usize,
+            cursor_row: usize,
+            cursor_col: usize,
+            cursor_visible: bool,
+            lines: Vec<String>,
+        }
+        let s = Snap {
+            pane_id: pane_id.to_string(),
+            rows: snap.rows,
+            cols: snap.cols,
+            cursor_row: snap.cursor_row,
+            cursor_col: snap.cursor_col,
+            cursor_visible: snap.cursor_visible,
+            lines: rows,
+        };
+        serde_json::to_string_pretty(&s).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    #[tool(description = "Full session detail: id, name, source, state, windows (with their panes), creation time. Drills past list_sessions' summary into the full tree so an agent can walk a session's full structure in one call. Returns {error} if session id is invalid.")]
+    async fn session_detail(
+        &self,
+        params: rmcp::handler::server::wrapper::Parameters<SessionIdInput>,
+    ) -> String {
+        let session_id_str = &params.0.session_id;
+        let session_id: tear_types::SessionId = match session_id_str.parse() {
+            Ok(s) => s,
+            Err(e) => {
+                return format!("{{\"error\":\"invalid session_id `{session_id_str}`: {e}\"}}");
+            }
+        };
+        let c = match self.client() {
+            Ok(c) => c,
+            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+        };
+        let s = match c.get_session(session_id) {
+            Ok(s) => s,
+            Err(e) => return format!("{{\"error\":\"get_session: {e}\"}}"),
+        };
+        // Serde already derives Serialize on TearSession — pass through.
+        serde_json::to_string_pretty(&s).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    #[tool(description = "Flat list of every pane across every session: pane_id, session_id, session_name, shell, size_cells, subscriber_count, input_policy, state. Cheaper than calling list_sessions + N × pane_stats; the canonical 'show me everything live' surface. Sorted by session_name then pane creation order.")]
+    async fn list_panes(&self) -> String {
+        let c = match self.client() {
+            Ok(c) => c,
+            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+        };
+        let sessions = match c.list_sessions() {
+            Ok(s) => s,
+            Err(e) => return format!("{{\"error\":\"list_sessions: {e}\"}}"),
+        };
+        #[derive(Serialize)]
+        struct Row {
+            pane_id: String,
+            session_id: String,
+            session_name: String,
+            shell: String,
+            size_cells: (u16, u16),
+            subscriber_count: u32,
+            input_policy: String,
+            state: String,
+        }
+        let mut rows: Vec<Row> = Vec::new();
+        for s in &sessions {
+            for (pid, pane) in &s.panes {
+                let subs = c.pane_subscriber_count(*pid).unwrap_or(0);
+                rows.push(Row {
+                    pane_id: pid.to_string(),
+                    session_id: s.id.to_string(),
+                    session_name: s.name.clone(),
+                    shell: pane.shell.clone(),
+                    size_cells: pane.size_cells,
+                    subscriber_count: subs,
+                    input_policy: format!("{:?}", pane.input_policy),
+                    state: format!("{:?}", pane.state),
+                });
+            }
+        }
+        rows.sort_by(|a, b| a.session_name.cmp(&b.session_name));
+        serde_json::to_string_pretty(&rows).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    #[tool(description = "Daemon socket + connectivity surface: socket_path, exists, can_connect, peer_metadata_supported. Use first when diagnosing 'is the daemon reachable at all' — separates 'socket file missing' from 'socket exists but daemon dead' from 'daemon alive but rejecting our user'.")]
+    async fn socket_info(&self) -> String {
+        let socket_path = self.socket_path.clone();
+        let exists = socket_path.exists();
+        let can_connect = self.client().is_ok();
+        serde_json::json!({
+            "socket_path": socket_path.display().to_string(),
+            "exists": exists,
+            "can_connect": can_connect,
+        })
+        .to_string()
+    }
+
     #[tool(description = "Round-trip a connect + list_sessions call to the daemon and report wall-time. Use to confirm the daemon's accept loop is responding (catches the 'looks alive but RPCs stall' class of bug). Returns {ok: bool, latency_ms: f64, error: Option<str>}.")]
     async fn ping(&self) -> String {
         let start = Instant::now();
@@ -304,6 +432,12 @@ struct PaneIdInput {
     pane_id: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SessionIdInput {
+    #[schemars(description = "16-char lowercase-hex tear session id (from `list_sessions`).")]
+    session_id: String,
+}
+
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 struct TopPanesInput {
     #[schemars(description = "Max rows to return (default 10).")]
@@ -317,9 +451,15 @@ impl ServerHandler for TearMcp {
         ServerInfo {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             instructions: Some(
-                "tear MCP server. Read-only perf + introspection: \
-                 daemon_status, system_resources, list_sessions, \
-                 pane_stats, top_panes, ping."
+                "tear MCP server. Read-only state exploration: \
+                 daemon_status, system_resources, socket_info, \
+                 list_sessions, session_detail, list_panes, \
+                 pane_stats, pane_snapshot_text, top_panes, ping. \
+                 Use pane_snapshot_text to see what's actually on \
+                 screen in any pane RIGHT NOW (the canonical \
+                 'what's happening' surface). Write operations \
+                 (send_keys, new_session, set_input_policy) live \
+                 on mado's MCP — tear stays read-only."
                     .into(),
             ),
             ..Default::default()
