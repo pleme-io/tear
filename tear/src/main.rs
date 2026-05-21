@@ -324,6 +324,8 @@ enum Cmd {
     ConfigCheck,
     /// Print the canonical config path (~/.config/tear/tear.yaml).
     ConfigPath,
+    /// Show the materialized config at a tier (bare/default/discovered/custom/env).
+    ConfigShow(shikumi::cli::ConfigShowCommand),
     /// Render the live shikumi config into a backend-specific format
     /// and print it to stdout. With `--backend tmux` this produces a
     /// drop-in `tmux.conf`.
@@ -462,6 +464,9 @@ fn main() -> Result<()> {
             println!("{}", p.display());
             Ok(())
         }
+        Cmd::ConfigShow(cmd) => cmd
+            .run::<TearConfig>("TEAR_TIER")
+            .map_err(|e| anyhow::anyhow!("config-show failed: {e}")),
         Cmd::Render { backend } => cmd_render(backend),
         Cmd::Attach { target, socket } => cmd_attach(target, socket),
         Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),

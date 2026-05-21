@@ -2039,10 +2039,27 @@ dependencies = [
  "anyhow",
  "clap",
  "serde",
- "shikumi",
+ "shikumi 0.1.0 (git+https://github.com/pleme-io/shikumi)",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "shikumi"
+version = "0.1.0"
+source = "git+https://github.com/pleme-io/shikumi?branch=main#5db7873c9a109f619474228cbea15d64b4825b8a"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "clap",
+ "figment",
+ "notify",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -2208,6 +2225,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "shidou",
+ "shikumi 0.1.0 (git+https://github.com/pleme-io/shikumi?branch=main)",
  "sysinfo",
  "tear-client",
  "tear-config",
@@ -2246,7 +2264,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_yaml_ng",
- "shikumi",
+ "shikumi 0.1.0 (git+https://github.com/pleme-io/shikumi?branch=main)",
  "tear-types",
  "thiserror 2.0.18",
  "tracing",

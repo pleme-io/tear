@@ -35,7 +35,11 @@ tear = { path = "tear", version = "0.1.0" }
 # Live configuration with hot-reload. Operators learn the shikumi
 # config style ONCE — mado + tear both consume `~/.config/<app>/<app>.yaml`
 # via shikumi so cross-tool muscle memory carries over.
-shikumi = { git = "https://github.com/pleme-io/shikumi" }
+# `cli` feature pulls in shikumi::cli::ConfigShowCommand — the reusable
+# clap subcommand factory tear's binary wires into via one Subcommand
+# variant. Pin to branch=main so the workspace stays on a single
+# canonical shikumi source.
+shikumi = { git = "https://github.com/pleme-io/shikumi", branch = "main", features = ["cli"] }
 # Typed design tokens — palette + typography. tear's StatusBar /
 # tab-bar / pane-border / message colors all resolve through ishou
 # so a fleet-wide colorway change is one ishou-tokens edit.
