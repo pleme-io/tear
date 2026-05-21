@@ -1808,6 +1808,16 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
+      "drop_bomb" = rec {
+        crateName = "drop_bomb";
+        version = "0.1.5";
+        edition = "2015";
+        sha256 = "1qc59a53ngwxpnbvl8xidp2cmwrl671dhbzw7zijmjjaq0hqxnlv";
+        authors = [
+          "Aleksey Kladov <aleksey.kladov@gmail.com>"
+        ];
+
+      };
       "dyn-clone" = rec {
         crateName = "dyn-clone";
         version = "1.0.20";
@@ -1833,6 +1843,78 @@ rec {
           "use_std" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "std" "use_std" ];
+      };
+      "engate-attach" = rec {
+        crateName = "engate-attach";
+        version = "0.1.0";
+        edition = "2024";
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/pleme-io/engate";
+          rev = "43931c1fa16bf28d506cbdb6f1a72f7df2d03a8d";
+          sha256 = "1c62kzyznxxf71r9byvy02sq7yhwbg8rb3ngyd898rmnzcazwyz8";
+        };
+        libName = "engate_attach";
+        authors = [
+          "pleme-io <ops@pleme.io>"
+        ];
+        dependencies = [
+          {
+            name = "drop_bomb";
+            packageId = "drop_bomb";
+          }
+          {
+            name = "engate-types";
+            packageId = "engate-types";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+          }
+          {
+            name = "typed-builder";
+            packageId = "typed-builder";
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "default" ];
+      };
+      "engate-types" = rec {
+        crateName = "engate-types";
+        version = "0.1.0";
+        edition = "2024";
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/pleme-io/engate";
+          rev = "43931c1fa16bf28d506cbdb6f1a72f7df2d03a8d";
+          sha256 = "1c62kzyznxxf71r9byvy02sq7yhwbg8rb3ngyd898rmnzcazwyz8";
+        };
+        libName = "engate_types";
+        authors = [
+          "pleme-io <ops@pleme.io>"
+        ];
+        dependencies = [
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
+          }
+        ];
+
       };
       "equivalent" = rec {
         crateName = "equivalent";
@@ -1871,7 +1953,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.61.2";
+            packageId = "windows-sys 0.52.0";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_System_Diagnostics_Debug" ];
           }
@@ -3993,7 +4075,7 @@ rec {
         dependencies = [
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.61.2";
+            packageId = "windows-sys 0.59.0";
             rename = "windows";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_System_Console" "Win32_Storage_FileSystem" "Win32_Security" ];
@@ -5447,7 +5529,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.61.2";
+            packageId = "windows-sys 0.52.0";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Networking_WinSock" ];
           }
@@ -6355,7 +6437,7 @@ rec {
         workspace_member = null;
         src = pkgs.fetchgit {
           url = "https://github.com/pleme-io/shikumi";
-          rev = "f573f2bb60ea3b1f54612c36801d8570d30dd1be";
+          rev = "27d1a121590632e696e0c8ff63e32af9831062d1";
           sha256 = "0b9f23kykr858ghc36fl3w0v6ywm59pbgrrzpbiyjlw6chhasw9b";
         };
         dependencies = [
@@ -6386,6 +6468,10 @@ rec {
             packageId = "serde_json";
           }
           {
+            name = "serde_yaml";
+            packageId = "serde_yaml";
+          }
+          {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
@@ -6398,6 +6484,10 @@ rec {
           {
             name = "serde_json";
             packageId = "serde_json";
+          }
+          {
+            name = "serde_yaml";
+            packageId = "serde_yaml";
           }
         ];
         features = {
@@ -6928,6 +7018,16 @@ rec {
         ];
         dependencies = [
           {
+            name = "engate-attach";
+            packageId = "engate-attach";
+            optional = true;
+          }
+          {
+            name = "engate-types";
+            packageId = "engate-types";
+            optional = true;
+          }
+          {
             name = "parking_lot";
             packageId = "parking_lot";
           }
@@ -6954,7 +7054,10 @@ rec {
             packageId = "tear-daemon";
           }
         ];
-
+        features = {
+          "engate" = [ "dep:engate-types" "dep:engate-attach" "tear-types/engate" ];
+        };
+        resolvedDefaultFeatures = [ "default" "engate" ];
       };
       "tear-config" = rec {
         crateName = "tear-config";
@@ -7029,6 +7132,16 @@ rec {
             packageId = "blake3";
           }
           {
+            name = "engate-attach";
+            packageId = "engate-attach";
+            optional = true;
+          }
+          {
+            name = "engate-types";
+            packageId = "engate-types";
+            optional = true;
+          }
+          {
             name = "once_cell";
             packageId = "once_cell";
           }
@@ -7076,7 +7189,10 @@ rec {
             packageId = "proptest";
           }
         ];
-
+        features = {
+          "engate" = [ "dep:engate-types" "dep:engate-attach" "tear-types/engate" ];
+        };
+        resolvedDefaultFeatures = [ "default" "engate" ];
       };
       "tear-daemon" = rec {
         crateName = "tear-daemon";
@@ -7182,6 +7298,11 @@ rec {
             packageId = "ciborium";
           }
           {
+            name = "engate-types";
+            packageId = "engate-types";
+            optional = true;
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -7195,7 +7316,10 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-
+        features = {
+          "engate" = [ "dep:engate-types" ];
+        };
+        resolvedDefaultFeatures = [ "default" "engate" ];
       };
       "tear-ws-bridge" = rec {
         crateName = "tear-ws-bridge";
@@ -7305,7 +7429,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.61.2";
+            packageId = "windows-sys 0.52.0";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Storage_FileSystem" "Win32_Foundation" ];
           }
@@ -7333,7 +7457,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.61.2";
+            packageId = "windows-sys 0.59.0";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_System_Console" ];
           }
@@ -8198,6 +8322,52 @@ rec {
           "webpki-roots" = [ "dep:webpki-roots" ];
         };
         resolvedDefaultFeatures = [ "data-encoding" "handshake" "http" "httparse" "sha1" ];
+      };
+      "typed-builder" = rec {
+        crateName = "typed-builder";
+        version = "0.21.2";
+        edition = "2021";
+        sha256 = "0zgpk175bykcra5jw6qnsdnsil20hq85b1xfyvwpd5d25kn1my7y";
+        libName = "typed_builder";
+        authors = [
+          "IdanArye <idanarye@gmail.com>"
+          "Chris Morgan <me@chrismorgan.info>"
+        ];
+        dependencies = [
+          {
+            name = "typed-builder-macro";
+            packageId = "typed-builder-macro";
+          }
+        ];
+
+      };
+      "typed-builder-macro" = rec {
+        crateName = "typed-builder-macro";
+        version = "0.21.2";
+        edition = "2021";
+        sha256 = "060bisai28h8xmrpkicdjs05fdkk07zgv32aq43h88crfz7rxjqy";
+        procMacro = true;
+        libName = "typed_builder_macro";
+        authors = [
+          "IdanArye <idanarye@gmail.com>"
+          "Chris Morgan <me@chrismorgan.info>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn";
+            features = [ "full" "extra-traits" ];
+          }
+        ];
+
       };
       "typenum" = rec {
         crateName = "typenum";
@@ -9074,7 +9244,7 @@ rec {
         dependencies = [
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.61.2";
+            packageId = "windows-sys 0.52.0";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Storage_FileSystem" "Win32_System_Console" "Win32_System_SystemInformation" ];
           }
@@ -10288,7 +10458,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_System" "Win32_System_Threading" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_SystemInformation" "Win32_System_Threading" "default" ];
       };
       "windows-sys 0.59.0" = rec {
         crateName = "windows-sys";
@@ -10547,7 +10717,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_NetworkManagement" "Win32_NetworkManagement_IpHelper" "Win32_Networking" "Win32_Networking_WinSock" "Win32_System" "Win32_System_Threading" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_NetworkManagement" "Win32_NetworkManagement_IpHelper" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_Threading" "default" ];
       };
       "windows-sys 0.60.2" = rec {
         crateName = "windows-sys";
@@ -11074,7 +11244,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Wdk" "Wdk_Foundation" "Wdk_Storage" "Wdk_Storage_FileSystem" "Wdk_System" "Wdk_System_IO" "Win32" "Win32_Devices" "Win32_Devices_Communication" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_Pipes" "Win32_System_Registry" "Win32_System_SystemInformation" "Win32_System_Threading" "Win32_System_WindowsProgramming" "default" ];
+        resolvedDefaultFeatures = [ "Wdk" "Wdk_Foundation" "Wdk_Storage" "Wdk_Storage_FileSystem" "Wdk_System" "Wdk_System_IO" "Win32" "Win32_Devices" "Win32_Devices_Communication" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_IO" "Win32_System_Pipes" "Win32_System_Registry" "Win32_System_Threading" "Win32_System_WindowsProgramming" "default" ];
       };
       "windows-targets 0.52.6" = rec {
         crateName = "windows-targets";

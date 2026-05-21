@@ -683,6 +683,162 @@ impl LiveConfig {
     }
 }
 
+// ── shikumi::TieredConfig — fleet-wide tier model (M-166 backfill) ──
+//
+// Operators reach via:
+//   TEAR_TIER=bare tear ...
+//   TEAR_TIER=default tear ...
+//
+// `bare()` = zero-opinion floor (empty strings, zero numerics, false
+// flags, empty Vecs, None Options). `prescribed_default()` = the
+// curated defaults that ship today (delegates to Default::default).
+// Prior migrations: tatara, zoekt-mcp, kindling, ayatsuri, kenshi,
+// taimen. See `shikumi/src/tiered.rs` for the trait contract.
+
+impl shikumi::TieredConfig for TearConfig {
+    /// Tier 0 — bare: zero-opinion floor. Every field empty / zero /
+    /// false / None. The deliberate minimum-viable config; documents
+    /// "no opinion" knob-by-knob.
+    fn bare() -> Self {
+        Self {
+            prefix: String::new(),
+            default_shell: String::new(),
+            mouse: false,
+            base_index: 0,
+            keys: Vec::new(),
+            status: StatusBar::default(),
+            theme: TearTheme::default(),
+            reload_debounce_ms: 0,
+            recording_auto_dir: None,
+            ai: None,
+            audit_log: None,
+            auth_token_env: None,
+            scrollback: <ScrollbackConfig as shikumi::TieredConfig>::bare(),
+        }
+    }
+
+    /// Tier 2 — prescribed: the curated tear defaults shipped today.
+    /// Delegates to Default so there's one source.
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+impl shikumi::TieredConfig for ScrollbackConfig {
+    /// Tier 0 — bare: zero rows, no caps, all flags false.
+    fn bare() -> Self {
+        Self {
+            rows: 0,
+            max_bytes: None,
+            keep_on_clear: false,
+            on_alt_screen: false,
+            skip_blank_rows: false,
+            reflow_on_resize: false,
+        }
+    }
+
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+impl shikumi::TieredConfig for AiConfig {
+    /// Tier 0 — bare: empty provider / model / endpoint, no key, zero
+    /// context bytes. Documents what "no AI opinion" looks like.
+    fn bare() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            endpoint: String::new(),
+            api_key_env: None,
+            context_bytes: 0,
+        }
+    }
+
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tiered_tests {
+    use super::*;
+    use shikumi::{ConfigTier, TieredConfig};
+
+    #[test]
+    fn tear_config_bare_is_zero_opinion() {
+        let b = <TearConfig as TieredConfig>::bare();
+        assert_eq!(b.prefix, "");
+        assert_eq!(b.default_shell, "");
+        assert!(!b.mouse);
+        assert_eq!(b.base_index, 0);
+        assert!(b.keys.is_empty());
+        assert_eq!(b.reload_debounce_ms, 0);
+        assert!(b.recording_auto_dir.is_none());
+        assert!(b.ai.is_none());
+        assert!(b.audit_log.is_none());
+        assert!(b.auth_token_env.is_none());
+        assert_eq!(b.scrollback.rows, 0);
+    }
+
+    #[test]
+    fn tear_config_prescribed_matches_default() {
+        let p = <TearConfig as TieredConfig>::prescribed_default();
+        let d = TearConfig::default();
+        assert_eq!(p.prefix, d.prefix);
+        assert_eq!(p.base_index, d.base_index);
+        assert_eq!(p.mouse, d.mouse);
+        assert_eq!(p.keys.len(), d.keys.len());
+    }
+
+    #[test]
+    fn tear_config_diff_bare_vs_default_is_non_empty() {
+        let b = <TearConfig as TieredConfig>::bare();
+        let d = <TearConfig as TieredConfig>::prescribed_default();
+        let diff = d.diff_against(&b);
+        assert!(
+            !diff.is_empty_diff(),
+            "bare and prescribed_default must differ"
+        );
+    }
+
+    #[test]
+    fn tear_config_resolve_tier_dispatches_correctly() {
+        let bare = <TearConfig as TieredConfig>::resolve_tier(ConfigTier::Bare);
+        assert_eq!(bare.prefix, "");
+        assert_eq!(bare.base_index, 0);
+
+        let default = <TearConfig as TieredConfig>::resolve_tier(ConfigTier::Default);
+        assert_eq!(default.prefix, "ctrl+b");
+        assert_eq!(default.base_index, 1);
+    }
+
+    #[test]
+    fn scrollback_config_bare_and_prescribed_differ() {
+        let b = <ScrollbackConfig as TieredConfig>::bare();
+        assert_eq!(b.rows, 0);
+        assert!(!b.keep_on_clear);
+        assert!(!b.reflow_on_resize);
+
+        let p = <ScrollbackConfig as TieredConfig>::prescribed_default();
+        assert_eq!(p.rows, usize::MAX);
+        assert!(p.keep_on_clear);
+        assert!(p.reflow_on_resize);
+    }
+
+    #[test]
+    fn ai_config_bare_and_prescribed_differ() {
+        let b = <AiConfig as TieredConfig>::bare();
+        assert_eq!(b.provider, "");
+        assert_eq!(b.model, "");
+        assert_eq!(b.context_bytes, 0);
+
+        let p = <AiConfig as TieredConfig>::prescribed_default();
+        assert_eq!(p.provider, "ollama");
+        assert_eq!(p.context_bytes, 2000);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
