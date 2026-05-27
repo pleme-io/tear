@@ -13114,6 +13114,17 @@
           "target": null
         },
         {
+          "name": "clap",
+          "package_key": "clap-4.6.1",
+          "kind": "normal",
+          "features": [
+            "derive"
+          ],
+          "uses_default_features": true,
+          "optional": true,
+          "target": null
+        },
+        {
           "name": "figment",
           "package_key": "figment-0.10.19",
           "kind": "normal",
@@ -13200,6 +13211,17 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
+          "target": null
+        },
+        {
+          "name": "clap",
+          "package_key": "clap-4.6.1",
+          "kind": "normal",
+          "features": [
+            "derive"
+          ],
+          "uses_default_features": true,
+          "optional": true,
           "target": null
         },
         {
