@@ -56,6 +56,7 @@ mod tests {
             alt_screen_active: false,
             cursor_visible: true,
             title: None,
+            cursor_keys_mode: false,
         }
     }
 

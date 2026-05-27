@@ -196,6 +196,23 @@ pub struct PaneSnapshot {
     /// title set; clears to None on RIS.
     #[serde(default)]
     pub title: Option<String>,
+    /// DECCKM (DEC mode 1) — cursor-keys application mode.
+    ///
+    /// When true, the running program has requested application-
+    /// mode cursor keys (ESC O A/B/C/D) instead of normal-mode
+    /// (ESC [ A/B/C/D). Mado's input encoder (and any other
+    /// consumer that translates host keystrokes to PTY bytes)
+    /// reads this to pick the right sequence so editors and
+    /// pagers (vim, less, htop, …) receive the cursor keys they
+    /// expect.
+    ///
+    /// Resets to false on RIS (ESC c), DECSTR (ESC [ ! p), and
+    /// when DECCKM is explicitly reset (ESC [ ? 1 l).
+    ///
+    /// Serde default is `false` so wire payloads from older
+    /// daemons that don't emit this field deserialize cleanly.
+    #[serde(default)]
+    pub cursor_keys_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -314,6 +331,7 @@ mod to_ansi_tests {
             alt_screen_active: false,
             cursor_visible: true,
             title: None,
+            cursor_keys_mode: false,
         }
     }
 

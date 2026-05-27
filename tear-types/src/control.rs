@@ -215,4 +215,22 @@ pub trait MultiplexerControl: Send + Sync {
             "this backend does not expose per-pane snapshots".into(),
         ))
     }
+
+    /// Lightweight query for DECCKM (DEC mode 1 — cursor-keys
+    /// application mode) on a pane. Consumers translating host
+    /// keystrokes to PTY bytes — mado's `keybind::madori_key_to_
+    /// pty_bytes` is the canonical caller — hit this on every
+    /// arrow-key press to decide between `ESC O A/B/C/D`
+    /// (application mode) and `ESC [ A/B/C/D` (normal mode).
+    ///
+    /// Default impl falls back to the full `pane_snapshot` and
+    /// reads `cursor_keys_mode` off the returned struct. Backends
+    /// that can answer cheaply (tear-core's `InProcess` reads one
+    /// `bool` off the live `PaneGrid`) override for the no-alloc
+    /// path. tear-tmux-backend reasonably returns `Rejected`
+    /// since tmux doesn't expose DECCKM through its control
+    /// protocol.
+    fn pane_cursor_keys_mode(&self, id: PaneId) -> ControlResult<bool> {
+        Ok(self.pane_snapshot(id)?.cursor_keys_mode)
+    }
 }

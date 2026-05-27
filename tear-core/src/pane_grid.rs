@@ -94,6 +94,11 @@ pub(crate) struct GridState {
     insert_mode: bool,
     /// Cursor visibility (DEC mode 25 — CSI ? 25 h/l). False hides.
     cursor_visible: bool,
+    /// DECCKM cursor-keys application mode (DEC mode 1 — CSI ? 1 h/l).
+    /// When set, host keystrokes for Up/Down/Right/Left should be
+    /// encoded as `ESC O A/B/C/D` instead of `ESC [ A/B/C/D`. Reset
+    /// on RIS (ESC c) and DECSTR (CSI ! p).
+    cursor_keys_mode: bool,
     /// Last printed char — REP (CSI b) repeats this.
     last_printed: Option<char>,
     /// Window / tab title (OSC 0 / OSC 2).
@@ -143,6 +148,7 @@ impl GridState {
             palette: default_ansi_palette(),
             insert_mode: false,
             cursor_visible: true,
+            cursor_keys_mode: false,
             last_printed: None,
             title: None,
             blocks: crate::blocks::BlockExtractor::default(),
@@ -840,6 +846,9 @@ impl Perform for GridState {
                 self.scroll_bottom = self.rows.saturating_sub(1);
                 self.alt_active = false;
                 self.saved = None;
+                self.cursor_keys_mode = false;
+                self.cursor_visible = true;
+                self.title = None;
             }
             _ => {}
         }
@@ -878,6 +887,7 @@ impl GridState {
                     self.restore_cursor();
                 }
             }
+            1 => self.cursor_keys_mode = set, // DECCKM
             25 => self.cursor_visible = set, // DECTCEM
             _ => {} // Autowrap, bracketed-paste, mouse modes etc. land later.
         }
@@ -914,6 +924,7 @@ impl PaneGrid {
             alt_screen_active: self.state.alt_active,
             cursor_visible: self.state.cursor_visible,
             title: self.state.title.clone(),
+            cursor_keys_mode: self.state.cursor_keys_mode,
         }
     }
 
@@ -922,6 +933,17 @@ impl PaneGrid {
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.state.title.as_deref()
+    }
+
+    /// DECCKM (DEC mode 1) cursor-keys application mode.
+    ///
+    /// Consumers translating host keystrokes to PTY bytes (mado's
+    /// `keybind::madori_key_to_pty_bytes`, any future tear-client
+    /// renderer) read this to encode Up/Down/Right/Left as
+    /// `ESC O A/B/C/D` (true) or `ESC [ A/B/C/D` (false).
+    #[must_use]
+    pub fn cursor_keys_mode(&self) -> bool {
+        self.state.cursor_keys_mode
     }
 
     /// Number of scrollback rows that have rolled off the primary
@@ -1468,6 +1490,70 @@ mod tests {
         }
         assert_eq!(snap.cursor_row, 0);
         assert_eq!(snap.cursor_col, 0);
+    }
+
+    // ── DECCKM (DEC mode 1) ─────────────────────────────────────
+    //
+    // Pins the cursor-keys application mode tracking that mado's
+    // embedded-tear input path reads to encode arrow-key bytes
+    // correctly. Vim / less / htop / btop / etc. all toggle this
+    // on alt-screen entry; without correct tracking the editor
+    // sees the wrong cursor-key escape sequence and arrow-key
+    // navigation breaks.
+
+    #[test]
+    fn cursor_keys_mode_defaults_to_false() {
+        let g = PaneGrid::new(5, 1);
+        assert!(!g.cursor_keys_mode());
+        assert!(!g.snapshot().cursor_keys_mode);
+    }
+
+    #[test]
+    fn decckm_set_via_csi_question_1_h() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[?1h"); // DECCKM set
+        assert!(g.cursor_keys_mode());
+        assert!(g.snapshot().cursor_keys_mode);
+    }
+
+    #[test]
+    fn decckm_reset_via_csi_question_1_l() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[?1h"); // set
+        g.feed(b"\x1b[?1l"); // reset
+        assert!(!g.cursor_keys_mode());
+        assert!(!g.snapshot().cursor_keys_mode);
+    }
+
+    #[test]
+    fn decckm_survives_unrelated_modes() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[?1h"); // DECCKM set
+        g.feed(b"\x1b[?25l"); // hide cursor (mode 25)
+        g.feed(b"\x1b[?1049h"); // enter alt-screen (mode 1049)
+        assert!(g.cursor_keys_mode(),
+            "DECCKM must persist across cursor-visibility + alt-screen toggles");
+    }
+
+    #[test]
+    fn ris_resets_cursor_keys_mode() {
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[?1h"); // DECCKM set
+        assert!(g.cursor_keys_mode());
+        g.feed(b"\x1bc"); // RIS
+        assert!(!g.cursor_keys_mode(),
+            "RIS must reset DECCKM to normal mode");
+    }
+
+    #[test]
+    fn decckm_multi_param_csi() {
+        // Some shells set multiple modes in one CSI: `CSI ? 1 ; 25 h`.
+        // Both must apply.
+        let mut g = PaneGrid::new(5, 1);
+        g.feed(b"\x1b[?25l"); // hide first to verify mode 25 is in fact off
+        g.feed(b"\x1b[?1;25h"); // set DECCKM + DECTCEM
+        assert!(g.cursor_keys_mode());
+        assert!(g.snapshot().cursor_visible);
     }
 }
 

@@ -269,6 +269,22 @@ impl InProcess {
         Ok(grid.snapshot())
     }
 
+    /// No-alloc DECCKM lookup — reads one `bool` off the live
+    /// `PaneGrid` rather than building a full `PaneSnapshot`.
+    /// Mado's embedded-tear input loop hits this on every arrow
+    /// keystroke; the snapshot path would clone the entire cell
+    /// grid (~100KB per call on an 80×40 pane).
+    pub fn pane_cursor_keys_mode(&self, pane_id: PaneId) -> ControlResult<bool> {
+        let grid_arc = {
+            let map = self.grids.lock();
+            map.get(&pane_id)
+                .cloned()
+                .ok_or(ControlError::NoSuchPane(pane_id))?
+        };
+        let grid = grid_arc.lock();
+        Ok(grid.cursor_keys_mode())
+    }
+
     /// Spawn a PTY for the given pane. Caller pre-creates the typed
     /// pane via the registry; this attaches the runtime + installs
     /// the per-pane VT parser AND injects the `TEAR_*` env vars so
@@ -770,6 +786,13 @@ impl MultiplexerControl for InProcess {
     /// [`Self::spawn_pty_for`].
     fn pane_snapshot(&self, id: PaneId) -> ControlResult<tear_types::PaneSnapshot> {
         InProcess::pane_snapshot(self, id)
+    }
+
+    /// Override the trait default with the no-alloc lookup —
+    /// mado's input loop calls this per keystroke, so the
+    /// fast path matters here.
+    fn pane_cursor_keys_mode(&self, id: PaneId) -> ControlResult<bool> {
+        InProcess::pane_cursor_keys_mode(self, id)
     }
 
     /// Phase-3.1 override — resize the underlying PTY (fires
