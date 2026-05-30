@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod kanshou_state;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -270,6 +271,46 @@ pub fn start_with_config(
     // (alongside TEAR_SESSION_ID/NAME and TEAR_PANE_ID) — shells
     // and starship rely on it for prompt visibility + re-discovery.
     inproc.set_socket_path(socket_path.clone());
+
+    // ── Kanshou introspection server ─────────────────────────────
+    // Expose the daemon's live Registry (sessions, panes, socket,
+    // process metadata) over a kanshou Unix socket so operator
+    // tools and MCP servers query the actual state. See
+    // pleme-io/kanshou. Spawned on a dedicated thread with its
+    // own tokio runtime so the existing std::thread accept loop
+    // here is untouched. Best-effort: bind failure logs and
+    // continues — the daemon still serves its RPC.
+    {
+        let kanshou_state = Arc::new(kanshou_state::TearDaemonState::new(inproc.clone()));
+        std::thread::Builder::new()
+            .name("tear-kanshou".into())
+            .spawn(move || {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .thread_name("tear-kanshou-tokio")
+                    .build()
+                {
+                    Ok(rt) => rt.block_on(async {
+                        match kanshou_state::spawn_server("tear-daemon", kanshou_state) {
+                            Ok(path) => {
+                                info!(
+                                    socket = %path.display(),
+                                    "kanshou introspection live"
+                                );
+                                std::future::pending::<()>().await;
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "kanshou bind failed; introspection disabled");
+                            }
+                        }
+                    }),
+                    Err(e) => {
+                        warn!(error = %e, "could not create kanshou tokio runtime");
+                    }
+                }
+            })
+            .expect("spawn tear-kanshou thread");
+    }
 
     // Orphan-session pruner. Daemon-side safety net for crashes
     // / force-quits / SIGTERM where the consumer (mado, mcp,

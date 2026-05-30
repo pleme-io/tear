@@ -21,6 +21,12 @@ serde_yaml_ng = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 blake3 = { workspace = true }
+# Kanshou — live process introspection over Unix sockets. The daemon
+# opens a kanshou socket exposing the live Registry (sessions, panes,
+# subscriber counts) so operator tools and MCP servers query the
+# actual state. See pleme-io/kanshou.
+kanshou = { git = "https://github.com/pleme-io/kanshou" }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 # notify is used transitively via tear-config; we re-export the
 # watcher type from DaemonHandle for keep-alive semantics.
 notify = { workspace = true }
