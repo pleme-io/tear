@@ -41,6 +41,17 @@ impl PtyHandle {
     /// or appends to a scrollback grid. The reader thread loops on
     /// `master.try_clone_reader()` until EOF, calling the sink on
     /// each read.
+    ///
+    /// `on_exit` is the typed end-of-stream notification: when the
+    /// reader loop ends (PTY EOF because the child exited, or a read
+    /// error), the reader thread reaps the child to capture its exit
+    /// code, then calls `on_exit(code)` exactly once. `code` is
+    /// `None` only when the child was already reaped elsewhere (the
+    /// explicit-kill path, where [`Drop`] took the child first) or
+    /// `wait()` failed. This is the single edge that lets the
+    /// multiplexer mark the pane exited and disconnect its byte-stream
+    /// subscribers; without it a reader thread that hit EOF would just
+    /// end silently and every subscriber would block forever.
     pub fn spawn(
         shell: &str,
         args: &[String],
@@ -48,6 +59,7 @@ impl PtyHandle {
         env: &[(String, String)],
         size: PtySize,
         mut on_bytes: Box<dyn FnMut(&[u8]) + Send>,
+        on_exit: Box<dyn FnOnce(Option<i32>) + Send>,
     ) -> anyhow::Result<Self> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system.openpty(size)?;
@@ -70,6 +82,11 @@ impl PtyHandle {
         // and slows every fork.
         let child = pair.slave.spawn_command(cmd)?;
         let child = Arc::new(Mutex::new(Some(child)));
+        // Clone for the reader thread so it can reap the child + read
+        // its exit code the instant the PTY hits EOF (rather than
+        // leaving the zombie + the exit notification to `Drop`, which
+        // only fires on explicit kill).
+        let child_for_reader = Arc::clone(&child);
         // Slave fd retained by the child; once it exits the master
         // reader hits EOF.
         drop(pair.slave);
@@ -99,6 +116,20 @@ impl PtyHandle {
                         }
                     }
                 }
+                // EOF (or read error) — the byte stream is over. Reap
+                // the child to capture its exit code AND clear the
+                // zombie, then fire the typed exit notification so the
+                // multiplexer marks the pane exited + disconnects its
+                // subscribers. If the explicit-kill path (PtyHandle::
+                // Drop) already took the child, `take()` is None and
+                // `code` is None — the notification still fires so the
+                // disconnect is idempotent.
+                let code = child_for_reader
+                    .lock()
+                    .take()
+                    .and_then(|mut c| c.wait().ok())
+                    .map(|status| status.exit_code() as i32);
+                on_exit(code);
             })?;
 
         Ok(Self {
@@ -140,6 +171,11 @@ impl Drop for PtyHandle {
         // the slave fd closes, and the reader's read() returns
         // Ok(0). The reader thread then exits the loop and the
         // JoinHandle drop below completes immediately.
+        //
+        // On the natural-exit path the reader thread has already
+        // `take()`n + `wait()`ed the child (see `spawn`), so this
+        // slot is `None` and we skip straight to detaching the
+        // reader join handle — no double-wait, no double-kill.
         if let Some(mut child) = self.child.lock().take() {
             if let Err(e) = child.kill() {
                 warn!(error = %e, "tear pty child kill failed (already exited?)");

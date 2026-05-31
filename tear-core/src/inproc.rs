@@ -40,6 +40,25 @@ use crate::pty::PtyHandle;
 use crate::recording::PaneRecording;
 use crate::registry::Registry;
 
+/// Per-pane byte-stream fan-out state.
+///
+/// Co-locates the live subscriber senders with a `closed`
+/// end-of-stream marker so that *registering* a subscriber and
+/// *closing* the stream on child-exit are decided under a single
+/// lock. Without the co-located marker, a `subscribe` that races with
+/// (or follows) the pane's exit could push a sender that is never
+/// dropped — the exact "receiver blocks forever" failure this whole
+/// change exists to remove.
+#[derive(Default)]
+struct PaneSubscribers {
+    /// `Some(code)` once the pane's PTY child has exited; no further
+    /// bytes will ever be sent. New subscribers then receive an
+    /// already-disconnected receiver instead of a live registration.
+    closed: Option<i32>,
+    /// Live subscribers — each receives a clone of every PTY chunk.
+    senders: Vec<mpsc::Sender<Vec<u8>>>,
+}
+
 /// The native in-process multiplexer backend.
 pub struct InProcess {
     registry: Arc<RwLock<Registry>>,
@@ -49,11 +68,15 @@ pub struct InProcess {
     /// state. Wrapped per-pane in `Mutex` so the PTY reader thread
     /// and snapshot callers can race independently per pane.
     grids: Arc<Mutex<BTreeMap<PaneId, Arc<Mutex<PaneGrid>>>>>,
-    /// Per-pane byte-stream subscribers. Each subscriber receives a
-    /// clone of every PTY chunk (after it lands in the grid). On
-    /// send error the daemon's serve thread can prune dead
-    /// subscribers; the InProcess side just fans out.
-    subscribers: Arc<Mutex<BTreeMap<PaneId, Vec<mpsc::Sender<Vec<u8>>>>>>,
+    /// Per-pane byte-stream fan-out state ([`PaneSubscribers`]): the
+    /// live subscriber senders plus a `closed` end-of-stream marker.
+    /// On send error the fan-out prunes dead subscribers; on child
+    /// exit [`Self::spawn_pty_for`]'s `on_exit` hook marks the entry
+    /// closed and drops the senders, so every [`mpsc::Receiver`]
+    /// disconnects — the end-of-stream signal mado's
+    /// `attach_live.run()` and the daemon's `serve_subscription`
+    /// block on.
+    subscribers: Arc<Mutex<BTreeMap<PaneId, PaneSubscribers>>>,
     /// Per-pane recording (#4). Cheap when disabled — the on_bytes
     /// hook hits a single boolean before deciding whether to
     /// deep-copy the chunk. Recording is opt-in via
@@ -232,6 +255,16 @@ impl InProcess {
     ///
     /// Returns `NoSuchPane` if the pane has no PTY (never spawned
     /// or already killed).
+    ///
+    /// If the pane's child has already exited (remain-on-exit dead
+    /// pane), the returned receiver is born already-disconnected: no
+    /// live sender is registered, so the consumer can replay the
+    /// pane's final grid snapshot and then immediately observe
+    /// end-of-stream (`recv() -> Err`) instead of blocking forever on
+    /// a pane that will never emit again. The `closed` check and the
+    /// sender push happen under the same lock, so a `subscribe` that
+    /// races with the pane's exit can't leak a sender that never
+    /// disconnects.
     pub fn subscribe_pane_bytes(
         &self,
         pane: PaneId,
@@ -243,7 +276,13 @@ impl InProcess {
             return Err(ControlError::NoSuchPane(pane));
         }
         let (tx, rx) = mpsc::channel();
-        self.subscribers.lock().entry(pane).or_default().push(tx);
+        let mut subs = self.subscribers.lock();
+        let ps = subs.entry(pane).or_default();
+        if ps.closed.is_none() {
+            ps.senders.push(tx);
+        }
+        // else: stream already closed — drop `tx` here so `rx` is
+        // immediately disconnected.
         Ok(rx)
     }
 
@@ -412,7 +451,8 @@ impl InProcess {
             // cost is a Vec clone + mpsc::send. On send error the
             // sender is dead — prune it.
             let mut subs = subscribers_for_callback.lock();
-            if let Some(senders) = subs.get_mut(&pane_id) {
+            if let Some(ps) = subs.get_mut(&pane_id) {
+                let senders = &mut ps.senders;
                 let mut i = 0;
                 while i < senders.len() {
                     if senders[i].send(bytes.to_vec()).is_err() {
@@ -432,7 +472,57 @@ impl InProcess {
             }
             debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid + subscribers");
         });
-        let pty = PtyHandle::spawn(shell, &[], None, &env, pty_size, on_bytes)?;
+        // on_exit — fired once by the PTY reader thread when the child
+        // exits (PTY EOF). Two typed consequences:
+        //
+        //  1. Mark the pane `PaneState::Exited { code }` in the typed
+        //     registry. The pane + its final grid stay (tmux
+        //     remain-on-exit) so `tear list` / snapshots still see it;
+        //     only the live byte stream ends.
+        //  2. Mark the subscriber entry `closed` + drop every live
+        //     sender. Each engate/daemon `Receiver.recv()` then
+        //     returns `Err` — the end-of-stream signal mado's
+        //     `attach_live.run()` and the daemon's `serve_subscription`
+        //     block on. Without this the channel stays open forever and
+        //     a single-pane GUI (mado embedded) never learns the shell
+        //     exited, so its window never closes.
+        //
+        // Lock order matches the kill paths (the registry write is a
+        // separate critical section from the subscribers lock — never
+        // nested — so no inversion). The subscribers step is gated on
+        // the pane still being present in the registry so an explicit
+        // `kill_pane` that races with natural exit doesn't leave a
+        // lingering empty entry.
+        let subscribers_for_exit = Arc::clone(&self.subscribers);
+        let registry_for_exit = Arc::clone(&self.registry);
+        let on_exit = Box::new(move |code: Option<i32>| {
+            let still_present = {
+                let mut r = registry_for_exit.write();
+                let mut found = false;
+                for s in r.sessions.values_mut() {
+                    if let Some(p) = s.panes.get_mut(&pane_id) {
+                        p.state = tear_types::PaneState::Exited {
+                            code: code.unwrap_or(-1),
+                        };
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            };
+            let mut subs = subscribers_for_exit.lock();
+            if still_present {
+                let ps = subs.entry(pane_id).or_default();
+                ps.closed = Some(code.unwrap_or(-1));
+                ps.senders.clear();
+            } else {
+                // Pane was explicitly killed concurrently — drop any
+                // entry rather than recreating one for a dead id.
+                subs.remove(&pane_id);
+            }
+            debug!(pane_id = %pane_id, ?code, "tear-core: pane child exited — marked Exited + disconnected subscribers");
+        });
+        let pty = PtyHandle::spawn(shell, &[], None, &env, pty_size, on_bytes, on_exit)?;
         self.ptys.lock().insert(pane_id, pty);
         Ok(())
     }
@@ -758,7 +848,7 @@ impl MultiplexerControl for InProcess {
             .subscribers
             .lock()
             .get(&id)
-            .map(|v| v.len() as u32)
+            .map(|ps| ps.senders.len() as u32)
             .unwrap_or(0);
         Ok(count)
     }
@@ -853,7 +943,7 @@ mod tests {
         let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().push(tx);
+        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
 
         inproc.send_keys(pane, b"printf 'PATH=[%s]\\n' \"$PATH\"\n").expect("send_keys");
 
@@ -890,7 +980,7 @@ mod tests {
         let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().push(tx);
+        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
 
         inproc
             .send_keys(pane, b"printf 'TERM=[%s]\\n' \"${TERM:-MISSING}\"\n")
@@ -932,7 +1022,7 @@ mod tests {
         let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().push(tx);
+        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
 
         inproc
             .send_keys(
@@ -979,6 +1069,68 @@ mod tests {
         let pane = PaneId::from_seed("phantom");
         let err = inproc.subscribe_pane_bytes(pane).unwrap_err();
         assert!(matches!(err, ControlError::NoSuchPane(p) if p == pane));
+    }
+
+    #[test]
+    fn child_exit_disconnects_subscribers_and_marks_pane_exited() {
+        // Regression (mado embedded-tear "typing `exit` does nothing"):
+        // when the shell exits, the per-pane byte channel MUST
+        // disconnect so a single-pane GUI learns the child is gone and
+        // can close its window. Before the fix the PTY reader thread
+        // just ended on EOF, leaving every engate/daemon Receiver
+        // blocked forever on a phantom-Running pane whose senders were
+        // never dropped.
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session("exit-test", "/bin/sh")
+            .expect("new_session");
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        // Subscribe while the pane is alive (mirrors mado's attach).
+        let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
+
+        // Drive the shell to exit with a specific code.
+        inproc.send_keys(pane, b"exit 7\n").expect("send_keys");
+
+        // The receiver must eventually disconnect — that Err is the
+        // end-of-stream signal engate's run() / the daemon's
+        // serve_subscription block on.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut disconnected = false;
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(_) => continue, // drain echoed input / shell output
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            disconnected,
+            "subscriber channel never disconnected after `exit` — a single-pane GUI would hang open"
+        );
+
+        // The pane must be modeled as Exited (remain-on-exit) with the
+        // child's real exit code propagated.
+        let session = inproc.get_session(sid).unwrap();
+        let state = session.panes.get(&pane).map(|p| p.state);
+        assert_eq!(
+            state,
+            Some(tear_types::PaneState::Exited { code: 7 }),
+            "pane should be Exited{{ code: 7 }}, got {state:?}"
+        );
+
+        // A subscribe AFTER exit must return an already-disconnected
+        // receiver, never a live registration that would block forever.
+        let rx2 = inproc
+            .subscribe_pane_bytes(pane)
+            .expect("subscribe after exit still resolves (remain-on-exit pane)");
+        assert!(
+            matches!(rx2.recv(), Err(mpsc::RecvError)),
+            "post-exit subscribe must yield an immediately-disconnected receiver"
+        );
     }
 
     #[test]
