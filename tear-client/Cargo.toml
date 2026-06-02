@@ -25,5 +25,5 @@ engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", op
 engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }
 
 [dev-dependencies]
-tear-core = { workspace = true }
-tear-daemon = { workspace = true }
+tear-core = { path = "../tear-core" }
+tear-daemon = { path = "../tear-daemon" }

@@ -30,5 +30,5 @@ mimalloc = { workspace = true }
 ctrlc = "3"
 
 [dev-dependencies]
-tear-core = { workspace = true }
-tear-daemon = { workspace = true }
+tear-core = { path = "../tear-core" }
+tear-daemon = { path = "../tear-daemon" }

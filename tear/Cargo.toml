@@ -58,4 +58,4 @@ tempfile = "3"
 # Enables tear_daemon::testing::{DaemonHarness, DuplexStream}
 # during test compilation only; production builds keep the feature
 # off so the helpers are gated out.
-tear-daemon = { workspace = true, features = ["testing"] }
+tear-daemon = { path = "../tear-daemon" }
