@@ -26,4 +26,4 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
-engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true }
+engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }

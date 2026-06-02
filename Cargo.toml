@@ -39,11 +39,11 @@ tear = { path = "tear", version = "0.1.0" }
 # clap subcommand factory tear's binary wires into via one Subcommand
 # variant. Pin to branch=main so the workspace stays on a single
 # canonical shikumi source.
-shikumi = { git = "https://github.com/pleme-io/shikumi", branch = "main", features = ["cli"] }
+shikumi = { git = "https://github.com/pleme-io/shikumi", branch = "main", features = ["cli"] , version = "0.1" }
 # Typed design tokens — palette + typography. tear's StatusBar /
 # tab-bar / pane-border / message colors all resolve through ishou
 # so a fleet-wide colorway change is one ishou-tokens edit.
-ishou-tokens = { git = "https://github.com/pleme-io/ishou" }
+ishou-tokens = { git = "https://github.com/pleme-io/ishou" , version = "0.1" }
 
 # ── canonical fleet runtime crates ─────────────────────────────────
 serde = { version = "1", features = ["derive"] }
