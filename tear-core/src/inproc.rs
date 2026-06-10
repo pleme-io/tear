@@ -526,6 +526,38 @@ impl InProcess {
         self.ptys.lock().insert(pane_id, pty);
         Ok(())
     }
+
+    /// Detach every runtime artifact for `panes` — PTY handle, VT grid,
+    /// subscriber fan-out — under the three map locks, RETURNING the
+    /// PTY handles instead of dropping them. Callers drop the returned
+    /// vec only after every `InProcess` lock is released.
+    ///
+    /// DEADLOCK CONTRACT (mado L1 teardown wedge, 2026-06-10):
+    /// dropping a [`PtyHandle`] kills + reaps the child, and the
+    /// pane's `tear-pty-reader` thread may simultaneously be blocked
+    /// acquiring `subscribers` (inside `on_bytes`) or `registry`
+    /// (inside `on_exit`). Dropping the handle while this thread holds
+    /// those locks is a mutual wait: the reap can't finish until the
+    /// reader drains, the reader can't drain until the locks release —
+    /// observed as a 20+ minute wedge. The handles therefore ALWAYS
+    /// leave the maps inside the lock scope and die outside it (the
+    /// reap itself is additionally bounded — see `pty::reap_with_deadline`).
+    fn detach_panes(&self, panes: &[PaneId]) -> Vec<PtyHandle> {
+        let mut ptys = self.ptys.lock();
+        let mut grids = self.grids.lock();
+        let mut subs = self.subscribers.lock();
+        let mut detached = Vec::with_capacity(panes.len());
+        for p in panes {
+            if let Some(h) = ptys.remove(p) {
+                detached.push(h);
+            }
+            grids.remove(p);
+            // Dropping the sender vec disconnects subscribers
+            // cleanly — their recv() returns Err on next read.
+            subs.remove(p);
+        }
+        detached
+    }
 }
 
 impl MultiplexerControl for InProcess {
@@ -616,19 +648,12 @@ impl MultiplexerControl for InProcess {
             let s = r.sessions.get(&id).ok_or(ControlError::NoSuchSession(id))?;
             s.panes.keys().copied().collect()
         };
-        {
-            let mut ptys = self.ptys.lock();
-            let mut grids = self.grids.lock();
-            let mut subs = self.subscribers.lock();
-            for p in &panes_to_kill {
-                ptys.remove(p);
-                grids.remove(p);
-                // Dropping the sender vec disconnects subscribers
-                // cleanly — their recv() returns Err on next read.
-                subs.remove(p);
-            }
-        }
+        // Pull the runtime artifacts out under the locks…
+        let detached = self.detach_panes(&panes_to_kill);
         self.registry.write().sessions.remove(&id);
+        // …and kill + reap the PTY children with NO InProcess lock
+        // held (detach_panes' deadlock contract).
+        drop(detached);
         info!(session = %id, "tear-core: killed session");
         Ok(())
     }
@@ -662,27 +687,22 @@ impl MultiplexerControl for InProcess {
             }
             out
         };
+        // Same shape as kill_session: artifacts leave the maps under
+        // the locks, handles die only after every lock is released
+        // (detach_panes' deadlock contract).
+        let detached = self.detach_panes(&panes_to_kill);
         {
-            let mut ptys = self.ptys.lock();
-            let mut grids = self.grids.lock();
-            let mut subs = self.subscribers.lock();
-            for p in &panes_to_kill {
-                ptys.remove(p);
-                grids.remove(p);
-                // Dropping the sender vec disconnects subscribers
-                // cleanly — their recv() returns Err on next read.
-                subs.remove(p);
-            }
-        }
-        let mut r = self.registry.write();
-        for s in r.sessions.values_mut() {
-            if s.windows.remove(&id).is_some() {
-                for p in &panes_to_kill {
-                    s.panes.remove(p);
+            let mut r = self.registry.write();
+            for s in r.sessions.values_mut() {
+                if s.windows.remove(&id).is_some() {
+                    for p in &panes_to_kill {
+                        s.panes.remove(p);
+                    }
+                    break;
                 }
-                break;
             }
         }
+        drop(detached);
         info!(window = %id, "tear-core: killed window");
         Ok(())
     }
@@ -756,20 +776,27 @@ impl MultiplexerControl for InProcess {
     }
 
     fn kill_pane(&self, id: PaneId) -> ControlResult<()> {
-        self.ptys.lock().remove(&id);
-        self.grids.lock().remove(&id);
-        self.subscribers.lock().remove(&id);
-        let mut r = self.registry.write();
-        let mut found = false;
-        for s in r.sessions.values_mut() {
-            if s.panes.remove(&id).is_some() {
-                found = true;
-                // Layout update — M2 will properly rebalance the
-                // tree. For now we leave the leaf reference dangling;
-                // the renderer treats a missing pane as blank.
-                break;
+        // NOTE pre-fix this was `self.ptys.lock().remove(&id);` — the
+        // returned PtyHandle was a temporary dropped BEFORE the lock
+        // guard (reverse creation order), i.e. the kill + reap ran
+        // with the ptys lock held. Same wedge class as kill_session;
+        // same cure: detach under the locks, drop outside them.
+        let detached = self.detach_panes(&[id]);
+        let found = {
+            let mut r = self.registry.write();
+            let mut found = false;
+            for s in r.sessions.values_mut() {
+                if s.panes.remove(&id).is_some() {
+                    found = true;
+                    // Layout update — M2 will properly rebalance the
+                    // tree. For now we leave the leaf reference dangling;
+                    // the renderer treats a missing pane as blank.
+                    break;
+                }
             }
-        }
+            found
+        };
+        drop(detached);
         if !found {
             return Err(ControlError::NoSuchPane(id));
         }
@@ -1161,6 +1188,86 @@ mod tests {
         inproc.rename_session(sid, "play").unwrap();
         let s2 = inproc.get_session(sid).unwrap();
         assert_eq!(s2.name, "play");
+    }
+
+    #[test]
+    fn kill_session_with_active_subscriber_returns_promptly() {
+        // Regression (mado L1 teardown wedge, 2026-06-10): kill_session
+        // used to drop PtyHandles INSIDE the ptys/grids/subscribers
+        // lock scope; PtyHandle::Drop then block-waited on the child
+        // while the pane's reader thread sat blocked acquiring the
+        // same subscribers lock from on_bytes — mutual wait, observed
+        // as a 20+ minute wedge. Post-fix the handles leave the maps
+        // under the locks but die outside them, and the reap itself is
+        // bounded (pty::reap_with_deadline).
+        //
+        // /bin/cat echoes everything, so a feeder thread keeps the
+        // reader thread hot (contending the subscribers lock) while
+        // another thread kills the session. The watchdog channel turns
+        // a re-introduced deadlock into a <5s test failure instead of
+        // a hung suite.
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session("kill-fast", "/bin/cat")
+            .expect("new_session");
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        // Active subscriber (mirrors mado's attach_live).
+        let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
+
+        // Feeder — keeps bytes flowing through on_bytes so the reader
+        // thread is actively taking the subscribers lock during kill.
+        let feeder_inproc = Arc::clone(&inproc);
+        let feeding = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let feeding_for_thread = Arc::clone(&feeding);
+        let feeder = std::thread::spawn(move || {
+            let chunk = vec![b'x'; 4096];
+            while feeding_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                if feeder_inproc.send_keys(pane, &chunk).is_err() {
+                    break; // pane gone — the kill landed
+                }
+            }
+        });
+        // Drain one echo so we know the reader thread is live.
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        // kill_session on a helper thread + watchdog recv.
+        let killer_inproc = Arc::clone(&inproc);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let result = killer_inproc.kill_session(sid);
+            let _ = done_tx.send((result, started.elapsed()));
+        });
+        let (result, elapsed) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("kill_session deadlocked — did not return within 5s");
+        feeding.store(false, std::sync::atomic::Ordering::Relaxed);
+        result.expect("kill_session errored");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "kill_session took {elapsed:?} with an active subscriber"
+        );
+        let _ = feeder.join();
+
+        // The subscriber must observe end-of-stream (senders dropped by
+        // detach_panes), never block forever on a dead pane.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut disconnected = false;
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(_) => continue, // drain buffered echo
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            disconnected,
+            "subscriber channel never disconnected after kill_session"
+        );
     }
 
     #[test]

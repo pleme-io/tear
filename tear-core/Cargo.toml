@@ -36,3 +36,7 @@ engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", o
 
 [dev-dependencies]
 proptest = "1"
+# Terminal-conformance contract — the VT query catalog the
+# espelho_conformance integration test feeds through PaneGrid + the
+# InProcess subscriber fan-out (relay/pass-through row).
+espelho = { workspace = true }

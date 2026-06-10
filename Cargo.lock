@@ -647,6 +647,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "espelho"
+version = "0.1.0"
+source = "git+https://github.com/pleme-io/espelho?branch=main#e1ff733cb78637c1d38eac46abbfe2d7719dd5af"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2332,6 +2341,7 @@ dependencies = [
  "blake3",
  "engate-attach",
  "engate-types",
+ "espelho",
  "once_cell",
  "parking_lot",
  "portable-pty",
