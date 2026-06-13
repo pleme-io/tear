@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "24a379ff04faf07018eb964c19f60cc59e0e90b71385ab6f1e6fc9d255a70353",
+  "cargo_lock_sha256": "9c11cbfadb63003f24e0c2bf4efaa932dc46ab866df6de9de562e545635aa8c2",
   "target_resolves": {
     "base": {
       "aho-corasick-1.1.4": {
@@ -1333,6 +1333,34 @@
           "std"
         ]
       },
+      "espelho-0.1.0-e1ff733cb78637c1d38eac46abbfe2d7719dd5af": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "fastrand-2.4.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -1812,7 +1840,7 @@
           "std"
         ]
       },
-      "gen-macros-0.1.9": {
+      "gen-macros-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1851,11 +1879,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-platform-0.1.9": {
+      "gen-platform-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": {
         "runtime_dependencies": [
           {
             "name": "gen_macros",
-            "package_key": "gen-macros-0.1.9",
+            "package_key": "gen-macros-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1865,7 +1893,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.9",
+            "package_key": "gen-types-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1919,7 +1947,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-types-0.1.9": {
+      "gen-types-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -2976,7 +3004,7 @@
           "default"
         ]
       },
-      "ishou-tokens-0.1.3": {
+      "ishou-tokens-0.1.3-57846be3f314df65a81eade875200c4664420006": {
         "runtime_dependencies": [
           {
             "name": "irodori",
@@ -3041,11 +3069,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "kanshou-0.1.0": {
+      "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": {
         "runtime_dependencies": [
           {
             "name": "kanshou_derive",
-            "package_key": "kanshou-derive-0.1.0",
+            "package_key": "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3119,7 +3147,7 @@
           "derive"
         ]
       },
-      "kanshou-derive-0.1.0": {
+      "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -5503,7 +5531,7 @@
           "std"
         ]
       },
-      "shidou-0.1.7": {
+      "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -5541,7 +5569,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.2",
+            "package_key": "shikumi-0.1.2-61e5f97ad2f61205599b8679a4ff7b2075506003",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5585,7 +5613,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shikumi-0.1.0": {
+      "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484": {
         "runtime_dependencies": [
           {
             "name": "arc_swap",
@@ -5704,7 +5732,7 @@
           "default"
         ]
       },
-      "shikumi-0.1.2": {
+      "shikumi-0.1.2-61e5f97ad2f61205599b8679a4ff7b2075506003": {
         "runtime_dependencies": [
           {
             "name": "arc_swap",
@@ -5742,7 +5770,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.9",
+            "package_key": "gen-platform-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5752,7 +5780,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.9",
+            "package_key": "gen-types-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6290,7 +6318,7 @@
           },
           {
             "name": "shidou",
-            "package_key": "shidou-0.1.7",
+            "package_key": "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6300,7 +6328,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.0",
+            "package_key": "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484",
             "kind": "normal",
             "features": [
               "cli"
@@ -6504,7 +6532,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3",
+            "package_key": "ishou-tokens-0.1.3-57846be3f314df65a81eade875200c4664420006",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6558,7 +6586,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.0",
+            "package_key": "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484",
             "kind": "normal",
             "features": [
               "cli"
@@ -6756,7 +6784,7 @@
           },
           {
             "name": "kanshou",
-            "package_key": "kanshou-0.1.0",
+            "package_key": "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6865,8 +6893,7 @@
         ],
         "build_dependencies": [],
         "features": [
-          "default",
-          "testing"
+          "default"
         ]
       },
       "tear-tmux-backend-0.1.0": {
@@ -12962,6 +12989,9 @@
     "errno-0.3.14": {
       "edition": "2018"
     },
+    "espelho-0.1.0-e1ff733cb78637c1d38eac46abbfe2d7719dd5af": {
+      "edition": "2021"
+    },
     "fastrand-2.4.1": {
       "edition": "2018"
     },
@@ -13016,14 +13046,14 @@
     "futures-util-0.3.32": {
       "edition": "2018"
     },
-    "gen-macros-0.1.9": {
+    "gen-macros-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": {
       "edition": "2024",
       "proc_macro": true
     },
-    "gen-platform-0.1.9": {
+    "gen-platform-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": {
       "edition": "2024"
     },
-    "gen-types-0.1.9": {
+    "gen-types-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": {
       "edition": "2024"
     },
     "generic-array-0.14.7": {
@@ -13119,7 +13149,7 @@
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
-    "ishou-tokens-0.1.3": {
+    "ishou-tokens-0.1.3-57846be3f314df65a81eade875200c4664420006": {
       "edition": "2024"
     },
     "itertools-0.13.0": {
@@ -13128,10 +13158,10 @@
     "itoa-1.0.18": {
       "edition": "2021"
     },
-    "kanshou-0.1.0": {
+    "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": {
       "edition": "2024"
     },
-    "kanshou-derive-0.1.0": {
+    "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": {
       "edition": "2024",
       "proc_macro": true
     },
@@ -13421,13 +13451,13 @@
     "shell-words-1.1.1": {
       "edition": "2015"
     },
-    "shidou-0.1.7": {
+    "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": {
       "edition": "2024"
     },
-    "shikumi-0.1.0": {
+    "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484": {
       "edition": "2024"
     },
-    "shikumi-0.1.2": {
+    "shikumi-0.1.2-61e5f97ad2f61205599b8679a4ff7b2075506003": {
       "edition": "2024"
     },
     "shlex-1.3.0": {
@@ -13786,15 +13816,16 @@
     }
   },
   "git_nar_sha256": {
-    "gen-macros-0.1.9": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
-    "gen-platform-0.1.9": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
-    "gen-types-0.1.9": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
-    "ishou-tokens-0.1.3": "sha256-ihLvPvl8S9zLI3yWChVIRORiQI81UcjNe0i6TcL6tgQ=",
-    "kanshou-0.1.0": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
-    "kanshou-derive-0.1.0": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
-    "shidou-0.1.7": "sha256-3hlg04OVg5MawDisQLDuorp0PmODWPF/t9PscUe56UE=",
-    "shikumi-0.1.0": "sha256-pWSHhsRS1Ol+A3mZnflVsNWscNJgSjg5w/iuVBFFLR4=",
-    "shikumi-0.1.2": "sha256-pkEmUjEdtwr6ag8rHhCeRikPDAEwzDbEcxojFhHKsCU="
+    "espelho-0.1.0-e1ff733cb78637c1d38eac46abbfe2d7719dd5af": "sha256-mX8YVMxg+W4ea5ofdL5KLid6S5oKiGN48angjAj8OVc=",
+    "gen-macros-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
+    "gen-platform-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
+    "gen-types-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
+    "ishou-tokens-0.1.3-57846be3f314df65a81eade875200c4664420006": "sha256-ihLvPvl8S9zLI3yWChVIRORiQI81UcjNe0i6TcL6tgQ=",
+    "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
+    "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
+    "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": "sha256-3hlg04OVg5MawDisQLDuorp0PmODWPF/t9PscUe56UE=",
+    "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484": "sha256-pWSHhsRS1Ol+A3mZnflVsNWscNJgSjg5w/iuVBFFLR4=",
+    "shikumi-0.1.2-61e5f97ad2f61205599b8679a4ff7b2075506003": "sha256-pkEmUjEdtwr6ag8rHhCeRikPDAEwzDbEcxojFhHKsCU="
   },
   "flake_metadata": {}
 }
