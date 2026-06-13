@@ -86,6 +86,18 @@ impl PtyHandle {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        // PWD hygiene (cwd handshake, operator report 2026-06-12): a
+        // child shell trusts inherited `PWD` over `getcwd()`, so a
+        // stale parent `PWD` makes frost / prompt cwd wrong even though
+        // the real cwd is correct. Stamp `PWD` to the real cwd when one
+        // is set; strip any inherited `PWD` when none is, so a stale
+        // parent `PWD` can never leak. This is the lowest-level guard —
+        // it holds for EVERY caller (in-process, daemon, registry),
+        // independent of whatever the `env` vec carried.
+        match cwd {
+            Some(d) => cmd.env("PWD", d),
+            None => cmd.env_remove("PWD"),
+        }
         // Retain the child handle so Drop can kill() it. Without
         // this the shell becomes an orphan after PtyHandle drops:
         // closing the master fd would normally SIGHUP the child,

@@ -51,6 +51,7 @@ pub mod pane;
 pub mod path;
 pub mod pane_snapshot;
 pub mod session;
+pub mod spawn_env;
 pub mod statusbar;
 pub mod theme;
 pub mod window;
@@ -69,6 +70,7 @@ pub use pane_snapshot::{
     ANSI_COLORS,
 };
 pub use session::{SessionSource, SessionState, TearSession};
+pub use spawn_env::SpawnEnv;
 pub use statusbar::{Segment, SegmentAlignment, StatusBar};
 pub use theme::HexColor;
 pub use theme::TearTheme;

@@ -87,6 +87,15 @@ pub struct InProcess {
     /// child processes can re-discover the daemon without
     /// scanning the XDG runtime dir.
     socket_path: Arc<RwLock<Option<std::path::PathBuf>>>,
+    /// Embedder-supplied env + cwd override (mado's typed capability
+    /// projection — `TERM=xterm-ghostty` + `TERMINFO` + `COLORTERM` +
+    /// `PWD`), applied to every child's env AFTER the inherited +
+    /// fallback env so the embedder's richer capability set wins over
+    /// the conservative `xterm-256color` default. Empty by default
+    /// (the pre-seam behaviour); set via [`Self::set_spawn_env`]. This
+    /// is the fix for "vim grey + wrong font in the embedded-tear
+    /// window" (operator report 2026-06-12).
+    spawn_env: Arc<RwLock<tear_types::SpawnEnv>>,
 }
 
 impl Default for InProcess {
@@ -105,7 +114,18 @@ impl InProcess {
             subscribers: Arc::new(Mutex::new(BTreeMap::new())),
             recordings: Arc::new(Mutex::new(BTreeMap::new())),
             socket_path: Arc::new(RwLock::new(None)),
+            spawn_env: Arc::new(RwLock::new(tear_types::SpawnEnv::none())),
         }
+    }
+
+    /// Set the embedder's typed env + cwd override, applied to every
+    /// subsequent child PTY's env AFTER the inherited + fallback env.
+    /// mado calls this with its `caps::EnvProjection` pairs (+ the boot
+    /// cwd) so vim in an embedded-tear window sees `xterm-ghostty` +
+    /// truecolor + the vendored terminfo — identical to the local-PTY
+    /// path. Idempotent; the last write wins.
+    pub fn set_spawn_env(&self, env: tear_types::SpawnEnv) {
+        *self.spawn_env.write() = env;
     }
 
     /// Record the UDS path the daemon bound to. Subsequent PTY
@@ -435,6 +455,13 @@ impl InProcess {
                 env.push(("PATH".into(), new_path));
             }
         }
+        // Embedder env + cwd override (mado's capability projection),
+        // applied LAST so its TERM=xterm-ghostty + TERMINFO + COLORTERM
+        // win over the xterm-256color fallback above (the "vim grey"
+        // fix), and PWD is stamped to match the cwd. Empty pre-seam.
+        let spawn_env = self.spawn_env.read().clone();
+        spawn_env.apply_to(&mut env);
+        let cwd = spawn_env.cwd.clone();
         // Allocate the per-pane grid and register it BEFORE spawning
         // the PTY — the reader thread starts immediately on spawn,
         // and we want the first bytes to find their grid.
@@ -522,7 +549,15 @@ impl InProcess {
             }
             debug!(pane_id = %pane_id, ?code, "tear-core: pane child exited — marked Exited + disconnected subscribers");
         });
-        let pty = PtyHandle::spawn(shell, &[], None, &env, pty_size, on_bytes, on_exit)?;
+        let pty = PtyHandle::spawn(
+            shell,
+            &[],
+            cwd.as_deref(),
+            &env,
+            pty_size,
+            on_bytes,
+            on_exit,
+        )?;
         self.ptys.lock().insert(pane_id, pty);
         Ok(())
     }
