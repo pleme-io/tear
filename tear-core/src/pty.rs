@@ -266,6 +266,87 @@ fn reap_with_deadline(mut child: Box<dyn Child + Send + Sync>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+
+    /// FIX 3 cwd handshake (operator report 2026-06-12): a spawn with a
+    /// cwd stamps `PWD=<cwd>` on the child, so a shell that trusts
+    /// inherited `PWD` over `getcwd()` reports the RIGHT directory.
+    /// PTY-gated (openpty); passes in isolation.
+    #[test]
+    fn spawn_with_cwd_sets_env_pwd_consistent() {
+        let dir = std::env::temp_dir();
+        let dir_str = dir.to_string_lossy().into_owned();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let _handle = PtyHandle::spawn(
+            "/bin/sh",
+            &["-c".into(), "printf 'PWDCHK[%s]\\n' \"$PWD\"".into()],
+            Some(&dir_str),
+            // Seed a STALE PWD in the env so the test proves the cwd
+            // stamp WINS (env applied first, then the cwd-stamp guard).
+            &[("PWD".into(), "/stale/parent".into())],
+            PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 },
+            Box::new(move |b| {
+                let _ = tx.send(b.to_vec());
+            }),
+            Box::new(|_| {}),
+        )
+        .expect("spawn /bin/sh");
+        let mut buf = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                if std::str::from_utf8(&buf).map(|s| s.contains("PWDCHK[")).unwrap_or(false) {
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        assert!(
+            text.contains(&format!("PWDCHK[{}", dir_str.trim_end_matches('/'))),
+            "child $PWD must match the spawn cwd, not the stale parent PWD: {text:?}"
+        );
+        assert!(
+            !text.contains("/stale/parent"),
+            "the stale parent PWD leaked to the child: {text:?}"
+        );
+    }
+
+    /// FIX 3: a spawn with NO cwd strips any inherited `PWD`, so a
+    /// stale parent `PWD` can never leak — the child falls back to its
+    /// real `getcwd()`-derived directory. PTY-gated; passes in isolation.
+    #[test]
+    fn spawn_without_cwd_never_leaks_parent_pwd() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let _handle = PtyHandle::spawn(
+            "/bin/sh",
+            &["-c".into(), "printf 'PWDCHK[%s]\\n' \"${PWD:-UNSET}\"".into()],
+            None,
+            &[("PWD".into(), "/stale/parent".into())],
+            PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 },
+            Box::new(move |b| {
+                let _ = tx.send(b.to_vec());
+            }),
+            Box::new(|_| {}),
+        )
+        .expect("spawn /bin/sh");
+        let mut buf = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                if std::str::from_utf8(&buf).map(|s| s.contains("PWDCHK[")).unwrap_or(false) {
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("PWDCHK["), "no PWDCHK output: {text:?}");
+        assert!(
+            !text.contains("/stale/parent"),
+            "no-cwd spawn must strip the inherited PWD; the stale parent leaked: {text:?}"
+        );
+    }
 
     #[test]
     fn drop_reaps_sighup_immune_child_within_deadline() {

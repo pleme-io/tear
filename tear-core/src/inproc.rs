@@ -1118,6 +1118,62 @@ mod tests {
         assert!(text.contains("SOCK=/tmp/tear-test-env.sock"), "TEAR_SOCKET wrong: {text:?}");
     }
 
+    /// **`SpawnEnv` override reaches the child + wins over the
+    /// fallback** (operator report 2026-06-12: vim grey + wrong font in
+    /// the embedded-tear window came from the embedded path stamping only
+    /// xterm-256color). An embedder (mado) sets a `SpawnEnv` whose
+    /// `TERM` override + `COLORTERM` must land on the child's env,
+    /// overriding the conservative fallback `spawn_pty_for` would
+    /// otherwise stamp. PTY-gated (openpty); passes in isolation.
+    #[test]
+    fn spawn_env_override_reaches_child_and_wins_over_fallback() {
+        let inproc = Arc::new(InProcess::new());
+        // The embedder's capability projection: a richer TERM than the
+        // xterm-256color fallback + the truecolor signal vim needs.
+        inproc.set_spawn_env(tear_types::SpawnEnv::from_overrides(vec![
+            ("TERM".into(), "xterm-ghostty".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ]));
+        let sid = inproc.new_session("spawnenv-test", "/bin/sh").unwrap();
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
+        inproc
+            .send_keys(
+                pane,
+                b"printf 'SENV[T=%s][C=%s]\\n' \"${TERM}\" \"${COLORTERM}\"\n",
+            )
+            .expect("send_keys");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut buf = Vec::<u8>::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                if let Ok(s) = std::str::from_utf8(&buf) {
+                    if s.contains("SENV[") && s.contains(']') {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        while let Ok(more) = rx.try_recv() {
+                            buf.extend_from_slice(&more);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("SENV["), "no sentinel in output: {text:?}");
+        assert!(
+            text.contains("T=xterm-ghostty"),
+            "embedder TERM override did not reach the child (fallback won): {text:?}"
+        );
+        assert!(
+            text.contains("C=truecolor"),
+            "embedder COLORTERM override did not reach the child: {text:?}"
+        );
+    }
+
     #[test]
     fn get_nonexistent_session_errors() {
         let inproc = InProcess::new();
