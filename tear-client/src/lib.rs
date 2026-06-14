@@ -832,6 +832,28 @@ impl Client {
             other => Err(unexpected("Ok", other)),
         }
     }
+
+    /// Push a typed [`SpawnEnv`](tear_types::SpawnEnv) — the embedder's
+    /// capability env + cwd override — to the daemon. The daemon applies
+    /// it to its `InProcess` so every SUBSEQUENT `new_session` spawn's
+    /// child PTY sees the embedder's `TERM`/`COLORTERM`/`TERMINFO`/
+    /// `TERM_PROGRAM` (and a stamped `PWD`) AFTER the inherited +
+    /// fallback env. This is the daemon-transport equivalent of the
+    /// embedded path's direct `InProcess::set_spawn_env` call — it closes
+    /// the gap where a daemon-spawned child only saw the daemon's own env
+    /// (so mado's truecolor/terminfo projection never reached vim there).
+    ///
+    /// Mado's `run_against_pane` calls this immediately after connecting,
+    /// BEFORE the `new_session` that spawns the pane's shell, so the
+    /// override is in place when the child's env is read. Idempotent; the
+    /// last push wins. Not part of `MultiplexerControl` — spawn-env
+    /// projection is a tear-core/daemon-specific concern.
+    pub fn set_spawn_env(&self, env: &tear_types::SpawnEnv) -> ControlResult<()> {
+        match self.rpc(Request::SetSpawnEnv(env.clone()))? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
 }
 
 /// Daemon broke the contract — wrong response variant for a given
@@ -1320,6 +1342,97 @@ mod tests {
         client.set_config(&authored).expect("set_config 2");
         assert_eq!(client.get_config().unwrap().prefix, "C-Space");
 
+        daemon.stop();
+    }
+
+    /// **SetSpawnEnv end-to-end**: a client pushes a typed `SpawnEnv`
+    /// (the embedder's capability projection) over the daemon wire
+    /// BEFORE creating a session; the daemon applies it to its
+    /// `InProcess`, and the subsequently-spawned child PTY's env reflects
+    /// the override — `TERM`/`COLORTERM` win over the conservative
+    /// fallback. This is the daemon-transport mirror of tear-core's
+    /// `spawn_env_override_reaches_child_and_wins_over_fallback`, proving
+    /// the wire path closes the truecolor gap for daemon-spawned panes.
+    /// PTY-gated; subscribes to the pane byte stream to observe the
+    /// child's own `printf` of its env.
+    #[test]
+    fn set_spawn_env_over_wire_reaches_subsequent_spawn_child_env() {
+        let socket = {
+            let mut p = std::env::temp_dir();
+            let pid = std::process::id();
+            p.push(format!("tear-client-spawnenv-{pid}.sock"));
+            p
+        };
+        let inproc = Arc::new(tear_core::InProcess::new());
+        let daemon = tear_daemon::start(socket.clone(), inproc).expect("daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let client = Client::connect(&socket).expect("connect");
+
+        // 1 — push the embedder's capability env BEFORE any spawn.
+        let env = tear_types::SpawnEnv::from_overrides(vec![
+            ("TERM".to_owned(), "xterm-ghostty".to_owned()),
+            ("COLORTERM".to_owned(), "truecolor".to_owned()),
+        ]);
+        client.set_spawn_env(&env).expect("set_spawn_env");
+
+        // 2 — NOW create the session; its child PTY must inherit the
+        //     pushed override (applied AFTER the daemon's own fallback).
+        let sid = client.new_session("spawnenv-wire", "/bin/sh").unwrap();
+        let pane_id = *client
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .expect("pane");
+
+        // 3 — subscribe + have the child print its env back to us.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let handle = client
+            .subscribe_pane_bytes(pane_id, move |b| {
+                let _ = tx.send(b.to_vec());
+            })
+            .expect("subscribe");
+        client
+            .send_keys(
+                pane_id,
+                b"printf 'SENV[T=%s][C=%s]\\n' \"${TERM}\" \"${COLORTERM}\"\n",
+            )
+            .expect("send_keys");
+
+        // Break only on the RESOLVED output (`T=xterm-ghostty`), never
+        // on the echoed input line (which still carries the literal
+        // `%s` format directives) — otherwise the loop exits before the
+        // child's printf has run. After a candidate match, drain a beat
+        // so trailing bytes of the value land.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut acc = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                acc.extend(chunk);
+                if std::str::from_utf8(&acc)
+                    .map(|s| s.contains("T=xterm-ghostty"))
+                    .unwrap_or(false)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    while let Ok(more) = rx.try_recv() {
+                        acc.extend(more);
+                    }
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&acc).to_string();
+        assert!(
+            text.contains("T=xterm-ghostty"),
+            "pushed TERM override did not reach the daemon-spawned child (fallback won):\n{text}"
+        );
+        assert!(
+            text.contains("C=truecolor"),
+            "pushed COLORTERM override did not reach the daemon-spawned child:\n{text}"
+        );
+
+        handle.stop();
         daemon.stop();
     }
 

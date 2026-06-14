@@ -134,6 +134,18 @@ pub enum Request {
     /// config when it's the front-end). Daemon-side config file
     /// on disk is NOT touched; the next reload reverts.
     SetConfig(String),
+    /// Push a typed [`SpawnEnv`](crate::SpawnEnv) (the embedder's
+    /// capability env + cwd override) to the daemon. The daemon applies
+    /// it to its `InProcess` so every SUBSEQUENT `NewSession` spawn's
+    /// child PTY sees the embedder's `TERM`/`COLORTERM`/`TERMINFO`/
+    /// `TERM_PROGRAM` (and a stamped `PWD`) AFTER the inherited +
+    /// fallback env — closing the gap where a daemon-spawned child only
+    /// saw the daemon's own env, so a truecolor capability set never
+    /// projected. The embedded path already calls
+    /// `InProcess::set_spawn_env` directly; this is the daemon-transport
+    /// equivalent. Idempotent; the last push wins. Replies
+    /// `Response::Ok`.
+    SetSpawnEnv(crate::SpawnEnv),
     /// #4 — start daemon-native recording for `pane`. Subsequent
     /// PTY chunks are captured into a per-pane ring buffer; the
     /// buffer can later be exported as asciinema v2 .cast via
@@ -457,6 +469,24 @@ mod tests {
                 assert_eq!(cols, 132);
                 assert_eq!(rows, 50);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_set_spawn_env_request() {
+        let env = crate::SpawnEnv::from_overrides(vec![
+            ("TERM".to_owned(), "xterm-ghostty".to_owned()),
+            ("COLORTERM".to_owned(), "truecolor".to_owned()),
+        ])
+        .with_cwd(Some("/work/dir".to_owned()));
+        let req = Request::SetSpawnEnv(env.clone());
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        let mut cur = Cursor::new(buf);
+        let got: Request = read_msg(&mut cur).unwrap();
+        match got {
+            Request::SetSpawnEnv(decoded) => assert_eq!(decoded, env),
             _ => panic!("wrong variant"),
         }
     }

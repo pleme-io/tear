@@ -851,6 +851,18 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         Request::PaneResizeAbsolute { id, cols, rows } => {
             map_unit(inproc.pane_resize_absolute(id, cols, rows))
         }
+        // Push the embedder's typed env + cwd override onto the daemon's
+        // InProcess so every SUBSEQUENT NewSession spawn's child PTY sees
+        // the embedder's capability set (TERM/COLORTERM/TERMINFO/
+        // TERM_PROGRAM + stamped PWD) AFTER the inherited + fallback env.
+        // Mirrors how the embedded path already calls set_spawn_env; this
+        // is the daemon-transport equivalent. No LiveConfig needed, so it
+        // lives here in `dispatch` (dispatch_with_config falls through to
+        // it). Applied via interior mutability — set_spawn_env takes &self.
+        Request::SetSpawnEnv(env) => {
+            inproc.set_spawn_env(env);
+            Response::Ok
+        }
         // Subscribe is handled in serve_connection BEFORE dispatch;
         // reaching this arm means someone called dispatch directly
         // with Subscribe — programmer error.

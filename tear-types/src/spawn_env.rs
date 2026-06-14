@@ -24,7 +24,12 @@
 /// A typed env + cwd override an embedder stamps on every child PTY.
 /// Applied by the spawn backend AFTER the inherited + fallback env, so
 /// each `(key, value)` here OVERRIDES whatever the backend defaulted.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` so a tear-client can push the override
+/// across the daemon wire (`Request::SetSpawnEnv`) — closing the gap
+/// where the daemon-spawned child only saw the daemon's own env, never
+/// the embedder's capability projection (truecolor/terminfo).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnEnv {
     /// Env pairs that override the backend's inherited/fallback env.
     /// Order is preserved; later duplicates win (the backend's `env`
