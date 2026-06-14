@@ -1,0 +1,27 @@
+[package]
+name = "praca"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The praça session-orchestration substrate for the mado/tear terminal — automation-first: sessions are auto-named + auto-bound to projects, cd auto-attaches the project's session, the picker is the fallback. Pure typed logic: project-root detection, frecency ranking, project↔session bindings, a fuzzy/frecency session index, and the cd-driven attach decision engine. No I/O, no daemon wiring, all time injected."
+
+[lints]
+workspace = true
+
+[dependencies]
+# SessionId — the stable handle praca binds a project root to. Pure
+# types, no I/O; same vocabulary the daemon/mado already speak.
+tear-types = { workspace = true }
+# FleetSessionNames / SessionName / SessionNameStyle / stable_seed —
+# the deterministic project-path → session-name atlas. A project's
+# name is stable across daemon restarts (FNV-1a stable_seed), so
+# cd-driven auto-attach reads the same identity every time.
+ishou-tokens = { workspace = true }
+# Persistence of the project↔session binding map + the session index.
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

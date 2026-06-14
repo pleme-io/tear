@@ -1162,7 +1162,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "ishou-tokens"
 version = "0.1.3"
-source = "git+https://github.com/pleme-io/ishou#57846be3f314df65a81eade875200c4664420006"
+source = "git+https://github.com/pleme-io/ishou#94daf8fc7ce898c4d8b069353efdb5802bf99d40"
 dependencies = [
  "irodori",
  "serde",
@@ -1573,6 +1573,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "praca"
+version = "0.1.0"
+dependencies = [
+ "ishou-tokens",
+ "serde",
+ "serde_json",
+ "tear-types",
 ]
 
 [[package]]
