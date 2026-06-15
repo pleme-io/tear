@@ -431,11 +431,20 @@ fn default_keybinds() -> Vec<KeyBind> {
 /// A sensible default status bar — session/window names left, clock
 /// + host right, refresh every 5 s.
 fn default_status() -> StatusBar {
-    use tear_types::Segment;
+    use tear_types::{Segment, SignalRenderMode, TearSignalKind};
     StatusBar {
         left: vec![
+            // The active-session 🌊 tide mark — sourced from the fleet
+            // atlas (`FleetSignals::session_active` via `TearSignals`),
+            // matching the mado/tear/praça 🌊 convention drift-free. The
+            // status bar is only ever drawn for an attached session, so
+            // the mark is unconditionally the active glyph here.
+            Segment::Signal {
+                signal: TearSignalKind::SessionActive,
+                mode: SignalRenderMode::Emoji,
+            },
             Segment::Text {
-                value: "[".into(),
+                value: " [".into(),
             },
             Segment::SessionName,
             Segment::Text {

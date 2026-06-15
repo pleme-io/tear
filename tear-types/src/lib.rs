@@ -71,7 +71,7 @@ pub use pane_snapshot::{
 };
 pub use session::{SessionSource, SessionState, TearSession};
 pub use spawn_env::SpawnEnv;
-pub use statusbar::{Segment, SegmentAlignment, StatusBar};
+pub use statusbar::{Segment, SegmentAlignment, SignalRenderMode, StatusBar, TearSignalKind};
 pub use theme::HexColor;
 pub use theme::TearTheme;
 pub use window::{TearWindow, WindowState};

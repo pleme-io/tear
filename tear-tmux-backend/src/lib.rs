@@ -233,6 +233,11 @@ fn segment_to_format(s: &Segment) -> String {
                 segment_to_format(otherwise)
             )
         }
+        // A fleet signal renders to its literal glyph — tmux treats it as
+        // verbatim status text. The mark itself is the fleet-uniform
+        // vocabulary from the ishou atlas; *when* it shows (only while the
+        // state is active) is the surrounding `If`'s `#{?...}` concern.
+        Segment::Signal { signal, mode } => signal.render(*mode).to_string(),
     }
 }
 
