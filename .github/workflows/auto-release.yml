@@ -10,6 +10,15 @@ on:
         required: false
         default: patch
 
+# Single-flight: a new auto-release supersedes any earlier queued/running
+# one instead of stacking. Without this, the 27-repo crates.io-closure burst
+# left 3 tear runs wedged in the runner queue (uncancellable via API) — they
+# blocked each other indefinitely. cancel-in-progress lets the newest run
+# claim the slot.
+concurrency:
+  group: auto-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release:
     uses: pleme-io/substrate/.github/workflows/rust-auto-release.yml@main
