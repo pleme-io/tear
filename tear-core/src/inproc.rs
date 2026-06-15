@@ -128,6 +128,22 @@ impl InProcess {
         *self.spawn_env.write() = env;
     }
 
+    /// The embedder's current spawn cwd override (`SpawnEnv.cwd`), if any.
+    ///
+    /// mado stamps this per-spawn (the focused pane's cwd / boot cwd)
+    /// before each `new_session`, so the daemon can read it at session-
+    /// create time to learn which directory a session was opened in —
+    /// the seed for praça's project↔session binding (M1 "Remember").
+    /// `None` when no embedder cwd override is set (the bare-daemon path).
+    #[must_use]
+    pub fn spawn_cwd(&self) -> Option<std::path::PathBuf> {
+        self.spawn_env
+            .read()
+            .cwd
+            .as_ref()
+            .map(std::path::PathBuf::from)
+    }
+
     /// Record the UDS path the daemon bound to. Subsequent PTY
     /// spawns stamp `TEAR_SOCKET=<path>` on the child env. Called
     /// by `tear-daemon::start*` immediately after `bind`.

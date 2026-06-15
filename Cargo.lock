@@ -2413,6 +2413,7 @@ dependencies = [
  "blake3",
  "kanshou",
  "notify",
+ "praca",
  "serde",
  "serde_json",
  "serde_yaml_ng",

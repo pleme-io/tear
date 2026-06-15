@@ -32,6 +32,7 @@
 
 pub mod audit;
 pub mod kanshou_state;
+pub mod praca_store;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -72,6 +73,11 @@ pub struct DaemonHandle {
     /// deliberately out of scope (operator restarts the daemon
     /// to switch sinks).
     audit: Option<AuditLog>,
+    /// M1 "Remember" — the praça persistence store (project↔session
+    /// bindings + frecency, atomically persisted on every lifecycle
+    /// mutation). Held here so tests + in-process consumers can inspect
+    /// the live bindings without round-tripping the RPC.
+    praca: PracaStore,
     /// Kept alive for the lifetime of the daemon so the notify
     /// watcher's spawned thread keeps running. Drop = stop
     /// watching.
@@ -97,6 +103,14 @@ impl DaemonHandle {
     /// changes.
     pub fn config(&self) -> &Arc<LiveConfig> {
         &self.config
+    }
+
+    /// Borrow the M1 praça store — the project↔session bindings +
+    /// frecency the daemon persists. Useful for tests that assert a
+    /// binding was written, and for in-process consumers (mado) that
+    /// want to query the persisted state for an auto-attach decision.
+    pub fn praca(&self) -> &PracaStore {
+        &self.praca
     }
 
     /// Signal the accept loop to exit, then join it. Existing
@@ -173,6 +187,9 @@ pub fn start_tcp_with_config(
 
     let audit = open_audit_from_config(&live_config);
     let required_token = resolve_required_token(&live_config)?;
+    // M1 "Remember": load the persisted praça bindings + frecency from
+    // the default state path; mutations re-persist atomically.
+    let praca = praca_store::PracaStore::open_default();
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
@@ -180,6 +197,7 @@ pub fn start_tcp_with_config(
     let config_for_accept = live_config.clone();
     let audit_for_accept = audit.clone();
     let token_for_accept = required_token.clone();
+    let praca_for_accept = praca.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept-tcp".into())
@@ -191,6 +209,7 @@ pub fn start_tcp_with_config(
                 config_for_accept,
                 audit_for_accept,
                 token_for_accept,
+                Some(praca_for_accept),
             )
         })?;
 
@@ -205,6 +224,7 @@ pub fn start_tcp_with_config(
         _inproc: inproc,
         config: live_config,
         audit,
+        praca,
         _config_watcher: watcher,
     })
 }
@@ -399,6 +419,9 @@ pub fn start_with_config(
 
     let audit = open_audit_from_config(&live_config);
     let required_token = resolve_required_token(&live_config)?;
+    // M1 "Remember": load the persisted praça bindings + frecency from
+    // the default state path; mutations re-persist atomically.
+    let praca = praca_store::PracaStore::open_default();
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_accept = stop.clone();
@@ -407,6 +430,7 @@ pub fn start_with_config(
     let config_for_accept = live_config.clone();
     let audit_for_accept = audit.clone();
     let token_for_accept = required_token.clone();
+    let praca_for_accept = praca.clone();
 
     let accept_thread = thread::Builder::new()
         .name("tear-daemon-accept".into())
@@ -419,6 +443,7 @@ pub fn start_with_config(
                 socket_for_accept,
                 audit_for_accept,
                 token_for_accept,
+                Some(praca_for_accept),
             )
         })?;
 
@@ -429,6 +454,7 @@ pub fn start_with_config(
         _inproc: inproc,
         config: live_config,
         audit,
+        praca,
         _config_watcher: watcher,
     })
 }
@@ -444,6 +470,7 @@ fn accept_loop_tcp(
     config: Arc<LiveConfig>,
     audit: Option<AuditLog>,
     required_token: Option<String>,
+    praca: Option<PracaStore>,
 ) {
     listener
         .set_nonblocking(true)
@@ -460,6 +487,7 @@ fn accept_loop_tcp(
                 let config_for_conn = config.clone();
                 let audit_for_conn = audit.clone();
                 let token_for_conn = required_token.clone();
+                let praca_for_conn = praca.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn-tcp".into())
                     .spawn(move || {
@@ -467,12 +495,13 @@ fn accept_loop_tcp(
                         // mode (set_nonblocking on TcpListener is
                         // inherited by accepted TcpStream).
                         let _ = stream.set_nonblocking(false);
-                        if let Err(e) = serve_connection_with_auth(
+                        if let Err(e) = serve_connection_full(
                             stream,
                             inproc_for_conn,
                             config_for_conn,
                             audit_for_conn,
                             token_for_conn,
+                            praca_for_conn,
                         ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "tcp connection ended");
@@ -499,6 +528,7 @@ fn accept_loop(
     _socket_path: PathBuf,
     audit: Option<AuditLog>,
     required_token: Option<String>,
+    praca: Option<PracaStore>,
 ) {
     for incoming in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
@@ -511,15 +541,17 @@ fn accept_loop(
                 let config_for_conn = config.clone();
                 let audit_for_conn = audit.clone();
                 let token_for_conn = required_token.clone();
+                let praca_for_conn = praca.clone();
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn".into())
                     .spawn(move || {
-                        if let Err(e) = serve_connection_with_auth(
+                        if let Err(e) = serve_connection_full(
                             stream,
                             inproc_for_conn,
                             config_for_conn,
                             audit_for_conn,
                             token_for_conn,
+                            praca_for_conn,
                         ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "connection ended");
@@ -565,11 +597,29 @@ pub fn serve_connection<S: io::Read + io::Write>(
 /// Authenticate to an unauth'd-required daemon is silently `Ok`
 /// (forward-compatible with clients that pre-emptively authenticate).
 pub fn serve_connection_with_auth<S: io::Read + io::Write>(
+    stream: S,
+    inproc: Arc<InProcess>,
+    config: Arc<LiveConfig>,
+    audit: Option<AuditLog>,
+    required_token: Option<String>,
+) -> io::Result<()> {
+    serve_connection_full(stream, inproc, config, audit, required_token, None)
+}
+
+/// Full serve loop — like [`serve_connection_with_auth`] but also
+/// carries the M1 praça [`PracaStore`] so session create/kill mutate +
+/// persist the project↔session bindings + frecency. The daemon's own
+/// accept loops call this; the back-compat [`serve_connection`] /
+/// [`serve_connection_with_auth`] entry points pass `praca = None` so
+/// external embedders (tear-client, the test harness) keep their
+/// signatures.
+pub fn serve_connection_full<S: io::Read + io::Write>(
     mut stream: S,
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
     audit: Option<AuditLog>,
     required_token: Option<String>,
+    praca: Option<PracaStore>,
 ) -> io::Result<()> {
     let mut authed = required_token.is_none();
     // #2 — per-connection client identity. Set by IdentifyClient;
@@ -642,7 +692,7 @@ pub fn serve_connection_with_auth<S: io::Read + io::Write>(
         if matches!(req, Request::SubscribeConfigChange) {
             return serve_config_subscription(stream, config);
         }
-        let resp = dispatch_with_config(&inproc, &config, req, audit.as_ref());
+        let resp = dispatch_with_config(&inproc, &config, req, audit.as_ref(), praca.as_ref());
         write_msg(&mut stream, &resp)?;
     }
 }
@@ -906,6 +956,7 @@ pub fn dispatch_with_config(
     config: &LiveConfig,
     req: Request,
     audit: Option<&AuditLog>,
+    praca: Option<&PracaStore>,
 ) -> Response {
     match req {
         Request::GetConfig => {
@@ -958,6 +1009,11 @@ pub fn dispatch_with_config(
                         sid: id.to_string(),
                     });
                 }
+                // M1 "Remember": drop the killed session's record +
+                // bindings so no project resolves to a dead session.
+                if let Some(store) = praca {
+                    praca_on_session_kill(store, id);
+                }
             }
             resp
         }
@@ -974,6 +1030,12 @@ pub fn dispatch_with_config(
                         shell: shell.clone(),
                         source: src.label().to_string(),
                     });
+                }
+                // M1 "Remember": bind project_root → session + bump
+                // frecency. The project root is the walk-up of the
+                // embedder's spawn cwd (the dir mado opened it in).
+                if let Some(store) = praca {
+                    praca_on_session_create(store, inproc, *sid, now_unix());
                 }
             }
             map_result(result, Response::SessionId)
@@ -1017,6 +1079,81 @@ pub fn dispatch_with_config(
         }
         other => dispatch(inproc, other),
     }
+}
+
+// ── M1 "Remember" — praça lifecycle hooks ────────────────────────────
+//
+// These two helpers are the daemon-side wiring of the `praca` substrate:
+// they translate a session-lifecycle mutation the daemon just performed
+// into a `praca::Praca` update + an atomic persist, so project↔session
+// bindings + frecency survive a daemon restart. Both are no-ops when no
+// `PracaStore` is configured (the `Option<&PracaStore>` mirrors how the
+// audit log threads through `dispatch_with_config`). Time is injected by
+// the caller via [`now_unix`] — the substrate never reads the clock.
+
+use crate::praca_store::PracaStore;
+
+/// Record a freshly-created session in the praça store: derive the
+/// project root from the daemon's current spawn cwd (the embedder's
+/// `SpawnEnv.cwd` — the directory mado opened the session in), build a
+/// [`praca::SessionRecord`] with the deterministic auto-name seed, bump
+/// its visit/frecency, and bind `project_root → id`. Persisted atomically.
+///
+/// When no spawn cwd is set (the bare-daemon path — no embedder cwd
+/// override), there is no project to bind, so the hook is skipped: the
+/// binding memory is meaningless without a real directory.
+fn praca_on_session_create(
+    store: &PracaStore,
+    inproc: &InProcess,
+    id: tear_types::SessionId,
+    now: u64,
+) {
+    let Some(cwd) = inproc.spawn_cwd() else {
+        debug!(session = %id, "praca: no spawn cwd — skipping binding");
+        return;
+    };
+    let root = praca::project_root(&cwd);
+    store.mutate(|p| {
+        // Preserve frecency across a re-create under the same id: a
+        // raw `for_project` resets visits to 1, which would lose the
+        // accumulated count if this id was seen before. Carry the prior
+        // visits forward and add one for this open.
+        let prior_visits = p.index.get(id).map_or(0, |r| r.visits);
+        let mut rec = praca::SessionRecord::for_project(
+            id,
+            root.clone(),
+            p.name_style,
+            now,
+        );
+        // `for_project` initialises visits = 1 (this open). Fold in any
+        // prior count so frecency reflects total opens of this session.
+        rec.visits = rec.visits.saturating_add(prior_visits);
+        rec.cwd.clone_from(&cwd);
+        p.index.upsert(rec);
+        p.binding.bind(root.clone(), id);
+    });
+    debug!(session = %id, root = %root.display(), "praca: bound session to project");
+}
+
+/// Drop a killed session from the praça store: remove its record from
+/// the index and drop every binding that pointed at it, so no project
+/// keeps resolving to a session that no longer exists. Persisted
+/// atomically.
+fn praca_on_session_kill(store: &PracaStore, id: tear_types::SessionId) {
+    store.mutate(|p| {
+        p.index.remove(id);
+        p.binding.remove_session(id);
+    });
+    debug!(session = %id, "praca: unbound killed session");
+}
+
+/// Current unix-seconds — the daemon's single clock-read point for
+/// praça frecency stamping. The pure substrate takes this as an
+/// injected `u64`; only the daemon edge reads the real clock.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Tiny hex SHA-256 helper — used to fingerprint SetConfig
@@ -1261,7 +1398,7 @@ mod tests {
 
         // Dispatch a KillSession via dispatch_with_config so the
         // auto-flush hook runs.
-        match dispatch_with_config(&inproc, &live, Request::KillSession(sid), None) {
+        match dispatch_with_config(&inproc, &live, Request::KillSession(sid), None, None) {
             Response::Ok => {}
             other => panic!("expected Ok, got {other:?}"),
         }
@@ -1467,6 +1604,7 @@ mod tests {
             &live,
             Request::SetConfig(yaml),
             Some(&audit),
+            None,
         );
         assert!(matches!(resp, Response::Ok));
 
@@ -1495,6 +1633,7 @@ mod tests {
             &live,
             Request::KillSession(sid),
             Some(&audit),
+            None,
         );
         assert!(matches!(resp, Response::Ok));
         drop(audit);
@@ -1504,5 +1643,173 @@ mod tests {
         assert!(content.contains(&sid.to_string()), "audit: {content}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── M1 "Remember" — praça lifecycle persistence ─────────────────
+
+    /// A unique praça store path under a temp dir.
+    fn praca_temp_path(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        let pid = std::process::id();
+        let nonce: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        p.push(format!("tear-praca-daemon-{tag}-{pid}-{nonce}"));
+        std::fs::create_dir_all(&p).unwrap();
+        p.join("praca.json")
+    }
+
+    #[test]
+    fn new_session_via_dispatch_binds_project_root_to_persisted_store() {
+        let path = praca_temp_path("new-session-binds");
+        let store = crate::praca_store::PracaStore::open(path.clone());
+        let inproc = InProcess::new();
+        let live = LiveConfig::default();
+
+        // Stamp the embedder's spawn cwd — the directory mado opened the
+        // session in (a child of the project root, to exercise walk-up).
+        // No marker on disk in temp_dir, so project_root resolves to the
+        // cwd itself; bind it deterministically.
+        let cwd = path.parent().unwrap().to_path_buf();
+        inproc.set_spawn_env(
+            tear_types::SpawnEnv::none().with_cwd(Some(cwd.to_string_lossy().into())),
+        );
+        // The hook binds the WALK-UP root of the spawn cwd, not the cwd
+        // verbatim — compute the same root the hook will so the assertion
+        // is robust regardless of markers above the temp dir.
+        let project = praca::project_root(&cwd);
+
+        // Create the session through the daemon dispatch path with the
+        // store wired in — the M1 hook fires.
+        let sid = match dispatch_with_config(
+            &inproc,
+            &live,
+            Request::NewSession {
+                name: "praca-bind".into(),
+                shell: "/bin/sh".into(),
+                source: None,
+                size_cells: None,
+            },
+            None,
+            Some(&store),
+        ) {
+            Response::SessionId(s) => s,
+            other => panic!("expected SessionId, got {other:?}"),
+        };
+
+        // The binding is in the live store AND persisted to disk: a
+        // fresh store at the same path (a "restart") sees it.
+        store.with(|p| {
+            assert_eq!(
+                p.binding.lookup(&project),
+                Some(sid),
+                "live store bound the project root"
+            );
+        });
+        assert!(path.exists(), "store persisted the binding to disk");
+
+        let reloaded = crate::praca_store::PracaStore::open(path.clone());
+        reloaded.with(|p| {
+            assert_eq!(
+                p.binding.lookup(&project),
+                Some(sid),
+                "binding survived a daemon restart"
+            );
+            let rec = p.index.get(sid).expect("record persisted");
+            assert_eq!(rec.project_root, project);
+            assert!(rec.visits >= 1, "frecency visit recorded");
+        });
+
+        let _ = inproc.kill_session(sid);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn kill_session_via_dispatch_unbinds_in_persisted_store() {
+        let path = praca_temp_path("kill-unbinds");
+        let store = crate::praca_store::PracaStore::open(path.clone());
+        let inproc = InProcess::new();
+        let live = LiveConfig::default();
+        let cwd = path.parent().unwrap().to_path_buf();
+        inproc.set_spawn_env(
+            tear_types::SpawnEnv::none().with_cwd(Some(cwd.to_string_lossy().into())),
+        );
+        let project = praca::project_root(&cwd);
+
+        let sid = match dispatch_with_config(
+            &inproc,
+            &live,
+            Request::NewSession {
+                name: "praca-kill".into(),
+                shell: "/bin/sh".into(),
+                source: None,
+                size_cells: None,
+            },
+            None,
+            Some(&store),
+        ) {
+            Response::SessionId(s) => s,
+            other => panic!("expected SessionId, got {other:?}"),
+        };
+        store.with(|p| assert!(p.binding.lookup(&project).is_some()));
+
+        // Kill it through the dispatch path — the unbind hook fires.
+        match dispatch_with_config(
+            &inproc,
+            &live,
+            Request::KillSession(sid),
+            None,
+            Some(&store),
+        ) {
+            Response::Ok => {}
+            other => panic!("expected Ok, got {other:?}"),
+        }
+
+        // The binding + record are gone, in the live store and on disk.
+        store.with(|p| {
+            assert!(
+                p.binding.lookup(&project).is_none(),
+                "killed session's binding removed"
+            );
+            assert!(p.index.get(sid).is_none(), "killed session's record removed");
+        });
+        let reloaded = crate::praca_store::PracaStore::open(path.clone());
+        reloaded.with(|p| assert!(p.binding.lookup(&project).is_none()));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn new_session_without_spawn_cwd_skips_binding() {
+        // Bare-daemon path: no embedder cwd override → nothing to bind.
+        let path = praca_temp_path("no-cwd");
+        let store = crate::praca_store::PracaStore::open(path.clone());
+        let inproc = InProcess::new();
+        let live = LiveConfig::default();
+        // Note: no set_spawn_env — spawn_cwd() is None.
+
+        let _sid = match dispatch_with_config(
+            &inproc,
+            &live,
+            Request::NewSession {
+                name: "no-cwd".into(),
+                shell: "/bin/sh".into(),
+                source: None,
+                size_cells: None,
+            },
+            None,
+            Some(&store),
+        ) {
+            Response::SessionId(s) => s,
+            other => panic!("expected SessionId, got {other:?}"),
+        };
+
+        store.with(|p| {
+            assert!(p.binding.is_empty(), "no spawn cwd → no binding");
+            assert!(p.index.is_empty(), "no spawn cwd → no record");
+        });
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

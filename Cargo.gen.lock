@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "c81b000f2cae5eee8b62671d26d98f984339e5e61673495e2f7d10b8cbc94c71",
+  "cargo_lock_sha256": "5a22b99c0dc1c7b261d58e9c45aa483fff4e99b9c006b687756a463bf97dff7b",
   "target_resolves": {
     "base": {
       "aho-corasick-1.1.4": {
@@ -6858,6 +6858,16 @@
               "macos_kqueue"
             ],
             "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "praca",
+            "package_key": "praca-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"

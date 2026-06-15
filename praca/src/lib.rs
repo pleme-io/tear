@@ -49,10 +49,17 @@ pub use binding::ProjectBinding;
 pub use index::SessionIndex;
 pub use project::{project_root, project_root_with};
 pub use record::{NameStyle, SessionRecord, SessionState};
+pub use snapshot::{PolicyMirror, PracaSnapshot};
+
+// Re-export the ishou name-style enum so consumers (tear-daemon, mado)
+// can build a `SessionRecord` without depending on ishou_tokens directly
+// — praça is the single surface the daemon/UI speak to.
+pub use ishou_tokens::SessionNameStyle;
+
+pub mod snapshot;
 
 use std::path::Path;
 
-use ishou_tokens::SessionNameStyle;
 use tear_types::id::SessionId;
 
 /// The session-orchestration facade — the surface mado/tear drives.
@@ -152,6 +159,34 @@ impl Praca {
     #[must_use]
     pub fn search(&self, query: &str, now: u64) -> Vec<&SessionRecord> {
         self.index.search(query, now)
+    }
+
+    /// Capture the persistable state as a serde-friendly
+    /// [`PracaSnapshot`] — the index records, the binding map, the
+    /// attach policy, and the name style. This is what the daemon
+    /// writes to disk so bindings + frecency survive a restart.
+    #[must_use]
+    pub fn to_snapshot(&self) -> PracaSnapshot {
+        PracaSnapshot {
+            index: self.index.clone(),
+            binding: self.binding.clone(),
+            policy: self.policy.into(),
+            name_style: self.name_style.into(),
+        }
+    }
+
+    /// Rebuild a [`Praca`] facade from a persisted [`PracaSnapshot`] —
+    /// the inverse of [`Self::to_snapshot`]. Used by the daemon at
+    /// startup to reload the bindings + frecency it persisted in a
+    /// prior run.
+    #[must_use]
+    pub fn from_snapshot(snap: PracaSnapshot) -> Self {
+        Self {
+            index: snap.index,
+            binding: snap.binding,
+            policy: snap.policy.into(),
+            name_style: snap.name_style.into(),
+        }
     }
 }
 

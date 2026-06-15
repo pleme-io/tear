@@ -15,6 +15,10 @@ workspace = true
 tear-types = { workspace = true }
 tear-core = { workspace = true }
 tear-config = { workspace = true }
+# praça (M1 "Remember"): the typed session-orchestration substrate.
+# The daemon persists its project↔session bindings + frecency index
+# (a `praca::PracaSnapshot`) so they survive daemon restarts.
+praca = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }

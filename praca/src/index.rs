@@ -18,13 +18,19 @@
 //! All time is `u64` unix-seconds INJECTED into [`SessionIndex::search`]
 //! — the index never reads the clock.
 
+use serde::{Deserialize, Serialize};
 use tear_types::id::SessionId;
 
 use crate::frecency;
 use crate::record::SessionRecord;
 
 /// In-memory catalog of [`SessionRecord`]s, keyed by [`SessionId`].
-#[derive(Clone, Debug, Default)]
+///
+/// Serialises **transparently** as the underlying `Vec<SessionRecord>`,
+/// so the persisted form is a plain JSON array of records — the daemon's
+/// praça store (M1) round-trips an index byte-for-byte across restarts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SessionIndex {
     records: Vec<SessionRecord>,
 }
