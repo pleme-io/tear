@@ -26,4 +26,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
+# TearTheme derives every color from the fleet prescribed palette
+# (`ishou_tokens::FleetDefaults::prescribed()` → resolved theme), the
+# SAME source mado reads — so tear and mado converge by construction.
+ishou-tokens = { workspace = true }
 engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }

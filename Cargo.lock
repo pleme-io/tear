@@ -1162,7 +1162,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "ishou-tokens"
 version = "0.1.3"
-source = "git+https://github.com/pleme-io/ishou#94daf8fc7ce898c4d8b069353efdb5802bf99d40"
+source = "git+https://github.com/pleme-io/ishou#9c30a6c7a529436f0a049fda2b957a787e56659c"
 dependencies = [
  "irodori",
  "serde",
@@ -2438,6 +2438,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "engate-types",
+ "ishou-tokens",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
