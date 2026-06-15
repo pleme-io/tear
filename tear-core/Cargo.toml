@@ -21,6 +21,11 @@ engate = ["dep:engate-types", "dep:engate-attach", "tear-types/engate"]
 [dependencies]
 tear-types = { workspace = true }
 tear-config = { workspace = true }
+# Typed cross-tool environment contract — FleetStateVar owns the
+# canonical TEAR_* env-var names tear stamps onto every spawned pane
+# (seki's prompt reads the same typed variants). The name lives in
+# exactly one place: a rename is a compile-time change on both sides.
+ishou-tokens = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

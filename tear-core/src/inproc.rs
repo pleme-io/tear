@@ -350,6 +350,10 @@ impl InProcess {
     /// shells and prompts (starship) can see they're running inside
     /// a tear session.
     fn spawn_pty_for(&self, pane_id: PaneId, shell: &str, size: (u16, u16)) -> anyhow::Result<()> {
+        // Typed cross-tool env-var names (the SAME source seki's prompt
+        // reads) — hoisted to the top of the fn so it's an item, not a
+        // statement-position import.
+        use ishou_tokens::FleetStateVar as Fsv;
         let pty_size = PtySize {
             rows: size.1,
             cols: size.0,
@@ -379,12 +383,19 @@ impl InProcess {
         // TERM is set so terminfo-based programs (`clear`, vi,
         // anything that reads $TERM) work.
         let mut env: Vec<(String, String)> = std::env::vars().collect();
+        // The env-var NAMES come from the typed cross-tool contract
+        // (`Fsv`, hoisted above) — the SAME source seki's prompt reads,
+        // so a rename is a compile-time change on both sides. The VALUES
+        // are unchanged.
         env.push(("TEAR".into(), "1".into()));
-        env.push(("TEAR_SESSION_ID".into(), session_id));
-        env.push(("TEAR_SESSION_NAME".into(), session_name));
-        env.push(("TEAR_PANE_ID".into(), pane_id.to_string()));
+        env.push((Fsv::TearSessionId.name().into(), session_id));
+        env.push((Fsv::TearSessionName.name().into(), session_name));
+        env.push((Fsv::TearPaneId.name().into(), pane_id.to_string()));
         if let Some(p) = self.socket_path() {
-            env.push(("TEAR_SOCKET".into(), p.to_string_lossy().to_string()));
+            env.push((
+                Fsv::TearSocket.name().into(),
+                p.to_string_lossy().to_string(),
+            ));
         }
         // TERM fallback — if the daemon was spawned by launchd
         // and doesn't have TERM set, every shell inside tear
@@ -988,6 +999,21 @@ mod tests {
         let inproc = InProcess::new();
         let sessions = inproc.list_sessions().unwrap();
         assert!(sessions.is_empty());
+    }
+
+    /// Forcing function: the TEAR_* env-var names tear stamps onto every
+    /// spawned pane come from the typed cross-tool contract
+    /// (`ishou_tokens::FleetStateVar`), which seki's prompt reads from the
+    /// same source. Pinning the variant→name mapping here makes a rename
+    /// on the producer side a compile+test failure on the single source of
+    /// truth, so it can never silently drift from the consumer.
+    #[test]
+    fn pane_env_var_names_come_from_fleet_state_contract() {
+        use ishou_tokens::FleetStateVar;
+        assert_eq!(FleetStateVar::TearSessionId.name(), "TEAR_SESSION_ID");
+        assert_eq!(FleetStateVar::TearSessionName.name(), "TEAR_SESSION_NAME");
+        assert_eq!(FleetStateVar::TearPaneId.name(), "TEAR_PANE_ID");
+        assert_eq!(FleetStateVar::TearSocket.name(), "TEAR_SOCKET");
     }
 
     #[test]

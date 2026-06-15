@@ -18,6 +18,10 @@ path = "src/main.rs"
 [dependencies]
 tear-types = { workspace = true }
 tear-config = { workspace = true }
+# Typed cross-tool environment contract — FleetStateVar owns the
+# canonical TEAR_TIER / TEAR_CLIENT_ID env-var names this binary reads,
+# the same typed surface seki's prompt + tear-core's pane-spawn use.
+ishou-tokens = { workspace = true }
 # Shikumi — the `cli` feature ships ConfigShowCommand, the canonical
 # clap factory every TieredConfig consumer wires in (Pillar 12: one
 # Subcommand variant replaces every hand-rolled config-show surface).

@@ -22,6 +22,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+// Typed cross-tool environment contract — the canonical TEAR_* env-var
+// names live in exactly one place, shared with tear-core's pane-spawn
+// path and seki's prompt.
+use ishou_tokens::FleetStateVar;
 use tear_config::{LiveConfig, TearConfig};
 use tear_core::InProcess;
 use tear_types::MultiplexerControl;
@@ -465,7 +469,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::ConfigShow(cmd) => cmd
-            .run::<TearConfig>("TEAR_TIER")
+            .run::<TearConfig>(FleetStateVar::TearTier.name())
             .map_err(|e| anyhow::anyhow!("config-show failed: {e}")),
         Cmd::Render { backend } => cmd_render(backend),
         Cmd::Attach { target, socket } => cmd_attach(target, socket),
@@ -527,7 +531,7 @@ fn connect_to_daemon(
     // #2 — opt-in client identity for Leader policy. Parse as u64;
     // an unparseable value is operator misconfiguration and bubbles
     // up as a clear anyhow error.
-    if let Ok(raw) = std::env::var("TEAR_CLIENT_ID") {
+    if let Ok(raw) = std::env::var(FleetStateVar::TearClientId.name()) {
         if !raw.is_empty() {
             let id: u64 = raw.parse().map_err(|e| {
                 anyhow::anyhow!("TEAR_CLIENT_ID={raw} must parse as u64: {e}")
@@ -1765,6 +1769,16 @@ fn cmd_daemon(
 #[cfg(test)]
 mod main_helper_tests {
     use super::*;
+
+    /// Forcing function: the TEAR_TIER (config-tier env) and
+    /// TEAR_CLIENT_ID (Leader-policy identity) names this binary reads
+    /// come from the typed cross-tool contract — a rename on the producer
+    /// (tear) or consumer (seki) side is a compile+test failure here.
+    #[test]
+    fn binary_env_var_names_come_from_fleet_state_contract() {
+        assert_eq!(FleetStateVar::TearTier.name(), "TEAR_TIER");
+        assert_eq!(FleetStateVar::TearClientId.name(), "TEAR_CLIENT_ID");
+    }
 
     #[test]
     fn shell_single_quote_wraps_in_quotes() {
