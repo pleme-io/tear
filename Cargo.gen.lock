@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "5a22b99c0dc1c7b261d58e9c45aa483fff4e99b9c006b687756a463bf97dff7b",
+  "cargo_lock_sha256": "4168aefbd4defe30b991730fe75bbf822cbf096d15ec15625c7876fa9add28a6",
   "target_resolves": {
     "base": {
       "aho-corasick-1.1.4": {
@@ -3004,7 +3004,7 @@
           "default"
         ]
       },
-      "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696": {
+      "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f": {
         "runtime_dependencies": [
           {
             "name": "irodori",
@@ -3818,11 +3818,11 @@
           "std"
         ]
       },
-      "praca-0.1.0": {
+      "praca-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696",
+            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3844,7 +3844,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6233,7 +6233,7 @@
           "proc-macro"
         ]
       },
-      "tear-0.1.0": {
+      "tear-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6281,7 +6281,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696",
+            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6398,7 +6398,7 @@
           },
           {
             "name": "tear_client",
-            "package_key": "tear-client-0.1.0",
+            "package_key": "tear-client-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6408,7 +6408,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.0",
+            "package_key": "tear-config-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6418,7 +6418,7 @@
           },
           {
             "name": "tear_core",
-            "package_key": "tear-core-0.1.0",
+            "package_key": "tear-core-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6428,7 +6428,7 @@
           },
           {
             "name": "tear_daemon",
-            "package_key": "tear-daemon-0.1.0",
+            "package_key": "tear-daemon-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6438,7 +6438,7 @@
           },
           {
             "name": "tear_tmux_backend",
-            "package_key": "tear-tmux-backend-0.1.0",
+            "package_key": "tear-tmux-backend-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6448,7 +6448,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6508,7 +6508,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tear-client-0.1.0": {
+      "tear-client-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "parking_lot",
@@ -6532,7 +6532,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.0",
+            "package_key": "tear-config-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6542,7 +6542,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6556,7 +6556,7 @@
           "default"
         ]
       },
-      "tear-config-0.1.0": {
+      "tear-config-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6580,7 +6580,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696",
+            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6646,7 +6646,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6678,7 +6678,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tear-core-0.1.0": {
+      "tear-core-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6702,7 +6702,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696",
+            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6764,7 +6764,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.0",
+            "package_key": "tear-config-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6774,7 +6774,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6818,7 +6818,7 @@
           "default"
         ]
       },
-      "tear-daemon-0.1.0": {
+      "tear-daemon-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6864,7 +6864,7 @@
           },
           {
             "name": "praca",
-            "package_key": "praca-0.1.0",
+            "package_key": "praca-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6906,7 +6906,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.0",
+            "package_key": "tear-config-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6916,7 +6916,7 @@
           },
           {
             "name": "tear_core",
-            "package_key": "tear-core-0.1.0",
+            "package_key": "tear-core-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6926,7 +6926,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6964,7 +6964,7 @@
           "default"
         ]
       },
-      "tear-tmux-backend-0.1.0": {
+      "tear-tmux-backend-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6978,7 +6978,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.0",
+            "package_key": "tear-config-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6988,7 +6988,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7000,7 +7000,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tear-types-0.1.0": {
+      "tear-types-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7034,7 +7034,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696",
+            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7080,7 +7080,7 @@
           "default"
         ]
       },
-      "tear-ws-bridge-0.1.0": {
+      "tear-ws-bridge-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7128,7 +7128,7 @@
           },
           {
             "name": "tear_client",
-            "package_key": "tear-client-0.1.0",
+            "package_key": "tear-client-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7138,7 +7138,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.0",
+            "package_key": "tear-types-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -12922,9 +12922,6 @@
     "block-buffer-0.10.4": {
       "edition": "2018"
     },
-    "block2-0.6.2": {
-      "edition": "2021"
-    },
     "bytes-1.11.1": {
       "edition": "2021"
     },
@@ -12993,11 +12990,11 @@
     "cookie_store-0.22.1": {
       "edition": "2021"
     },
-    "core-foundation-sys-0.8.7": {
-      "edition": "2018"
-    },
     "cpufeatures-0.2.17": {
       "edition": "2018"
+    },
+    "cpufeatures-0.3.0": {
+      "edition": "2024"
     },
     "crossbeam-deque-0.8.6": {
       "edition": "2021"
@@ -13036,9 +13033,6 @@
     },
     "digest-0.10.7": {
       "edition": "2018"
-    },
-    "dispatch2-0.3.1": {
-      "edition": "2021"
     },
     "displaydoc-0.2.5": {
       "edition": "2021",
@@ -13213,6 +13207,12 @@
     "inlinable_string-0.1.15": {
       "edition": "2018"
     },
+    "inotify-0.11.1": {
+      "edition": "2018"
+    },
+    "inotify-sys-0.1.5": {
+      "edition": "2015"
+    },
     "instability-0.3.12": {
       "edition": "2021",
       "proc_macro": true,
@@ -13227,7 +13227,7 @@
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
-    "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696": {
+    "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f": {
       "edition": "2024"
     },
     "itertools-0.13.0": {
@@ -13243,12 +13243,6 @@
       "edition": "2024",
       "proc_macro": true
     },
-    "kqueue-1.1.1": {
-      "edition": "2021"
-    },
-    "kqueue-sys-1.1.2": {
-      "edition": "2021"
-    },
     "lazy_static-1.5.0": {
       "edition": "2015"
     },
@@ -13260,6 +13254,12 @@
       "edition": "2018",
       "build_script": "build.rs",
       "links": "mimalloc"
+    },
+    "linux-raw-sys-0.4.15": {
+      "edition": "2021"
+    },
+    "linux-raw-sys-0.12.1": {
+      "edition": "2021"
     },
     "litemap-0.8.2": {
       "edition": "2021"
@@ -13312,13 +13312,6 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "objc2-0.6.4": {
-      "edition": "2021",
-      "build_script": "build.rs"
-    },
-    "objc2-encode-4.1.0": {
-      "edition": "2021"
-    },
     "once_cell-1.21.4": {
       "edition": "2021"
     },
@@ -13363,7 +13356,7 @@
     "ppv-lite86-0.2.21": {
       "edition": "2021"
     },
-    "praca-0.1.0": {
+    "praca-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "praca",
@@ -13595,7 +13588,7 @@
     "sysinfo-0.32.1": {
       "edition": "2021"
     },
-    "tear-0.1.0": {
+    "tear-0.1.1": {
       "edition": "2024",
       "binaries": [
         {
@@ -13604,49 +13597,49 @@
         }
       ]
     },
-    "tear-client-0.1.0": {
+    "tear-client-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_client",
         "path": "src/lib.rs"
       }
     },
-    "tear-config-0.1.0": {
+    "tear-config-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_config",
         "path": "src/lib.rs"
       }
     },
-    "tear-core-0.1.0": {
+    "tear-core-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_core",
         "path": "src/lib.rs"
       }
     },
-    "tear-daemon-0.1.0": {
+    "tear-daemon-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_daemon",
         "path": "src/lib.rs"
       }
     },
-    "tear-tmux-backend-0.1.0": {
+    "tear-tmux-backend-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_tmux_backend",
         "path": "src/lib.rs"
       }
     },
-    "tear-types-0.1.0": {
+    "tear-types-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_types",
         "path": "src/lib.rs"
       }
     },
-    "tear-ws-bridge-0.1.0": {
+    "tear-ws-bridge-0.1.1": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_ws_bridge",
@@ -13884,19 +13877,26 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "cpufeatures-0.3.0": {
-      "edition": "2024"
-    },
-    "inotify-0.11.1": {
-      "edition": "2018"
-    },
-    "inotify-sys-0.1.5": {
-      "edition": "2015"
-    },
-    "linux-raw-sys-0.4.15": {
+    "block2-0.6.2": {
       "edition": "2021"
     },
-    "linux-raw-sys-0.12.1": {
+    "core-foundation-sys-0.8.7": {
+      "edition": "2018"
+    },
+    "dispatch2-0.3.1": {
+      "edition": "2021"
+    },
+    "kqueue-1.1.1": {
+      "edition": "2021"
+    },
+    "kqueue-sys-1.1.2": {
+      "edition": "2021"
+    },
+    "objc2-0.6.4": {
+      "edition": "2021",
+      "build_script": "build.rs"
+    },
+    "objc2-encode-4.1.0": {
       "edition": "2021"
     }
   },
@@ -13905,7 +13905,7 @@
     "gen-macros-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
     "gen-platform-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
     "gen-types-0.1.9-6d82c9d3885c781e923ec46330d05d7eca469a3b": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
-    "ishou-tokens-0.1.3-113f7763da4ec0cf1932b67fb46be8597f154696": "sha256-y/JKP0zTK/5qXViq3+BRP7HCKZr8z7ztyQrzfP7qw40=",
+    "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f": "sha256-xk13C1WwSGg3jBnSxyit/1guqdTQBKAPkrs2s+o57Mg=",
     "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
     "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
     "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": "sha256-3hlg04OVg5MawDisQLDuorp0PmODWPF/t9PscUe56UE=",
