@@ -148,19 +148,21 @@ fn frec(r: &SessionRecord, now: u64) -> f64 {
     frecency::score(r.visits, r.last_seen, now)
 }
 
-/// Field tiers — a match on the session **name** ranks above a match on a
-/// **tag**, which ranks above a match on the **cwd/path**, regardless of
-/// raw fuzzy quality. This is the operator's rule: *"a name match should
-/// be a higher tier in the session search."* The `(tier, quality)` pair
-/// compares lexicographically, so the tier dominates and quality breaks
-/// within-tier ties.
-const TIER_NAME: i32 = 3;
+/// Field tiers — a match on the session **name** ranks above a **keyword**
+/// (emoji synonym) match, above a **tag** match, above a **cwd/path** match,
+/// regardless of raw fuzzy quality. This is the operator's rule: *"a name
+/// match should be a higher tier in the session search"* — extended with the
+/// emoji-keyword tier so "type `wave`, find `🌊 tide`" ranks below an actual
+/// name match but above tags. The `(tier, quality)` pair compares
+/// lexicographically, so the tier dominates and quality breaks within-tier ties.
+const TIER_NAME: i32 = 4;
+const TIER_KEYWORD: i32 = 3;
 const TIER_TAG: i32 = 2;
 const TIER_PATH: i32 = 1;
 
-/// Best `(field_tier, fuzzy_quality)` of `query` against any searchable
-/// field of `record` (name word, tags, cwd string). `None` if nothing
-/// matches. The tier dominates ranking (see [`TIER_NAME`] et al.).
+/// Best `(field_tier, fuzzy_quality)` of `query` against any searchable field
+/// of `record` (custom name, emoji word, emoji keywords, tags, cwd). `None` if
+/// nothing matches. The tier dominates ranking (see [`TIER_NAME`] et al.).
 fn best_match(query: &str, record: &SessionRecord) -> Option<(i32, i32)> {
     let cwd = record.cwd.to_string_lossy();
     let mut best: Option<(i32, i32)> = None;
@@ -170,7 +172,15 @@ fn best_match(query: &str, record: &SessionRecord) -> Option<(i32, i32)> {
             best = Some(best.map_or(cand, |b| b.max(cand)));
         }
     };
+    // Name tier: the operator's custom rename (if any) AND the emoji word.
+    if let Some(custom) = &record.custom_name {
+        consider(TIER_NAME, custom);
+    }
     consider(TIER_NAME, record.name_word());
+    // Keyword tier: the emoji's synonyms — "wave" finds 🌊 tide.
+    for kw in record.keywords() {
+        consider(TIER_KEYWORD, kw);
+    }
     for t in &record.tags {
         consider(TIER_TAG, t);
     }
@@ -307,6 +317,24 @@ mod tests {
         assert_eq!(name_tier, TIER_NAME);
         assert_eq!(tag_tier, TIER_TAG);
         assert!(name_tier > tag_tier, "a name match must outrank a tag match");
+    }
+
+    #[test]
+    fn keyword_search_surfaces_the_session() {
+        // The operator's example: typing an emoji synonym ("wave" → 🌊 tide)
+        // finds the session via its keywords, ranked at the keyword tier.
+        let mut idx = SessionIndex::new();
+        let r = rec("s", "/code/zzz", 1, NOW, &[]);
+        let kw = r.keywords()[0]; // a synonym of this session's emoji
+        idx.upsert(r);
+        let out = idx.search(kw, NOW);
+        assert_eq!(
+            out.first().map(|r| r.id),
+            Some(SessionId::from_seed("s")),
+            "searching an emoji keyword surfaces the session"
+        );
+        // keyword tier sits between name and tag.
+        assert!(TIER_NAME > TIER_KEYWORD && TIER_KEYWORD > TIER_TAG);
     }
 
     #[test]
