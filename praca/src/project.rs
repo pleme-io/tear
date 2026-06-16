@@ -73,6 +73,30 @@ pub fn project_root(cwd: &Path) -> PathBuf {
     project_root_with(cwd, |dir, marker| dir.join(marker).exists())
 }
 
+/// Like [`project_root_with`] but returns `None` when **no** project marker
+/// is found anywhere up the tree — i.e. this cwd is NOT inside a recognized
+/// project. Lets a caller distinguish a *project-bound* session (stable name
+/// by path) from a *scratch / ad-hoc* one (which gets a random themed name).
+pub fn find_project_root_with<F>(cwd: &Path, has_marker: F) -> Option<PathBuf>
+where
+    F: Fn(&Path, &str) -> bool,
+{
+    let mut dir = cwd;
+    loop {
+        if has_marker(dir, GIT_MARKER) || FILE_MARKERS.iter().any(|m| has_marker(dir, m)) {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Real-filesystem [`find_project_root_with`]: `Some(root)` if `cwd` is inside
+/// a project (a `.git` / `Cargo.toml` / … marker up the tree), else `None`.
+#[must_use]
+pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
+    find_project_root_with(cwd, |dir, marker| dir.join(marker).exists())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +178,15 @@ mod tests {
                 "marker {m} should be recognized",
             );
         }
+    }
+
+    #[test]
+    fn find_project_root_distinguishes_project_from_scratch() {
+        // No marker anywhere up the tree → None (a scratch session, which
+        // the daemon then names with a random themed emoji).
+        assert!(find_project_root_with(Path::new("/a/b/c"), |_, _| false).is_none());
+        // A marker found up the tree → Some(that dir).
+        let at_a = find_project_root_with(Path::new("/a/b/c"), |d, _| d == Path::new("/a"));
+        assert_eq!(at_a, Some(PathBuf::from("/a")));
     }
 }

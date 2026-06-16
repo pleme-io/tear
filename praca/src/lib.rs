@@ -47,14 +47,14 @@ pub mod record;
 pub use attach::{decide, decide_with_root, AttachDecision, AttachPolicy};
 pub use binding::ProjectBinding;
 pub use index::SessionIndex;
-pub use project::{project_root, project_root_with};
-pub use record::{NameStyle, SessionRecord, SessionState};
+pub use project::{find_project_root, find_project_root_with, project_root, project_root_with};
+pub use record::{NameStyle, SessionRecord, SessionState, ThemeMirror};
 pub use snapshot::{PolicyMirror, PracaSnapshot};
 
-// Re-export the ishou name-style enum so consumers (tear-daemon, mado)
-// can build a `SessionRecord` without depending on ishou_tokens directly
-// — praça is the single surface the daemon/UI speak to.
-pub use ishou_tokens::SessionNameStyle;
+// Re-export the ishou name primitives so consumers (tear-daemon, mado) can
+// build a `SessionRecord` without depending on ishou_tokens directly —
+// praça is the single surface the daemon/UI speak to.
+pub use ishou_tokens::{SessionNameStyle, SessionTheme};
 
 pub mod snapshot;
 

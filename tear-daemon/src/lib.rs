@@ -1112,27 +1112,44 @@ fn praca_on_session_create(
         debug!(session = %id, "praca: no spawn cwd — skipping binding");
         return;
     };
-    let root = praca::project_root(&cwd);
+    // A recognized project → a path-STABLE name (cd here always re-attaches
+    // the same `🌊 tide`). A scratch / non-project cwd → a RANDOM THEMED
+    // emoji name (frost or brazil, chosen by the session's own id) — the
+    // operator's "create a session, by default a random themed emoji".
+    let project = praca::find_project_root(&cwd);
     store.mutate(|p| {
-        // Preserve frecency across a re-create under the same id: a
-        // raw `for_project` resets visits to 1, which would lose the
-        // accumulated count if this id was seen before. Carry the prior
-        // visits forward and add one for this open.
+        // Preserve frecency across a re-create under the same id: a raw
+        // constructor resets visits to 1, which would lose the accumulated
+        // count if this id was seen before. Carry prior visits forward.
         let prior_visits = p.index.get(id).map_or(0, |r| r.visits);
-        let mut rec = praca::SessionRecord::for_project(
-            id,
-            root.clone(),
-            p.name_style,
-            now,
-        );
-        // `for_project` initialises visits = 1 (this open). Fold in any
+        let (mut rec, anchor) = match &project {
+            Some(root) => (
+                praca::SessionRecord::for_project(id, root.clone(), p.name_style, now),
+                root.clone(),
+            ),
+            None => {
+                let seed = id.0; // the session's unique u64 — varies per session
+                let theme = if seed % 2 == 0 {
+                    praca::SessionTheme::Frost
+                } else {
+                    praca::SessionTheme::Brazil
+                };
+                (
+                    praca::SessionRecord::for_adhoc(id, seed, theme, cwd.clone(), p.name_style, now),
+                    cwd.clone(),
+                )
+            }
+        };
+        // The constructors initialise visits = 1 (this open). Fold in any
         // prior count so frecency reflects total opens of this session.
         rec.visits = rec.visits.saturating_add(prior_visits);
         rec.cwd.clone_from(&cwd);
         p.index.upsert(rec);
-        p.binding.bind(root.clone(), id);
+        // Bind the anchor (project root, or the cwd for ad-hoc) so a later
+        // cd back to it re-attaches this session.
+        p.binding.bind(anchor, id);
     });
-    debug!(session = %id, root = %root.display(), "praca: bound session to project");
+    debug!(session = %id, ?project, "praca: registered session");
 }
 
 /// Drop a killed session from the praça store: remove its record from
