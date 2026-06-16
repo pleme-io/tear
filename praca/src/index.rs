@@ -123,14 +123,17 @@ impl SessionIndex {
             return out;
         }
 
-        let mut scored: Vec<(i32, f64, &SessionRecord)> = self
+        let mut scored: Vec<((i32, i32), f64, &SessionRecord)> = self
             .records
             .iter()
             .filter_map(|r| best_match(q, r).map(|m| (m, frec(r, now), r)))
             .collect();
 
         scored.sort_by(|a, b| {
-            // higher match quality first, then higher frecency, then id.
+            // `(field_tier, fuzzy_quality)` first — the tuple compares
+            // lexicographically, so a name match outranks a tag match
+            // outranks a path match regardless of raw fuzzy quality, and
+            // ties within a tier fall to quality. Then frecency, then id.
             b.0.cmp(&a.0)
                 .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
                 .then(a.2.id.0.cmp(&b.2.id.0))
@@ -145,21 +148,33 @@ fn frec(r: &SessionRecord, now: u64) -> f64 {
     frecency::score(r.visits, r.last_seen, now)
 }
 
-/// Best fuzzy-match quality of `query` against any searchable field of
-/// `record` (name word, cwd string, tags). `None` if nothing matches.
-fn best_match(query: &str, record: &SessionRecord) -> Option<i32> {
+/// Field tiers — a match on the session **name** ranks above a match on a
+/// **tag**, which ranks above a match on the **cwd/path**, regardless of
+/// raw fuzzy quality. This is the operator's rule: *"a name match should
+/// be a higher tier in the session search."* The `(tier, quality)` pair
+/// compares lexicographically, so the tier dominates and quality breaks
+/// within-tier ties.
+const TIER_NAME: i32 = 3;
+const TIER_TAG: i32 = 2;
+const TIER_PATH: i32 = 1;
+
+/// Best `(field_tier, fuzzy_quality)` of `query` against any searchable
+/// field of `record` (name word, tags, cwd string). `None` if nothing
+/// matches. The tier dominates ranking (see [`TIER_NAME`] et al.).
+fn best_match(query: &str, record: &SessionRecord) -> Option<(i32, i32)> {
     let cwd = record.cwd.to_string_lossy();
-    let mut best: Option<i32> = None;
-    let mut consider = |hay: &str| {
-        if let Some(s) = fuzzy_score(query, hay) {
-            best = Some(best.map_or(s, |b| b.max(s)));
+    let mut best: Option<(i32, i32)> = None;
+    let mut consider = |tier: i32, hay: &str| {
+        if let Some(q) = fuzzy_score(query, hay) {
+            let cand = (tier, q);
+            best = Some(best.map_or(cand, |b| b.max(cand)));
         }
     };
-    consider(record.name_word());
-    consider(&cwd);
+    consider(TIER_NAME, record.name_word());
     for t in &record.tags {
-        consider(t);
+        consider(TIER_TAG, t);
     }
+    consider(TIER_PATH, &cwd);
     best
 }
 
@@ -278,6 +293,20 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].id, SessionId::from_seed("fresh"));
         assert_eq!(out[1].id, SessionId::from_seed("stale"));
+    }
+
+    #[test]
+    fn name_match_is_a_higher_tier_than_tag_match() {
+        // The operator's rule: a session whose NAME matches the query
+        // must outrank a session that only matches via a TAG, regardless
+        // of fuzzy quality or frecency.
+        let r = rec("x", "/code/qqq", 1, NOW, &["xkcdtag"]);
+        let name = r.name_word(); // the emoji's searchable word
+        let name_tier = best_match(name, &r).expect("name matches").0;
+        let tag_tier = best_match("xkcdtag", &r).expect("tag matches").0;
+        assert_eq!(name_tier, TIER_NAME);
+        assert_eq!(tag_tier, TIER_TAG);
+        assert!(name_tier > tag_tier, "a name match must outrank a tag match");
     }
 
     #[test]
