@@ -1077,8 +1077,31 @@ pub fn dispatch_with_config(
             }
             resp
         }
+        // Rename also updates the praça record's custom name so the Ctrl-S
+        // picker + search reflect it (the operator "jumped in and named it").
+        Request::RenameSession { id, new_name } => {
+            let resp = map_unit(inproc.rename_session(id, &new_name));
+            if matches!(resp, Response::Ok) {
+                if let Some(store) = praca {
+                    praca_on_session_rename(store, id, &new_name);
+                }
+            }
+            resp
+        }
         other => dispatch(inproc, other),
     }
+}
+
+/// Apply an operator rename to the praça record's `custom_name` and persist
+/// it — so the Ctrl-S picker shows the chosen name and search matches it at
+/// the highest tier. A no-op if the session has no record yet.
+fn praca_on_session_rename(store: &PracaStore, id: tear_types::SessionId, new_name: &str) {
+    store.mutate(|p| {
+        if let Some(rec) = p.index.get_mut(id) {
+            rec.rename(new_name);
+        }
+    });
+    debug!(session = %id, "praca: renamed session record");
 }
 
 // ── M1 "Remember" — praça lifecycle hooks ────────────────────────────
