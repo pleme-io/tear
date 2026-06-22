@@ -915,6 +915,15 @@ impl PaneGrid {
     #[must_use]
     pub fn snapshot(&self) -> PaneSnapshot {
         let cells: Vec<Vec<Cell>> = self.state.active_rows().cloned().collect();
+        // Carry the rolled-off scrollback so a re-attach / session switch
+        // restores the pane's history (the primary screen only — the
+        // alternate screen's apps own the full viewport and have no
+        // scrollback to restore).
+        let scrollback: Vec<Vec<Cell>> = if self.state.alt_active {
+            Vec::new()
+        } else {
+            self.state.scrollback.iter().cloned().collect()
+        };
         PaneSnapshot {
             rows: self.state.rows,
             cols: self.state.cols,
@@ -925,6 +934,7 @@ impl PaneGrid {
             cursor_visible: self.state.cursor_visible,
             title: self.state.title.clone(),
             cursor_keys_mode: self.state.cursor_keys_mode,
+            scrollback,
         }
     }
 

@@ -213,6 +213,16 @@ pub struct PaneSnapshot {
     /// daemons that don't emit this field deserialize cleanly.
     #[serde(default)]
     pub cursor_keys_mode: bool,
+    /// Bounded scrollback rows that have rolled off the top of the
+    /// primary screen, oldest first. Carried in the snapshot so a
+    /// consumer re-attaching to (or switching back to) a pane restores
+    /// its full history — without this, a session switch replays only
+    /// the visible grid and the scrollback is lost. Empty on the
+    /// alternate screen (vim/htop/less have no meaningful scrollback to
+    /// restore). `#[serde(default)]` so older wire payloads that omit
+    /// it deserialize cleanly to no scrollback.
+    #[serde(default)]
+    pub scrollback: Vec<Vec<Cell>>,
 }
 
 fn default_true() -> bool {
@@ -264,6 +274,27 @@ impl PaneSnapshot {
         // the primary screen, corrupting it when the app exits alt.
         if self.alt_screen_active {
             buf.extend_from_slice(b"\x1b[?1049h");
+        }
+        // Scrollback restore (primary screen only). Lay each rolled-off
+        // row down as a line, then scroll `rows` blank lines past them so
+        // every scrollback row lands in the CONSUMER's scrollback buffer
+        // BEFORE the visible grid repaints. Without this a re-attach /
+        // session switch replays only the visible grid and the history is
+        // lost. The visible-grid emission below is byte-identical to
+        // before, so this can only ADD history, never disturb the screen.
+        // Trailing blanks are trimmed per row, so a full-width row can't
+        // auto-wrap into a spurious blank line.
+        if !self.alt_screen_active && !self.scrollback.is_empty() {
+            buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
+            for row in &self.scrollback {
+                write_scrollback_row(&mut buf, row);
+                buf.extend_from_slice(b"\x1b[0m\r\n");
+            }
+            // Push the last `rows` scrollback lines off-screen (into the
+            // scrollback buffer) so the upcoming `\x1b[2J` can't erase them.
+            for _ in 0..self.rows {
+                buf.extend_from_slice(b"\r\n");
+            }
         }
         // Reset SGR, clear screen, home cursor.
         buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
@@ -332,6 +363,7 @@ mod to_ansi_tests {
             cursor_visible: true,
             title: None,
             cursor_keys_mode: false,
+            scrollback: Vec::new(),
         }
     }
 
@@ -352,6 +384,38 @@ mod to_ansi_tests {
         s.cells[0][2].ch = 'Y';
         let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
         assert!(text.contains("xxYxx"), "got: {text:?}");
+    }
+
+    #[test]
+    fn scrollback_rows_are_emitted_before_the_visible_grid() {
+        // A pane with one scrollback row ("HISTORY") and a visible grid
+        // ("VIS"). to_ansi must lay the history down first so a re-attach
+        // restores it into the consumer's scrollback.
+        let mut s = snap_with(1, 7, ' ');
+        for (i, ch) in "VIS".chars().enumerate() {
+            s.cells[0][i].ch = ch;
+        }
+        let mut hist: Vec<Cell> = (0..7).map(|_| Cell::BLANK).collect();
+        for (i, ch) in "HISTORY".chars().enumerate() {
+            hist[i].ch = ch;
+        }
+        s.scrollback = vec![hist];
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        let h = text.find("HISTORY").expect("history emitted");
+        let v = text.find("VIS").expect("visible grid emitted");
+        assert!(h < v, "scrollback must precede the visible grid: {text:?}");
+    }
+
+    #[test]
+    fn alt_screen_suppresses_scrollback_emission() {
+        // On the alternate screen there is no scrollback to restore.
+        let mut s = snap_with(1, 3, 'a');
+        s.alt_screen_active = true;
+        let mut hist: Vec<Cell> = (0..3).map(|_| Cell::BLANK).collect();
+        hist[0].ch = 'Z';
+        s.scrollback = vec![hist];
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        assert!(!text.contains('Z'), "alt-screen must not emit scrollback: {text:?}");
     }
 
     #[test]
@@ -531,6 +595,40 @@ mod to_ansi_tests {
             let csi = format!("\x1b[{row};1H");
             assert!(text.contains(&csi), "row {row} CSI missing");
         }
+    }
+}
+
+/// Emit one scrollback row as SGR-formatted text (fresh SGR state, no
+/// cursor positioning) for `to_ansi`'s scrollback restore. Trailing
+/// blank cells (a space in the default colours) are trimmed so a
+/// full-width row can't auto-wrap into a spurious extra blank line and
+/// so mostly-empty history rows stay compact.
+fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell]) {
+    let last = row
+        .iter()
+        .rposition(|c| c.ch != ' ' || c.fg != Color::WHITE || c.bg != Color::BLACK)
+        .map_or(0, |i| i + 1);
+    let mut cur_fg = Color::WHITE;
+    let mut cur_bg = Color::BLACK;
+    let mut cur_attrs = CellAttrs::NONE;
+    for cell in &row[..last] {
+        if cell.attrs != cur_attrs {
+            buf.extend_from_slice(b"\x1b[0m");
+            cur_fg = Color::WHITE;
+            cur_bg = Color::BLACK;
+            write_sgr_attrs(buf, cell.attrs);
+            cur_attrs = cell.attrs;
+        }
+        if cell.fg != cur_fg {
+            let _ = write!(buf, "\x1b[38;2;{};{};{}m", cell.fg.r, cell.fg.g, cell.fg.b);
+            cur_fg = cell.fg;
+        }
+        if cell.bg != cur_bg {
+            let _ = write!(buf, "\x1b[48;2;{};{};{}m", cell.bg.r, cell.bg.g, cell.bg.b);
+            cur_bg = cell.bg;
+        }
+        let mut tmp = [0u8; 4];
+        buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
     }
 }
 
