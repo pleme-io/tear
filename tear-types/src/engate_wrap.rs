@@ -57,6 +57,7 @@ mod tests {
             cursor_visible: true,
             title: None,
             cursor_keys_mode: false,
+            scrollback: Vec::new(),
         }
     }
 
