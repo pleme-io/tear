@@ -86,6 +86,46 @@ impl_typed_id!(
     /// id; the multiplexer drives PTYs keyed by it.
     PaneId
 );
+impl_typed_id!(
+    /// Stable identity of a session *definition* — the durable,
+    /// project-stable identity of a latent shape.
+    ///
+    /// Unlike [`InstanceId`] (a spawn-unique daemon handle that changes
+    /// every restart), a `DefinitionId` is the SAME across daemon
+    /// restarts and across hosts: its inner `u64` IS the
+    /// `ishou_tokens` `stable_seed` of the project root — the very seed
+    /// praça's name derivation uses — so a definition keeps its
+    /// identity, and therefore its display name, forever.
+    ///
+    /// The whole point of the type is that a `fn` taking a
+    /// `DefinitionId` cannot be handed an [`InstanceId`]: confusing the
+    /// durable identity of a *definition* with the ephemeral handle of a
+    /// *running instance* is a compile error (E0308), not a runtime mix-up.
+    DefinitionId
+);
+
+impl DefinitionId {
+    /// The definition id for a project root. Equal to the project's
+    /// `name_seed` by construction — `inner == stable_seed(root)`, the
+    /// exact derivation praça's [`SessionRecord`](../../praca) uses — so
+    /// a definition's identity and its display name share one seed and
+    /// migration from the old records is lossless.
+    #[must_use]
+    pub fn from_project(root: &std::path::Path) -> Self {
+        Self(ishou_tokens::fleet_session_names::stable_seed(
+            root.to_string_lossy().as_bytes(),
+        ))
+    }
+}
+
+/// The ephemeral, spawn-unique daemon handle for a *live* session
+/// incarnation — exactly today's [`SessionId`] (`BLAKE3(name + now +
+/// counter)`, non-stable across restart). Kept as a transparent alias so
+/// the wire format and every existing call site stay byte-identical; the
+/// name documents that this is the LIVE handle, distinct from a
+/// [`DefinitionId`]. A daemon restart mints a *new* `InstanceId` for the
+/// same definition — the handle is the incarnation, not the identity.
+pub type InstanceId = SessionId;
 
 #[cfg(test)]
 mod tests {
@@ -111,5 +151,37 @@ mod tests {
         let seeded = WindowId::from_seed("test");
         assert_ne!(WindowId::NULL, seeded);
         assert_eq!(WindowId::NULL.0, 0);
+    }
+
+    #[test]
+    fn definition_id_inner_is_the_project_name_seed() {
+        // Migration losslessness: DefinitionId(root).0 is BYTE-EXACTLY the
+        // `name_seed` praça's SessionRecord stores
+        // (stable_seed(root.to_string_lossy())). So an old record upgrades
+        // to a definition with its identity == its existing name_seed —
+        // the name never changes across the migration.
+        let root = std::path::Path::new("/code/pleme-io/mado");
+        let expected = ishou_tokens::fleet_session_names::stable_seed(
+            root.to_string_lossy().as_bytes(),
+        );
+        assert_eq!(DefinitionId::from_project(root).0, expected);
+    }
+
+    #[test]
+    fn definition_id_is_restart_and_call_stable() {
+        // Unlike a spawn-minted InstanceId, the same project root always
+        // yields the same DefinitionId — that's the whole point of the
+        // durable-vs-ephemeral split.
+        let root = std::path::Path::new("/x/y/z");
+        assert_eq!(DefinitionId::from_project(root), DefinitionId::from_project(root));
+    }
+
+    #[test]
+    fn instance_id_is_session_id_alias() {
+        // InstanceId is the SAME type as SessionId (zero wire churn) — they
+        // unify, so a SessionId flows wherever an InstanceId is expected.
+        let s: SessionId = SessionId(7);
+        let i: InstanceId = s;
+        assert_eq!(i.0, 7);
     }
 }
