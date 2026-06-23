@@ -10,7 +10,9 @@
 
 This is the typed model behind tear's sessions, windows, panes, layouts,
 and the cd-driven attach engine — the thing [`PRACA.md`](./PRACA.md)
-orchestrates. It exists because the *prose* version of "running multiple
+orchestrates. The user-facing capabilities derived from this model — the
+unified Ctrl-S surface, the 3-wave extension, the buildable-now/M2/M5
+partition — are in [`SESSION-FEATURESET.md`](./SESSION-FEATURESET.md). It exists because the *prose* version of "running multiple
 mado instances, different sessions, session presets, instantiated and
 not, split-screens, persistence" over-claimed: an 8-lens adversarial
 pressure-test found ten illegal states the code actually admitted. The
