@@ -1582,6 +1582,7 @@ dependencies = [
  "ishou-tokens",
  "serde",
  "serde_json",
+ "tear-core",
  "tear-types",
 ]
 

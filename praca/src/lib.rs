@@ -80,10 +80,16 @@ use tear_types::id::SessionId;
 /// time is always injected.
 #[derive(Clone, Debug)]
 pub struct Praca {
-    /// Searchable catalog of every tracked session.
+    /// Searchable catalog of every tracked *live* session.
     pub index: SessionIndex,
     /// Persisted project→session bindings (the cd-attach memory).
     pub binding: ProjectBinding,
+    /// Searchable catalog of *latent* presets (saved/authored
+    /// definitions). In-memory only — deliberately NOT part of
+    /// [`PracaSnapshot`], so a preset catalog is session-scoped until the
+    /// M2 persisted-definitions store lands (no disk-format change). This
+    /// is the "in-mado catalog" the union picker reads its latent rows from.
+    pub definitions: DefinitionIndex,
     /// How aggressively `cd` auto-attaches.
     pub policy: AttachPolicy,
     /// Style for auto-generated session names.
@@ -104,6 +110,7 @@ impl Praca {
         Self {
             index: SessionIndex::new(),
             binding: ProjectBinding::new(),
+            definitions: DefinitionIndex::new(),
             policy: AttachPolicy::AutoSwitch,
             name_style: SessionNameStyle::default(),
         }
@@ -118,7 +125,13 @@ impl Praca {
         policy: AttachPolicy,
         name_style: SessionNameStyle,
     ) -> Self {
-        Self { index, binding, policy, name_style }
+        Self {
+            index,
+            binding,
+            definitions: DefinitionIndex::new(),
+            policy,
+            name_style,
+        }
     }
 
     /// Decide what to do when the operator `cd`s to `new_cwd`. The
@@ -194,6 +207,8 @@ impl Praca {
         Self {
             index: snap.index,
             binding: snap.binding,
+            // Latent presets are not persisted (yet) — start empty on reload.
+            definitions: DefinitionIndex::new(),
             policy: snap.policy.into(),
             name_style: snap.name_style.into(),
         }
