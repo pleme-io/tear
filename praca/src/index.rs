@@ -110,37 +110,10 @@ impl SessionIndex {
     /// `now` is unix-seconds, injected for the frecency tie-break.
     #[must_use]
     pub fn search(&self, query: &str, now: u64) -> Vec<&SessionRecord> {
-        let q = query.trim();
-        if q.is_empty() {
-            let mut out: Vec<&SessionRecord> = self.records.iter().collect();
-            out.sort_by(|a, b| {
-                // `*a`/`*b` are `&SessionRecord` → coerce to `&dyn Searchable`.
-                frec(*b, now)
-                    .partial_cmp(&frec(*a, now))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    // deterministic final tie-break on id
-                    .then(a.id.0.cmp(&b.id.0))
-            });
-            return out;
-        }
-
-        let mut scored: Vec<((i32, i32), f64, &SessionRecord)> = self
-            .records
-            .iter()
-            .filter_map(|r| best_match(q, r).map(|m| (m, frec(r, now), r)))
-            .collect();
-
-        scored.sort_by(|a, b| {
-            // `(field_tier, fuzzy_quality)` first — the tuple compares
-            // lexicographically, so a name match outranks a tag match
-            // outranks a path match regardless of raw fuzzy quality, and
-            // ties within a tier fall to quality. Then frecency, then id.
-            b.0.cmp(&a.0)
-                .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
-                .then(a.2.id.0.cmp(&b.2.id.0))
-        });
-
-        scored.into_iter().map(|(_, _, r)| r).collect()
+        // Delegates to the shared `rank` over `Searchable` — the comparator
+        // (empty→frecency; non-empty→tier/quality/frecency/id) lives once,
+        // reused verbatim by `DefinitionIndex`.
+        rank(&self.records, query, now)
     }
 }
 
@@ -166,6 +139,42 @@ pub trait Searchable {
     fn visits(&self) -> u32;
     /// Frecency: unix-seconds of last touch.
     fn last_seen(&self) -> u64;
+    /// The deterministic final tie-break — the candidate's stable id inner
+    /// `u64` (a record's `SessionId`, a definition's `DefinitionId`), so a
+    /// ranking is reproducible when frecency + match quality tie.
+    fn rank_key(&self) -> u64;
+}
+
+/// Rank a homogeneous slice of searchable candidates by the picker's order:
+/// empty query → frecency descending; non-empty → `(field_tier,
+/// fuzzy_quality)` descending, then frecency, then [`Searchable::rank_key`].
+/// This is the ONE ranking algorithm both [`SessionIndex`] (live records)
+/// and [`crate::DefinitionIndex`] (latent presets) consume — extracted so
+/// the comparator lives once.
+#[must_use]
+pub fn rank<'a, T: Searchable>(items: &'a [T], query: &str, now: u64) -> Vec<&'a T> {
+    use std::cmp::Ordering::Equal;
+    let q = query.trim();
+    if q.is_empty() {
+        let mut out: Vec<&T> = items.iter().collect();
+        out.sort_by(|a, b| {
+            frec(*b, now)
+                .partial_cmp(&frec(*a, now))
+                .unwrap_or(Equal)
+                .then(a.rank_key().cmp(&b.rank_key()))
+        });
+        return out;
+    }
+    let mut scored: Vec<((i32, i32), f64, &T)> = items
+        .iter()
+        .filter_map(|r| best_match(q, r).map(|m| (m, frec(r, now), r)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.partial_cmp(&a.1).unwrap_or(Equal))
+            .then(a.2.rank_key().cmp(&b.2.rank_key()))
+    });
+    scored.into_iter().map(|(_, _, r)| r).collect()
 }
 
 impl Searchable for SessionRecord {
@@ -190,6 +199,9 @@ impl Searchable for SessionRecord {
     fn last_seen(&self) -> u64 {
         self.last_seen
     }
+    fn rank_key(&self) -> u64 {
+        self.id.0
+    }
 }
 
 /// One row of a union ranking: a live instance or a latent preset.
@@ -207,12 +219,9 @@ impl Ranked<'_> {
             Ranked::Latent(d) => *d,
         }
     }
-    /// The deterministic final tie-break (the candidate's id inner u64).
+    /// The deterministic final tie-break — the candidate's [`Searchable::rank_key`].
     fn tiebreak(&self) -> u64 {
-        match self {
-            Ranked::Live(r) => r.id.0,
-            Ranked::Latent(d) => d.def_id.0,
-        }
+        self.searchable().rank_key()
     }
 }
 

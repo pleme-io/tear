@@ -40,6 +40,7 @@
 pub mod attach;
 pub mod binding;
 pub mod definition;
+pub mod definition_index;
 pub mod frecency;
 pub mod index;
 pub mod instance_registry;
@@ -50,7 +51,8 @@ pub mod record;
 pub use attach::{decide, decide_with_root, AttachAction, AttachDecision, AttachPolicy};
 pub use binding::ProjectBinding;
 pub use definition::{DefinitionError, SessionDefinition, SessionOrigin};
-pub use index::{best_match, rank_union, Ranked, Searchable, SessionIndex};
+pub use definition_index::DefinitionIndex;
+pub use index::{best_match, rank, rank_union, Ranked, Searchable, SessionIndex};
 pub use instance_registry::InstanceRegistry;
 pub use instantiate::{instantiate, reinstantiate, InstantiateError};
 pub use project::{find_project_root, find_project_root_with, project_root, project_root_with};

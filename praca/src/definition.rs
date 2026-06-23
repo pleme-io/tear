@@ -298,6 +298,9 @@ impl Searchable for SessionDefinition {
     fn last_seen(&self) -> u64 {
         self.last_seen
     }
+    fn rank_key(&self) -> u64 {
+        self.def_id.0
+    }
 }
 
 #[cfg(test)]
