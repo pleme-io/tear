@@ -237,13 +237,22 @@ pub fn rank_union<'a>(
     query: &str,
     now: u64,
 ) -> Vec<Ranked<'a>> {
-    use std::cmp::Ordering::Equal;
-    let q = query.trim();
     let all: Vec<Ranked<'a>> = records
         .iter()
         .map(Ranked::Live)
         .chain(defs.iter().map(Ranked::Latent))
         .collect();
+    rank_mixed(all, query, now)
+}
+
+/// Rank a pre-built heterogeneous list of [`Ranked`] candidates by the
+/// picker's order — the heterogeneous core both [`rank_union`] and the
+/// picker projection ([`crate::picker::union_view`]) share. Empty query →
+/// frecency; non-empty → tier/quality/frecency/[`Searchable::rank_key`].
+#[must_use]
+pub fn rank_mixed<'a>(all: Vec<Ranked<'a>>, query: &str, now: u64) -> Vec<Ranked<'a>> {
+    use std::cmp::Ordering::Equal;
+    let q = query.trim();
     if q.is_empty() {
         let mut out = all;
         out.sort_by(|a, b| {
