@@ -9,6 +9,15 @@ on:
         description: "patch | minor | major"
         required: false
         default: patch
+  # */15 drip tick: the substrate reusable's `drip` job fires on this
+  # schedule to publish whatever crates.io capacity allows and defer the
+  # rest, draining a large new-crate bootstrap across the rate-limit refill
+  # until every workspace member is on the registry. Idempotent + a no-op in
+  # seconds once converged, so it's safe to leave armed. (Without this
+  # schedule the drip job — which substrate ships for exactly this — never
+  # ran, so a deferred/stranded ship was never finished.)
+  schedule:
+    - cron: "*/15 * * * *"
 
 # NO concurrency override here — the substrate reusable
 # (rust-auto-release.yml) OWNS serialization: `cancel-in-progress: false`
