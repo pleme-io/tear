@@ -24,7 +24,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tear_types::{DefinitionId, PaneSlot, PlanError, SpawnSpec, WindowPlan};
 
-use crate::record::{display_name_for, NameStyle, ThemeMirror};
+use crate::index::Searchable;
+use crate::record::{display_name_for, identity_for, NameStyle, ThemeMirror};
 
 /// Where a session definition came from — a typed third arm, so the
 /// ad-hoc path is exhaustively matched rather than a silent `for_adhoc`
@@ -146,6 +147,26 @@ impl SessionDefinition {
         )
     }
 
+    /// The resolved emoji identity — shares the `identity_for` resolver
+    /// with [`crate::record::SessionRecord`], so a definition and a record
+    /// for the same seed render the same `🌊 tide`.
+    #[must_use]
+    pub fn identity(&self) -> ishou_tokens::SessionIdentity {
+        identity_for(self.name_seed, self.theme)
+    }
+
+    /// The identity's word (`"tide"`) — the stable searchable token.
+    #[must_use]
+    pub fn name_word(&self) -> &'static str {
+        self.identity().word
+    }
+
+    /// The identity's search keywords (`"wave"`/`"water"` for `🌊 tide`).
+    #[must_use]
+    pub fn keywords(&self) -> &'static [&'static str] {
+        self.identity().keywords
+    }
+
     /// Structural validation: ≥1 window, every window's layout valid,
     /// every referenced slot has a spawn spec, every `active_slot` belongs
     /// to its window. A definition that validates can be instantiated.
@@ -172,6 +193,33 @@ impl SessionDefinition {
     #[must_use]
     pub fn slot_count(&self) -> usize {
         self.windows.iter().map(|w| w.layout.slot_count()).sum()
+    }
+}
+
+/// A latent definition ranks through the SAME scorer as a live record —
+/// the seam that lets `Ctrl-S` show presets and running sessions in one
+/// frecency+fuzzy order.
+impl Searchable for SessionDefinition {
+    fn custom_name(&self) -> Option<&str> {
+        self.custom_name.as_deref()
+    }
+    fn name_word(&self) -> &'static str {
+        SessionDefinition::name_word(self)
+    }
+    fn keywords(&self) -> &'static [&'static str] {
+        SessionDefinition::keywords(self)
+    }
+    fn tags(&self) -> &[String] {
+        &self.tags
+    }
+    fn path_str(&self) -> std::borrow::Cow<'_, str> {
+        self.project_root.to_string_lossy()
+    }
+    fn visits(&self) -> u32 {
+        self.visits
+    }
+    fn last_seen(&self) -> u64 {
+        self.last_seen
     }
 }
 

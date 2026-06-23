@@ -114,8 +114,9 @@ impl SessionIndex {
         if q.is_empty() {
             let mut out: Vec<&SessionRecord> = self.records.iter().collect();
             out.sort_by(|a, b| {
-                frec(b, now)
-                    .partial_cmp(&frec(a, now))
+                // `*a`/`*b` are `&SessionRecord` → coerce to `&dyn Searchable`.
+                frec(*b, now)
+                    .partial_cmp(&frec(*a, now))
                     .unwrap_or(std::cmp::Ordering::Equal)
                     // deterministic final tie-break on id
                     .then(a.id.0.cmp(&b.id.0))
@@ -143,9 +144,122 @@ impl SessionIndex {
     }
 }
 
-/// Frecency of a record at `now`.
-fn frec(r: &SessionRecord, now: u64) -> f64 {
-    frecency::score(r.visits, r.last_seen, now)
+/// The fields the picker's ranking reads off a candidate. Both a live
+/// [`SessionRecord`] and a latent [`crate::SessionDefinition`] implement
+/// it, so the ONE scorer ([`best_match`] + [`frec`]) ranks them in a
+/// single frecency+fuzzy order — the additive seam the union picker
+/// (`Ctrl-S` over live ∪ latent) is built on. Object-safe by design
+/// (no generics, no `Self` returns) so a `&dyn Searchable` heterogeneous
+/// list ranks uniformly.
+pub trait Searchable {
+    /// The operator's custom rename, if any (highest name-tier match).
+    fn custom_name(&self) -> Option<&str>;
+    /// The emoji identity's word (`"tide"` for `🌊 tide`).
+    fn name_word(&self) -> &'static str;
+    /// The emoji identity's synonyms (`"wave"`/`"water"` find `🌊 tide`).
+    fn keywords(&self) -> &'static [&'static str];
+    /// Operator tags.
+    fn tags(&self) -> &[String];
+    /// The project/cwd path, as a search haystack (lowest tier).
+    fn path_str(&self) -> std::borrow::Cow<'_, str>;
+    /// Frecency: total visits.
+    fn visits(&self) -> u32;
+    /// Frecency: unix-seconds of last touch.
+    fn last_seen(&self) -> u64;
+}
+
+impl Searchable for SessionRecord {
+    fn custom_name(&self) -> Option<&str> {
+        self.custom_name.as_deref()
+    }
+    fn name_word(&self) -> &'static str {
+        SessionRecord::name_word(self)
+    }
+    fn keywords(&self) -> &'static [&'static str] {
+        SessionRecord::keywords(self)
+    }
+    fn tags(&self) -> &[String] {
+        &self.tags
+    }
+    fn path_str(&self) -> std::borrow::Cow<'_, str> {
+        self.cwd.to_string_lossy()
+    }
+    fn visits(&self) -> u32 {
+        self.visits
+    }
+    fn last_seen(&self) -> u64 {
+        self.last_seen
+    }
+}
+
+/// One row of a union ranking: a live instance or a latent preset.
+pub enum Ranked<'a> {
+    /// A running session.
+    Live(&'a SessionRecord),
+    /// A preset with no live instance (Enter would instantiate it).
+    Latent(&'a crate::SessionDefinition),
+}
+
+impl Ranked<'_> {
+    fn searchable(&self) -> &dyn Searchable {
+        match self {
+            Ranked::Live(r) => *r,
+            Ranked::Latent(d) => *d,
+        }
+    }
+    /// The deterministic final tie-break (the candidate's id inner u64).
+    fn tiebreak(&self) -> u64 {
+        match self {
+            Ranked::Live(r) => r.id.0,
+            Ranked::Latent(d) => d.def_id.0,
+        }
+    }
+}
+
+/// Rank live records and latent definitions in ONE frecency+fuzzy order —
+/// the same `(field_tier, quality, frecency, id)` rule [`SessionIndex::search`]
+/// uses, lifted over the heterogeneous union. Empty query → frecency desc.
+/// This is the picker's union view: "what is running" and "what could run"
+/// interleaved, not artificially split.
+#[must_use]
+pub fn rank_union<'a>(
+    records: &'a [SessionRecord],
+    defs: &'a [crate::SessionDefinition],
+    query: &str,
+    now: u64,
+) -> Vec<Ranked<'a>> {
+    use std::cmp::Ordering::Equal;
+    let q = query.trim();
+    let all: Vec<Ranked<'a>> = records
+        .iter()
+        .map(Ranked::Live)
+        .chain(defs.iter().map(Ranked::Latent))
+        .collect();
+    if q.is_empty() {
+        let mut out = all;
+        out.sort_by(|a, b| {
+            frec(b.searchable(), now)
+                .partial_cmp(&frec(a.searchable(), now))
+                .unwrap_or(Equal)
+                .then(a.tiebreak().cmp(&b.tiebreak()))
+        });
+        return out;
+    }
+    let mut scored: Vec<((i32, i32), f64, Ranked<'a>)> = all
+        .into_iter()
+        .filter_map(|it| best_match(q, it.searchable()).map(|m| (m, frec(it.searchable(), now), it)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.partial_cmp(&a.1).unwrap_or(Equal))
+            .then(a.2.tiebreak().cmp(&b.2.tiebreak()))
+    });
+    scored.into_iter().map(|(_, _, it)| it).collect()
+}
+
+/// Frecency of any searchable candidate at `now`.
+fn frec(item: &dyn Searchable, now: u64) -> f64 {
+    frecency::score(item.visits(), item.last_seen(), now)
 }
 
 /// Field tiers — a match on the session **name** ranks above a **keyword**
@@ -160,11 +274,14 @@ const TIER_KEYWORD: i32 = 3;
 const TIER_TAG: i32 = 2;
 const TIER_PATH: i32 = 1;
 
-/// Best `(field_tier, fuzzy_quality)` of `query` against any searchable field
-/// of `record` (custom name, emoji word, emoji keywords, tags, cwd). `None` if
-/// nothing matches. The tier dominates ranking (see [`TIER_NAME`] et al.).
-fn best_match(query: &str, record: &SessionRecord) -> Option<(i32, i32)> {
-    let cwd = record.cwd.to_string_lossy();
+/// Best `(field_tier, fuzzy_quality)` of `query` against any searchable
+/// field of `item` (custom name, emoji word, emoji keywords, tags, path).
+/// `None` if nothing matches. The tier dominates ranking (see
+/// [`TIER_NAME`] et al.). Takes `&dyn Searchable` so the SAME scorer ranks
+/// a live [`SessionRecord`] and a latent [`crate::SessionDefinition`].
+#[must_use]
+pub fn best_match(query: &str, item: &dyn Searchable) -> Option<(i32, i32)> {
+    let path = item.path_str();
     let mut best: Option<(i32, i32)> = None;
     let mut consider = |tier: i32, hay: &str| {
         if let Some(q) = fuzzy_score(query, hay) {
@@ -173,18 +290,18 @@ fn best_match(query: &str, record: &SessionRecord) -> Option<(i32, i32)> {
         }
     };
     // Name tier: the operator's custom rename (if any) AND the emoji word.
-    if let Some(custom) = &record.custom_name {
+    if let Some(custom) = item.custom_name() {
         consider(TIER_NAME, custom);
     }
-    consider(TIER_NAME, record.name_word());
+    consider(TIER_NAME, item.name_word());
     // Keyword tier: the emoji's synonyms — "wave" finds 🌊 tide.
-    for kw in record.keywords() {
+    for kw in item.keywords() {
         consider(TIER_KEYWORD, kw);
     }
-    for t in &record.tags {
+    for t in item.tags() {
         consider(TIER_TAG, t);
     }
-    consider(TIER_PATH, &cwd);
+    consider(TIER_PATH, &path);
     best
 }
 
@@ -257,6 +374,38 @@ mod tests {
         r.visits = visits;
         r.tags = tags.iter().map(|t| (*t).to_string()).collect();
         r
+    }
+
+    #[test]
+    fn rank_union_interleaves_latent_and_live_by_one_frecency_order() {
+        use crate::definition::SessionDefinition;
+        use crate::record::NameStyle;
+        // A low-frecency LIVE record and a high-frecency LATENT preset.
+        // Empty query ranks by frecency — so the preset (visits 50) must
+        // rank ABOVE the running session (visits 1). This proves the two
+        // states interleave by ONE order, not "live always above latent".
+        let live = rec("live", "/code/live-proj", 1, 100, &[]);
+        let mut def = SessionDefinition::single_pane("/code/preset-proj", "/bin/zsh", NameStyle::Emoji, 100);
+        def.visits = 50;
+        let ranked = rank_union(std::slice::from_ref(&live), std::slice::from_ref(&def), "", 100);
+        assert_eq!(ranked.len(), 2);
+        assert!(matches!(ranked[0], Ranked::Latent(_)), "high-frecency preset ranks first");
+        assert!(matches!(ranked[1], Ranked::Live(_)));
+    }
+
+    #[test]
+    fn rank_union_fuzzy_query_ranks_both_states_through_one_scorer() {
+        use crate::definition::SessionDefinition;
+        use crate::record::NameStyle;
+        // A live record and a latent def; a fuzzy query that matches the
+        // def's project path surfaces it through the SAME best_match the
+        // record uses — a def is searchable, not invisible-until-spawned.
+        let live = rec("l", "/code/alpha", 1, 100, &[]);
+        let def = SessionDefinition::single_pane("/code/bravo-substrate", "/bin/zsh", NameStyle::Emoji, 100);
+        // "bravo" matches the def's path (TIER_PATH) but not the live one.
+        let ranked = rank_union(std::slice::from_ref(&live), std::slice::from_ref(&def), "bravo", 100);
+        assert_eq!(ranked.len(), 1);
+        assert!(matches!(ranked[0], Ranked::Latent(_)));
     }
 
     #[test]

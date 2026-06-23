@@ -141,6 +141,58 @@ impl LayoutNode {
         }
     }
 
+    /// Arrange an ordered slice of panes into a named [`LayoutKind`]
+    /// preset — the live-tree twin of [`crate::LayoutPlan::realize`]. The
+    /// result always [`validate`](Self::validate)s and (by the shipped
+    /// tiling property) `compute_rects` tiles its bounds exactly. `Even*`
+    /// arrangements give every pane a `1/n` share (ratio `1/(n-k)` per
+    /// split level), so an even-3 row is three equal thirds, not a
+    /// balanced binary `0.5` split.
+    ///
+    /// Returns `None` for an empty slice and for [`LayoutKind::Custom`]
+    /// (whose tree is its own source of truth — there is no canonical
+    /// arrangement to build). A single pane yields a leaf for any kind.
+    #[must_use]
+    pub fn from_kind(kind: LayoutKind, panes: &[PaneId]) -> Option<Self> {
+        match panes {
+            [] => None,
+            [only] => Some(Self::leaf(*only)),
+            [main, rest @ ..] => match kind {
+                // A horizontal ROW = panes side by side = Vertical splits.
+                LayoutKind::EvenHorizontal => {
+                    even_chain(SplitOrientation::Vertical, &leaves(panes))
+                }
+                // A vertical COLUMN = panes stacked = Horizontal splits.
+                LayoutKind::EvenVertical => {
+                    even_chain(SplitOrientation::Horizontal, &leaves(panes))
+                }
+                // One big pane on top; the rest share the bottom row.
+                LayoutKind::MainHorizontal => {
+                    let bottom = even_chain(SplitOrientation::Vertical, &leaves(rest))?;
+                    Some(Self::Split {
+                        orientation: SplitOrientation::Horizontal,
+                        ratio: 0.5,
+                        a: Box::new(Self::leaf(*main)),
+                        b: Box::new(bottom),
+                    })
+                }
+                // One big pane on the left; the rest stack on the right.
+                LayoutKind::MainVertical => {
+                    let right = even_chain(SplitOrientation::Horizontal, &leaves(rest))?;
+                    Some(Self::Split {
+                        orientation: SplitOrientation::Vertical,
+                        ratio: 0.5,
+                        a: Box::new(Self::leaf(*main)),
+                        b: Box::new(right),
+                    })
+                }
+                LayoutKind::Tiled => tiled(panes),
+                // No canonical arrangement — the operator's manual tree wins.
+                LayoutKind::Custom => None,
+            },
+        }
+    }
+
     /// Replace the leaf holding `target` with a split whose two children
     /// are the original pane and a fresh `new_pane`, ordered by
     /// `direction`. This is the *correct* split — it replaces only the
@@ -484,6 +536,55 @@ fn split_extent(total: u16, ratio: f32) -> u16 {
     a as u16
 }
 
+/// Wrap each pane id in a leaf node.
+fn leaves(panes: &[PaneId]) -> Vec<LayoutNode> {
+    panes.iter().map(|p| LayoutNode::leaf(*p)).collect()
+}
+
+/// Fold a slice of subtrees into an *even* chain along `orientation`: the
+/// first child gets `1/n` of the area and the remainder recurses, so —
+/// because each level's `1/(n-k)` is taken of the previous remainder —
+/// every leaf ends with exactly `1/n`. `None` for an empty slice.
+fn even_chain(orientation: SplitOrientation, nodes: &[LayoutNode]) -> Option<LayoutNode> {
+    match nodes {
+        [] => None,
+        [single] => Some(single.clone()),
+        [first, rest @ ..] => {
+            let n = nodes.len() as f32;
+            let rest_tree = even_chain(orientation, rest)?;
+            Some(LayoutNode::Split {
+                orientation,
+                ratio: 1.0 / n,
+                a: Box::new(first.clone()),
+                b: Box::new(rest_tree),
+            })
+        }
+    }
+}
+
+/// Arrange panes in an approximate square grid: `ceil(sqrt(n))` rows, each
+/// an even row (side by side), the rows stacked evenly. `None` for empty.
+fn tiled(panes: &[PaneId]) -> Option<LayoutNode> {
+    let n = panes.len();
+    if n == 0 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rows = (n as f64).sqrt().ceil() as usize;
+    let per = n / rows;
+    let extra = n % rows;
+    let mut row_trees = Vec::with_capacity(rows);
+    let mut i = 0;
+    for r in 0..rows {
+        // The first `extra` rows carry one more pane than the rest.
+        let cnt = per + usize::from(r < extra);
+        let row = even_chain(SplitOrientation::Vertical, &leaves(&panes[i..i + cnt]))?;
+        row_trees.push(row);
+        i += cnt;
+    }
+    even_chain(SplitOrientation::Horizontal, &row_trees)
+}
+
 /// Named tmux-style layout presets. tmux ships five built-ins; tear
 /// supports the same plus a `tatami`-style auto-balance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -825,6 +926,99 @@ mod tests {
         let b = Rect::sized(90, 24);
         assert_eq!(right_leaning.neighbor(PaneId(1), Direction::Right, b), Some(PaneId(2)));
         assert_eq!(left_leaning.neighbor(PaneId(1), Direction::Right, b), Some(PaneId(2)));
+    }
+
+    // ── from_kind ────────────────────────────────────────────────
+
+    #[test]
+    fn from_kind_empty_and_custom_are_none() {
+        assert_eq!(LayoutNode::from_kind(LayoutKind::Tiled, &[]), None);
+        assert_eq!(
+            LayoutNode::from_kind(LayoutKind::Custom, &[PaneId(1), PaneId(2)]),
+            None
+        );
+    }
+
+    #[test]
+    fn from_kind_single_pane_is_a_leaf_for_every_kind() {
+        for kind in [
+            LayoutKind::EvenHorizontal,
+            LayoutKind::EvenVertical,
+            LayoutKind::MainHorizontal,
+            LayoutKind::MainVertical,
+            LayoutKind::Tiled,
+        ] {
+            assert_eq!(
+                LayoutNode::from_kind(kind, &[PaneId(1)]),
+                Some(LayoutNode::leaf(PaneId(1)))
+            );
+        }
+    }
+
+    #[test]
+    fn from_kind_even_horizontal_gives_equal_thirds() {
+        // The even-ratio refinement: 3 panes in a row are three EQUAL
+        // widths, not a 50/25/25 balanced binary split.
+        let panes = [PaneId(1), PaneId(2), PaneId(3)];
+        let tree = LayoutNode::from_kind(LayoutKind::EvenHorizontal, &panes).unwrap();
+        tree.validate().unwrap();
+        let rects = tree.compute_rects(Rect::sized(90, 24));
+        let mut widths: Vec<u16> = rects.iter().map(|(_, r)| r.w).collect();
+        widths.sort_unstable();
+        // 90/3 = 30 each (exactly, since 90 is divisible by 3).
+        assert_eq!(widths, vec![30, 30, 30]);
+    }
+
+    /// The first-brick proof: for EVERY non-Custom kind and pane-count
+    /// 1..=7, `from_kind` produces a tree that validates AND whose
+    /// `compute_rects` tiles its bounds exactly (the shipped tiling
+    /// invariant) — gap-free, overlap-free, every pane present once.
+    #[test]
+    fn from_kind_every_preset_validates_and_tiles_exactly() {
+        let kinds = [
+            LayoutKind::EvenHorizontal,
+            LayoutKind::EvenVertical,
+            LayoutKind::MainHorizontal,
+            LayoutKind::MainVertical,
+            LayoutKind::Tiled,
+        ];
+        for kind in kinds {
+            for n in 1..=7usize {
+                let panes: Vec<PaneId> = (1..=n as u64).map(PaneId).collect();
+                let tree = LayoutNode::from_kind(kind, &panes)
+                    .unwrap_or_else(|| panic!("{kind:?} n={n} produced None"));
+                // Structurally sound + every pane present exactly once.
+                tree.validate()
+                    .unwrap_or_else(|e| panic!("{kind:?} n={n} invalid: {e:?}"));
+                assert_eq!(tree.pane_count(), n, "{kind:?} n={n} pane count");
+                assert_eq!(tree.panes().len(), n);
+                // Tiles bounds exactly at a rounding-forcing size.
+                for &(w, h) in &[(80u16, 24u16), (81, 25), (97, 31)] {
+                    let bounds = Rect::sized(w, h);
+                    let rects = tree.compute_rects(bounds);
+                    let total: u32 = rects.iter().map(|(_, r)| r.area()).sum();
+                    assert_eq!(total, bounds.area(), "{kind:?} n={n} at {w}x{h}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn from_kind_main_vertical_keeps_main_on_the_left() {
+        let panes = [PaneId(1), PaneId(2), PaneId(3)];
+        let tree = LayoutNode::from_kind(LayoutKind::MainVertical, &panes).unwrap();
+        // Outer split is vertical (left|right), side a is the main leaf.
+        match &tree {
+            LayoutNode::Split { orientation, a, .. } => {
+                assert_eq!(*orientation, SplitOrientation::Vertical);
+                assert_eq!(a.as_ref(), &LayoutNode::leaf(PaneId(1)));
+            }
+            LayoutNode::Leaf { .. } => panic!("expected a split"),
+        }
+        // The main pane is the leftmost on screen.
+        let rects = tree.compute_rects(Rect::sized(80, 24));
+        let main = rects.iter().find(|(p, _)| *p == PaneId(1)).unwrap().1;
+        assert_eq!(main.x, 0);
     }
 
     /// A pseudo-property test: across a spread of tree shapes and bounds
