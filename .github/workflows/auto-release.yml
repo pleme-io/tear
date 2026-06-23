@@ -10,14 +10,18 @@ on:
         required: false
         default: patch
 
-# Single-flight: a new auto-release supersedes any earlier queued/running
-# one instead of stacking. Without this, the 27-repo crates.io-closure burst
-# left 3 tear runs wedged in the runner queue (uncancellable via API) — they
-# blocked each other indefinitely. cancel-in-progress lets the newest run
-# claim the slot.
-concurrency:
-  group: auto-release-${{ github.ref }}
-  cancel-in-progress: true
+# NO concurrency override here — the substrate reusable
+# (rust-auto-release.yml) OWNS serialization: `cancel-in-progress: false`
+# grouped per-repository, so an in-flight release (bump → commit → tag →
+# push → SHIP, which rides the crates.io rate limit for up to 30m) ALWAYS
+# finishes; a second push queues behind it.
+#
+# The previous `cancel-in-progress: true` override here was the bug: the
+# bump job's own release-commit push triggered a SUPERSEDING run that
+# cancelled the run doing the actual crates.io publish (the `ship` job).
+# Result — the workspace bumped + tagged on every push (versions advanced)
+# but NEVER shipped to crates.io (tear-types/praca/… were never published).
+# Conform to the canonical 3-line shim; let the substrate govern.
 
 jobs:
   release:
