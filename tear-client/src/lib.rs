@@ -658,6 +658,17 @@ impl MultiplexerControl for Client {
         }
     }
 
+    fn apply_layout(
+        &self,
+        window: WindowId,
+        kind: tear_types::LayoutKind,
+    ) -> ControlResult<()> {
+        match self.rpc(Request::ApplyLayout { window, kind })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected("Ok", other)),
+        }
+    }
+
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()> {
         match self.rpc(Request::SendKeys {
             id,

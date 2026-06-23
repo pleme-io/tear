@@ -29,8 +29,9 @@ use portable_pty::PtySize;
 use tracing::{debug, info};
 
 use tear_types::{
-    ControlError, ControlResult, Direction, LeafRemoval, MultiplexerControl, PaneId, Rect,
-    SessionId, SplitOrientation, TearPane, TearSession, TearWindow, WindowId,
+    ControlError, ControlResult, Direction, LayoutKind, LayoutNode, LeafRemoval,
+    MultiplexerControl, PaneId, Rect, SessionId, SplitOrientation, TearPane, TearSession,
+    TearWindow, WindowId,
 };
 
 use std::sync::mpsc;
@@ -963,6 +964,43 @@ impl MultiplexerControl for InProcess {
         Ok(())
     }
 
+    fn apply_layout(&self, window: WindowId, kind: LayoutKind) -> ControlResult<()> {
+        // Locate the window's session under a read lock; release it before
+        // taking the write lock (the lock discipline this file keeps).
+        let sid = {
+            let r = self.registry.read();
+            r.sessions
+                .iter()
+                .find(|(_, s)| s.windows.contains_key(&window))
+                .map(|(id, _)| *id)
+        }
+        .ok_or(ControlError::NoSuchWindow(window))?;
+        // Re-arrange the window's existing panes (display order) into the
+        // named layout. Panes keep their PTYs — only the tree changes.
+        // Custom / empty → from_kind returns None → no-op.
+        let applied = {
+            let mut r = self.registry.write();
+            let Some(s) = r.sessions.get_mut(&sid) else {
+                return Err(ControlError::NoSuchWindow(window));
+            };
+            let Some(w) = s.windows.get_mut(&window) else {
+                return Err(ControlError::NoSuchWindow(window));
+            };
+            match LayoutNode::from_kind(kind, &w.layout.panes()) {
+                Some(tree) => {
+                    w.layout = tree;
+                    true
+                }
+                None => false,
+            }
+        };
+        if applied {
+            self.apply_layout_geometry(sid, window);
+        }
+        info!(window = %window, ?kind, applied, "tear-core: apply layout");
+        Ok(())
+    }
+
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()> {
         // Input-policy gate (#2).
         //
@@ -1833,5 +1871,55 @@ mod tests {
             origin_w_after > origin_w_before,
             "origin pane should have widened: {origin_w_after} !> {origin_w_before}"
         );
+    }
+
+    #[test]
+    fn apply_layout_rearranges_existing_panes_into_a_named_preset() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("layout", "/bin/sh").unwrap();
+        let s0 = inproc.get_session(sid).unwrap();
+        let wid = s0.active_window;
+        let p0 = s0.windows[&wid].active_pane;
+        // Build an arbitrary 3-pane shape: p0 | (p1 / p2).
+        let p1 = inproc.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
+        let _p2 = inproc.split_pane(p1, Direction::Below, "/bin/sh").unwrap();
+        let before: std::collections::BTreeSet<PaneId> =
+            inproc.get_window(wid).unwrap().1.layout.panes().into_iter().collect();
+
+        // Re-tile into an even horizontal row — panes keep their PTYs.
+        inproc.apply_layout(wid, LayoutKind::EvenHorizontal).unwrap();
+
+        let w = inproc.get_window(wid).unwrap().1;
+        let after: std::collections::BTreeSet<PaneId> =
+            w.layout.panes().into_iter().collect();
+        assert_eq!(before, after, "the same panes are preserved (PTYs kept)");
+        w.layout.validate().unwrap();
+        // EvenHorizontal of 3 = three equal thirds (the even-ratio refinement).
+        let rects = w.layout.compute_rects(Rect::sized(90, 24));
+        let mut widths: Vec<u16> = rects.iter().map(|(_, r)| r.w).collect();
+        widths.sort_unstable();
+        assert_eq!(widths, vec![30, 30, 30]);
+    }
+
+    #[test]
+    fn apply_layout_custom_leaves_the_tree_untouched() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("custom", "/bin/sh").unwrap();
+        let wid = inproc.get_session(sid).unwrap().active_window;
+        let p0 = inproc.get_session(sid).unwrap().windows[&wid].active_pane;
+        inproc.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
+        let before = inproc.get_window(wid).unwrap().1.layout.clone();
+        // Custom has no canonical arrangement → no-op.
+        inproc.apply_layout(wid, LayoutKind::Custom).unwrap();
+        assert_eq!(inproc.get_window(wid).unwrap().1.layout, before);
+    }
+
+    #[test]
+    fn apply_layout_unknown_window_is_no_such_window() {
+        let inproc = InProcess::new();
+        let err = inproc
+            .apply_layout(WindowId::from_seed("ghost"), LayoutKind::Tiled)
+            .unwrap_err();
+        assert!(matches!(err, ControlError::NoSuchWindow(_)));
     }
 }

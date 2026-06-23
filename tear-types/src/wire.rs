@@ -33,8 +33,8 @@ use std::io::{self, Read, Write};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ControlError, Direction, PaneId, PaneSnapshot, SessionId, TearPane, TearSession, TearWindow,
-    WindowId,
+    ControlError, Direction, LayoutKind, PaneId, PaneSnapshot, SessionId, TearPane, TearSession,
+    TearWindow, WindowId,
 };
 
 /// Every [`MultiplexerControl`] operation, encoded as a single
@@ -91,6 +91,10 @@ pub enum Request {
         id: PaneId,
         direction: Direction,
         delta_cells: i16,
+    },
+    ApplyLayout {
+        window: WindowId,
+        kind: LayoutKind,
     },
     SendKeys {
         id: PaneId,
@@ -420,6 +424,26 @@ mod tests {
             Request::SendKeys { id, bytes } => {
                 assert_eq!(id, pane);
                 assert_eq!(bytes, vec![1, 2, 3, 4]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_apply_layout_request() {
+        let window = WindowId::from_seed("win");
+        let req = Request::ApplyLayout {
+            window,
+            kind: LayoutKind::MainVertical,
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        let mut cur = Cursor::new(&buf);
+        let got: Request = read_msg(&mut cur).unwrap();
+        match got {
+            Request::ApplyLayout { window: w, kind } => {
+                assert_eq!(w, window);
+                assert_eq!(kind, LayoutKind::MainVertical);
             }
             _ => panic!("wrong variant"),
         }

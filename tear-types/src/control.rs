@@ -21,6 +21,7 @@ use thiserror::Error;
 use crate::{
     direction::Direction,
     id::{PaneId, SessionId, WindowId},
+    layout::LayoutKind,
     pane::TearPane,
     pane_snapshot::PaneSnapshot,
     session::TearSession,
@@ -159,6 +160,14 @@ pub trait MultiplexerControl: Send + Sync {
     /// Resize a pane along one axis. `delta_cells` is signed — negative
     /// shrinks. tmux's `resize-pane -L/-R/-U/-D`.
     fn resize_pane(&self, id: PaneId, direction: Direction, delta_cells: i16) -> ControlResult<()>;
+
+    /// Re-arrange a window's existing panes into a named [`LayoutKind`]
+    /// preset (tmux `select-layout`). The panes keep their PTYs and
+    /// scrollback — only the window's layout tree changes, then geometry
+    /// reflows. [`LayoutKind::Custom`] (and an empty window) is a no-op:
+    /// there is no canonical arrangement to impose, so the operator's
+    /// manual tree wins. Built on `LayoutNode::from_kind`.
+    fn apply_layout(&self, window: WindowId, kind: LayoutKind) -> ControlResult<()>;
 
     /// Set a pane's PTY size to an absolute `(cols, rows)`. Used by
     /// GPU consumers (mado at Phase 3.1) when the window the pane

@@ -865,6 +865,7 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         Request::ResizePane { id, direction, delta_cells } => {
             map_unit(inproc.resize_pane(id, direction, delta_cells))
         }
+        Request::ApplyLayout { window, kind } => map_unit(inproc.apply_layout(window, kind)),
         Request::SendKeys { id, bytes } => map_unit(inproc.send_keys(id, &bytes)),
         Request::SetInputPolicy { id, policy } => {
             map_unit(inproc.set_input_policy(id, policy))
