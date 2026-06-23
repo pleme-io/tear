@@ -163,7 +163,15 @@ impl LayoutNode {
             Self::Leaf { pane } if *pane == target => {
                 let origin = Self::leaf(*pane);
                 let fresh = Self::leaf(new_pane);
-                let keep = origin_ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                // A non-finite ratio survives `clamp` (NaN compares false
+                // both ways), producing a tree `validate` rejects — coerce
+                // it to a balanced split before clamping.
+                let sane = if origin_ratio.is_finite() {
+                    origin_ratio
+                } else {
+                    0.5
+                };
+                let keep = sane.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
                 let orientation = direction.orientation();
                 // The new pane lands after the origin for Right/Below,
                 // before it for Left/Above. `ratio` is always the
@@ -231,39 +239,45 @@ impl LayoutNode {
     /// zero (cell rounding may still squeeze a too-small window).
     pub fn resize_leaf(&mut self, target: PaneId, direction: Direction, delta_frac: f32) -> bool {
         let want = direction.orientation();
-        // Two-pass to satisfy the borrow checker: locate the governing
-        // split's path (shared borrow), then mutate its ratio (exclusive
-        // borrow). The side `target` descends into doesn't affect the
-        // sign — `direction` alone says which way the divider slides.
-        let Some((path, _target_in_a)) = self.governing_split_path(target, want) else {
+        // We enlarge `target` toward `direction`, so we want the divider
+        // it shares with its neighbour ON THAT SIDE. The neighbour lives
+        // on side `b` for Right/Below and side `a` for Left/Above — so we
+        // need the deepest matching-orientation split where `target`
+        // descends into the OPPOSITE (its own) side: `a` when growing
+        // toward b, `b` when growing toward a. If no such split exists,
+        // `target` is at the window edge that way — a no-op (false).
+        let toward_b = matches!(direction, Direction::Right | Direction::Below);
+        // Two-pass to satisfy the borrow checker: locate the path (shared
+        // borrow), then mutate the ratio (exclusive borrow).
+        let Some(path) = self.governing_split_path(target, want, toward_b) else {
             return false;
         };
         let Some(Self::Split { ratio, .. }) = self.split_at_path(&path) else {
             return false;
         };
-        // Right/Below slide the divider toward side `b`, enlarging side
-        // `a` (ratio up). Left/Above slide it toward `a`, enlarging `b`.
-        let sign = if matches!(direction, Direction::Right | Direction::Below) {
-            1.0
-        } else {
-            -1.0
-        };
-        *ratio = (*ratio + sign * delta_frac).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+        // Growing toward b raises the ratio (side `a` = target grows);
+        // toward a lowers it (side `b` = target grows). A non-finite delta
+        // leaves the ratio untouched (NaN must never reach the tree).
+        let sign = if toward_b { 1.0 } else { -1.0 };
+        let next = *ratio + sign * delta_frac;
+        *ratio = (if next.is_finite() { next } else { *ratio }).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
         true
     }
 
-    /// Path (sequence of sides) to the deepest split of orientation
-    /// `want` that has `target` in its subtree, plus whether `target`
-    /// descends into that split's side `a`. `true` in a path step means
-    /// "into side a".
+    /// Path to the deepest split of orientation `want` that contains
+    /// `target` on the required side (`need_side_a` ⇒ `target` in side
+    /// `a`, else side `b`). That is the divider `target` shares with its
+    /// neighbour on the opposite side. `true` in a path step means "into
+    /// side a". `None` when no such split exists (window edge that way).
     fn governing_split_path(
         &self,
         target: PaneId,
         want: SplitOrientation,
-    ) -> Option<(Vec<bool>, bool)> {
-        let mut best: Option<(Vec<bool>, bool)> = None;
+        need_side_a: bool,
+    ) -> Option<Vec<bool>> {
+        let mut best: Option<Vec<bool>> = None;
         let mut path: Vec<bool> = Vec::new();
-        self.walk_governing(target, want, &mut path, &mut best);
+        self.walk_governing(target, want, need_side_a, &mut path, &mut best);
         best
     }
 
@@ -271,8 +285,9 @@ impl LayoutNode {
         &self,
         target: PaneId,
         want: SplitOrientation,
+        need_side_a: bool,
         path: &mut Vec<bool>,
-        best: &mut Option<(Vec<bool>, bool)>,
+        best: &mut Option<Vec<bool>>,
     ) {
         if let Self::Split {
             orientation, a, b, ..
@@ -280,18 +295,19 @@ impl LayoutNode {
         {
             let in_a = a.contains_pane(target);
             let in_b = b.contains_pane(target);
-            if (in_a || in_b) && *orientation == want {
-                // This split governs target along the wanted axis; record
-                // it (deeper records overwrite shallower).
-                *best = Some((path.clone(), in_a));
+            // Record only a split of the wanted orientation where target
+            // is on the required side — that's the divider toward the
+            // neighbour we grow into. Deeper (closer) overwrites shallower.
+            if *orientation == want && ((in_a && need_side_a) || (in_b && !need_side_a)) {
+                *best = Some(path.clone());
             }
             if in_a {
                 path.push(true);
-                a.walk_governing(target, want, path, best);
+                a.walk_governing(target, want, need_side_a, path, best);
                 path.pop();
             } else if in_b {
                 path.push(false);
-                b.walk_governing(target, want, path, best);
+                b.walk_governing(target, want, need_side_a, path, best);
                 path.pop();
             }
         }
@@ -897,6 +913,117 @@ mod tests {
         let after = n.compute_rects(Rect::sized(80, 24));
         let w2_after = after.iter().find(|(p, _)| *p == PaneId(2)).unwrap().1.w;
         assert!(w2_after > w2_before, "{w2_after} !> {w2_before}");
+    }
+
+    #[test]
+    fn resize_leaf_grows_toward_outer_neighbour_across_a_deeper_split() {
+        // 1 | (2 | 3): pane 2 is the LEFT child of the inner split, but
+        // its on-screen left neighbour is pane 1 across the OUTER split.
+        // "grow 2 Left" must enlarge pane 2 (regression: the old sign-only
+        // logic slid the inner 2|3 divider and SHRANK pane 2).
+        let mut n = LayoutNode::split(
+            SplitOrientation::Vertical,
+            LayoutNode::leaf(PaneId(1)),
+            LayoutNode::split(
+                SplitOrientation::Vertical,
+                LayoutNode::leaf(PaneId(2)),
+                LayoutNode::leaf(PaneId(3)),
+            ),
+        );
+        let b = Rect::sized(90, 24);
+        let w2_before = n.compute_rects(b).iter().find(|(p, _)| *p == PaneId(2)).unwrap().1.w;
+        assert!(n.resize_leaf(PaneId(2), Direction::Left, 0.2));
+        let w2_after = n.compute_rects(b).iter().find(|(p, _)| *p == PaneId(2)).unwrap().1.w;
+        assert!(w2_after > w2_before, "grow-Left should enlarge pane 2: {w2_before} -> {w2_after}");
+    }
+
+    #[test]
+    fn resize_leaf_side_b_of_deeper_split_grows_right_toward_outer_neighbour() {
+        // (1 | 2) | 3: pane 2 is the RIGHT child of the inner split; its
+        // on-screen right neighbour is pane 3 across the OUTER split.
+        // "grow 2 Right" must enlarge pane 2 (the symmetric regression).
+        let mut n = LayoutNode::split(
+            SplitOrientation::Vertical,
+            LayoutNode::split(
+                SplitOrientation::Vertical,
+                LayoutNode::leaf(PaneId(1)),
+                LayoutNode::leaf(PaneId(2)),
+            ),
+            LayoutNode::leaf(PaneId(3)),
+        );
+        let b = Rect::sized(90, 24);
+        let w2_before = n.compute_rects(b).iter().find(|(p, _)| *p == PaneId(2)).unwrap().1.w;
+        assert!(n.resize_leaf(PaneId(2), Direction::Right, 0.2));
+        let w2_after = n.compute_rects(b).iter().find(|(p, _)| *p == PaneId(2)).unwrap().1.w;
+        assert!(w2_after > w2_before, "grow-Right should enlarge pane 2: {w2_before} -> {w2_after}");
+    }
+
+    #[test]
+    fn resize_leaf_no_neighbour_that_way_is_noop() {
+        // 1 | 2: pane 1 is leftmost — it has no left neighbour, so
+        // "grow 1 Left" finds no governing divider and is a no-op.
+        let mut n = LayoutNode::split(
+            SplitOrientation::Vertical,
+            LayoutNode::leaf(PaneId(1)),
+            LayoutNode::leaf(PaneId(2)),
+        );
+        assert!(!n.resize_leaf(PaneId(1), Direction::Left, 0.2));
+    }
+
+    #[test]
+    fn resize_leaf_grows_focused_pane_in_all_four_directions() {
+        // Exhaustive sign coverage. For each direction, build a layout
+        // where the focused pane HAS a neighbour that way, and assert the
+        // focused pane grows. This pins every (side × direction) sign
+        // combination — the bug the original 3 tests missed.
+        let cases: &[(SplitOrientation, Direction)] = &[
+            (SplitOrientation::Vertical, Direction::Right),
+            (SplitOrientation::Vertical, Direction::Left),
+            (SplitOrientation::Horizontal, Direction::Below),
+            (SplitOrientation::Horizontal, Direction::Above),
+        ];
+        for &(orient, dir) in cases {
+            // Two-pane split on the matching axis; focus the pane that has
+            // a neighbour in `dir` (the `a`-side pane for Right/Below, the
+            // `b`-side pane for Left/Above).
+            let (focus, other) = match dir {
+                Direction::Right | Direction::Below => (PaneId(1), PaneId(2)),
+                Direction::Left | Direction::Above => (PaneId(2), PaneId(1)),
+            };
+            let mut n = LayoutNode::split(
+                orient,
+                LayoutNode::leaf(PaneId(1)),
+                LayoutNode::leaf(PaneId(2)),
+            );
+            let b = Rect::sized(80, 24);
+            let axis = |r: Rect| if orient == SplitOrientation::Vertical { r.w } else { r.h };
+            let before = axis(n.compute_rects(b).iter().find(|(p, _)| *p == focus).unwrap().1);
+            assert!(n.resize_leaf(focus, dir, 0.2), "{dir:?} should find a divider");
+            let after = axis(n.compute_rects(b).iter().find(|(p, _)| *p == focus).unwrap().1);
+            assert!(after > before, "focus pane should grow {dir:?}: {before} -> {after}");
+            let _ = other;
+        }
+    }
+
+    #[test]
+    fn split_leaf_nan_ratio_coerces_to_valid_split() {
+        // A NaN ratio survives f32::clamp; split_leaf must coerce it so the
+        // resulting tree still validates (its doc promises a clamped ratio).
+        let mut n = LayoutNode::leaf(PaneId(1));
+        assert!(n.split_leaf(PaneId(1), PaneId(2), Direction::Right, f32::NAN));
+        n.validate().unwrap();
+    }
+
+    #[test]
+    fn resize_leaf_nan_delta_leaves_tree_valid() {
+        let mut n = LayoutNode::split(
+            SplitOrientation::Vertical,
+            LayoutNode::leaf(PaneId(1)),
+            LayoutNode::leaf(PaneId(2)),
+        );
+        // A NaN delta must not poison the ratio.
+        n.resize_leaf(PaneId(1), Direction::Right, f32::NAN);
+        n.validate().unwrap();
     }
 
     #[test]

@@ -760,6 +760,13 @@ impl MultiplexerControl for InProcess {
                     for p in &panes_to_kill {
                         s.panes.remove(p);
                     }
+                    // Retarget focus off the removed window, else
+                    // active_window dangles and the s.windows[&active_window]
+                    // index sites panic.
+                    if s.active_window == id {
+                        s.active_window =
+                            s.windows.keys().next().copied().unwrap_or(WindowId::NULL);
+                    }
                     break;
                 }
             }
@@ -882,9 +889,15 @@ impl MultiplexerControl for InProcess {
                 }
                 // The window's only pane — nothing the tree can represent
                 // remains, so the whole window closes (tmux semantics).
+                // Retarget active_window if it pointed here, else it would
+                // dangle at a removed id and panic the
+                // s.windows[&active_window] index sites.
                 LeafRemoval::WasRoot => {
                     s.panes.remove(&id);
                     s.windows.remove(&wid);
+                    if s.active_window == wid {
+                        s.active_window = s.windows.keys().next().copied().unwrap_or(WindowId::NULL);
+                    }
                     false
                 }
             }
@@ -1759,6 +1772,31 @@ mod tests {
         assert_eq!(w.active_pane, origin);
         assert!(!s.panes.contains_key(&new));
         w.layout.validate().unwrap();
+    }
+
+    #[test]
+    fn killing_active_windows_last_pane_retargets_active_window() {
+        // Regression: kill_pane's WasRoot arm removed the window but left
+        // session.active_window pointing at the removed id, panicking the
+        // s.windows[&active_window] index sites. A second window must
+        // inherit focus when the active window's last pane is killed.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("multi", "/bin/sh").unwrap();
+        let w1 = inproc.get_session(sid).unwrap().active_window;
+        // A second window — and make it the active one we then kill.
+        let w2 = inproc.new_window(sid, "second", "/bin/sh").unwrap();
+        inproc.select_window(w2).unwrap();
+        let only_pane_w2 = {
+            let s = inproc.get_session(sid).unwrap();
+            s.windows[&w2].active_pane
+        };
+        inproc.kill_pane(only_pane_w2).unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        // w2 gone, focus fell back to the surviving window — and crucially
+        // active_window still indexes a live window (no panic).
+        assert!(!s.windows.contains_key(&w2));
+        assert_eq!(s.active_window, w1);
+        let _ = &s.windows[&s.active_window]; // must not panic
     }
 
     #[test]
