@@ -193,6 +193,7 @@ impl Praca {
         PracaSnapshot {
             index: self.index.clone(),
             binding: self.binding.clone(),
+            definitions: self.definitions.clone(),
             policy: self.policy.into(),
             name_style: self.name_style.into(),
         }
@@ -207,8 +208,9 @@ impl Praca {
         Self {
             index: snap.index,
             binding: snap.binding,
-            // Latent presets are not persisted (yet) — start empty on reload.
-            definitions: DefinitionIndex::new(),
+            // Latent presets now persist + restore (older snapshots without
+            // the field default to an empty catalog).
+            definitions: snap.definitions,
             policy: snap.policy.into(),
             name_style: snap.name_style.into(),
         }

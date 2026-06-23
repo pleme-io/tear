@@ -15,15 +15,18 @@
 
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use tear_types::DefinitionId;
 
 use crate::definition::SessionDefinition;
 use crate::index::rank;
 
 /// An in-memory catalog of latent session presets, searchable through the
-/// same ranking as live sessions.
-#[derive(Clone, Debug, Default)]
+/// same ranking as live sessions. Serde-friendly so it can persist in a
+/// [`crate::PracaSnapshot`] (presets survive a restart).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DefinitionIndex {
+    #[serde(default)]
     defs: Vec<SessionDefinition>,
 }
 

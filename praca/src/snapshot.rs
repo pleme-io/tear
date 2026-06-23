@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::index::SessionIndex;
 use crate::AttachPolicy;
+use crate::DefinitionIndex;
 use crate::NameStyle;
 use crate::ProjectBinding;
 
@@ -61,7 +62,9 @@ impl From<PolicyMirror> for AttachPolicy {
 /// praça store. `index` carries every [`crate::SessionRecord`] (with its
 /// frecency counters); `binding` carries the project-root → session map;
 /// `policy` + `name_style` carry the automation configuration.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq` — the persisted `definitions` catalog carries `SessionDefinition`s
+// with an `f32` split ratio (`PartialEq` only).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PracaSnapshot {
     /// Searchable catalog of every tracked session, with frecency.
     #[serde(default)]
@@ -69,6 +72,12 @@ pub struct PracaSnapshot {
     /// Persisted project-root → session bindings (the cd-attach memory).
     #[serde(default)]
     pub binding: ProjectBinding,
+    /// Persisted latent-preset catalog — saved/authored definitions that
+    /// survive a restart (so a preset stays launchable across sessions).
+    /// `#[serde(default)]` keeps older snapshots (without this field)
+    /// loadable: they deserialize to an empty catalog.
+    #[serde(default)]
+    pub definitions: DefinitionIndex,
     /// Auto-attach aggressiveness.
     #[serde(default)]
     pub policy: PolicyMirror,
@@ -130,5 +139,38 @@ mod tests {
         let r = restored.index.get(sid("tide")).unwrap();
         assert_eq!(r.last_seen, 1_999);
         assert_eq!(r.visits, 2); // for_project starts at 1, +1 visit.
+    }
+
+    #[test]
+    fn snapshot_persists_and_restores_the_latent_preset_catalog() {
+        use crate::{NameStyle, SessionDefinition};
+        let mut p = Praca::new();
+        p.definitions.upsert(SessionDefinition::single_pane(
+            "/code/pleme-io/substrate",
+            "/bin/zsh",
+            NameStyle::Emoji,
+            1_000,
+        ));
+        let snap = p.to_snapshot();
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: PracaSnapshot = serde_json::from_str(&json).unwrap();
+        // The catalog survives the round-trip — a preset is launchable
+        // after a restart.
+        let restored = Praca::from_snapshot(back);
+        assert_eq!(restored.definitions.len(), 1);
+        assert!(restored
+            .definitions
+            .by_project(Path::new("/code/pleme-io/substrate"))
+            .is_some());
+    }
+
+    #[test]
+    fn old_snapshot_without_definitions_loads_empty() {
+        // Backward compat: a pre-feature snapshot JSON (no `definitions`
+        // field) must still deserialize, defaulting to an empty catalog.
+        let snap: PracaSnapshot = serde_json::from_str("{}").expect("empty snapshot loads");
+        assert!(snap.definitions.is_empty());
+        let p = Praca::from_snapshot(snap);
+        assert!(p.definitions.is_empty());
     }
 }
