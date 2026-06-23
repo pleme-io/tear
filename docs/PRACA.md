@@ -5,6 +5,11 @@
 > Sessions are **places you inhabit**; praça is the typed layer that makes
 > finding, entering, creating, and organizing them muscle-memory.
 
+> **Typed model + tier ledger:** [`SESSION-TYPESCAPE.md`](./SESSION-TYPESCAPE.md)
+> is the canonical type model (definition↔instance, model↔view, the
+> illegal-state ledger, the Shipped/M2/M5/Phase-6 tiers). Read it for
+> *what is true by construction*; read this file for *how praça uses it*.
+
 praça sits **on top of tear** (which owns the live session/pane model via
 `MultiplexerControl`), surfaces **through mado** (UI + keymap), takes naming
 + keybinds from **ishou** (`FleetSessionNames`, `FleetKeybinds`), and authors
