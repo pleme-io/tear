@@ -19,6 +19,8 @@
 //! **unrepresentable** — [`LayoutPlan`]'s leaves hold [`PaneSlot`], not
 //! [`PaneId`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -248,6 +250,51 @@ impl LayoutPlan {
             },
         }
     }
+
+    /// Harvest a *live* [`LayoutNode`] back into a plan — the inverse of
+    /// [`realize`](Self::realize). Assigns `PaneSlot(0)`, `(1)`, … to the
+    /// tree's leaves in traversal order, producing a structurally-identical
+    /// plan (same shape + ratios) plus the `slot → PaneId` map recording
+    /// which live pane each slot stood for. This is how a running layout is
+    /// captured as a reusable preset: `from_node` dehydrates the live tree,
+    /// the plan + spawn specs become a [`crate::SessionDefinition`].
+    ///
+    /// Round-trips with `realize` both ways: `from_node(realize(plan))`
+    /// returns `plan` (when its slots are already `0..n` in traversal
+    /// order), and `realize(from_node(node).0, |s| map[&s])` returns `node`.
+    #[must_use]
+    pub fn from_node(node: &LayoutNode) -> (LayoutPlan, BTreeMap<PaneSlot, PaneId>) {
+        let mut next = 0u32;
+        let mut map = BTreeMap::new();
+        let plan = Self::harvest(node, &mut next, &mut map);
+        (plan, map)
+    }
+
+    fn harvest(
+        node: &LayoutNode,
+        next: &mut u32,
+        map: &mut BTreeMap<PaneSlot, PaneId>,
+    ) -> LayoutPlan {
+        match node {
+            LayoutNode::Leaf { pane } => {
+                let slot = PaneSlot(*next);
+                *next += 1;
+                map.insert(slot, *pane);
+                LayoutPlan::Leaf { slot }
+            }
+            LayoutNode::Split {
+                orientation,
+                ratio,
+                a,
+                b,
+            } => LayoutPlan::Split {
+                orientation: *orientation,
+                ratio: *ratio,
+                a: Box::new(Self::harvest(a, next, map)),
+                b: Box::new(Self::harvest(b, next, map)),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,5 +381,64 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: SpawnSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    fn sample_plan() -> LayoutPlan {
+        // slot 0 | (slot 1 / slot 2), asymmetric ratios.
+        LayoutPlan::Split {
+            orientation: SplitOrientation::Vertical,
+            ratio: 0.3,
+            a: Box::new(LayoutPlan::leaf(PaneSlot(0))),
+            b: Box::new(LayoutPlan::Split {
+                orientation: SplitOrientation::Horizontal,
+                ratio: 0.7,
+                a: Box::new(LayoutPlan::leaf(PaneSlot(1))),
+                b: Box::new(LayoutPlan::leaf(PaneSlot(2))),
+            }),
+        }
+    }
+
+    #[test]
+    fn from_node_dehydrates_a_live_tree_with_canonical_slots() {
+        // realize the plan, then harvest it back. Slots come out 0,1,2 in
+        // traversal order; the map records the minted panes.
+        let plan = sample_plan();
+        let mut mint = |s: PaneSlot| PaneId(100 + u64::from(s.0));
+        let node = plan.realize(&mut mint);
+        let (plan2, map) = LayoutPlan::from_node(&node);
+        // Structure + ratios round-trip; slots are already canonical here.
+        assert_eq!(plan2, plan);
+        assert_eq!(map[&PaneSlot(0)], PaneId(100));
+        assert_eq!(map[&PaneSlot(1)], PaneId(101));
+        assert_eq!(map[&PaneSlot(2)], PaneId(102));
+    }
+
+    #[test]
+    fn realize_of_from_node_reconstructs_the_original_live_tree() {
+        // The other direction: harvest an arbitrary live tree, then realize
+        // the plan back through the recorded map — exactly the input tree.
+        let node = LayoutNode::Split {
+            orientation: SplitOrientation::Horizontal,
+            ratio: 0.4,
+            a: Box::new(LayoutNode::leaf(PaneId(7))),
+            b: Box::new(LayoutNode::Split {
+                orientation: SplitOrientation::Vertical,
+                ratio: 0.6,
+                a: Box::new(LayoutNode::leaf(PaneId(9))),
+                b: Box::new(LayoutNode::leaf(PaneId(2))),
+            }),
+        };
+        let (plan, map) = LayoutPlan::from_node(&node);
+        let mut mint = |s: PaneSlot| map[&s];
+        assert_eq!(plan.realize(&mut mint), node);
+        // The plan carries no live id — it references only slots.
+        assert_eq!(plan.slots(), vec![PaneSlot(0), PaneSlot(1), PaneSlot(2)]);
+    }
+
+    #[test]
+    fn from_node_of_a_single_pane_is_one_slot() {
+        let (plan, map) = LayoutPlan::from_node(&LayoutNode::leaf(PaneId(42)));
+        assert_eq!(plan, LayoutPlan::leaf(PaneSlot(0)));
+        assert_eq!(map[&PaneSlot(0)], PaneId(42));
     }
 }
