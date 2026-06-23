@@ -25,3 +25,9 @@ serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# Integration-only: the real in-process multiplexer. praca's PRODUCTION
+# code depends on tear-types alone (the MultiplexerControl trait) — this
+# dev-dep lets the instantiate interpreter be tested against the actual
+# backend (real PTYs, the shipped layout algebra) instead of a hand mock.
+# Acyclic: tear-core does not depend on praca.
+tear-core = { workspace = true }
