@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use ishou_tokens::{FleetSessionNames, SessionName, SessionNameStyle};
 use tear_types::id::SessionId;
+use tear_types::{DefinitionId, InstanceId};
 
 use crate::binding::ProjectBinding;
 use crate::index::SessionIndex;
@@ -44,6 +45,33 @@ pub enum AttachDecision {
     /// The inner decision is what *would* happen under `AutoSwitch`; the
     /// caller surfaces it (a hint/toast) rather than acting on it.
     Suggest(Box<AttachDecision>),
+}
+
+/// The typescaped successor to [`AttachDecision`] — adds the missing
+/// `Instantiate` branch (pressure-test illegal state #5) so "realize a
+/// known definition" is a first-class typed outcome, and speaks the new
+/// two-tier id vocabulary ([`InstanceId`] for live handles,
+/// [`DefinitionId`] for durable definitions). M1 ships this alongside the
+/// shipped [`AttachDecision`]; the `decide` rewrite onto it is M2.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttachAction {
+    /// Do nothing — still inside the current session's project (or
+    /// automation is off).
+    Stay,
+    /// Switch to an existing *live* instance bound to the destination.
+    SwitchTo(InstanceId),
+    /// A definition for the destination exists but has no live instance —
+    /// instantiate it (run the blueprint, spawn its panes), then attach.
+    /// This is the branch [`AttachDecision`] simply could not express.
+    Instantiate(DefinitionId),
+    /// No definition exists yet for the destination — spawn a fresh
+    /// auto-named session, which *creates* the definition.
+    SpawnNew {
+        /// The resolved project root the new session binds to.
+        project_root: PathBuf,
+        /// The deterministic auto-name for that project.
+        name: SessionName,
+    },
 }
 
 /// How aggressively the engine acts on a `cd`.

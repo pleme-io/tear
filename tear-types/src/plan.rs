@@ -103,6 +103,32 @@ pub enum LayoutPlan {
     },
 }
 
+/// The latent mirror of a [`crate::TearWindow`]: a named window with a
+/// layout plan and the slot that should be focused after instantiation.
+/// Stored inside a session definition; carries no runtime ids — a
+/// definition can hold several of these (multi-window sessions).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlan {
+    /// Window name (`work`, `logs`, …).
+    pub name: String,
+    /// The pane layout, over slots.
+    pub layout: LayoutPlan,
+    /// The slot that becomes `active_pane` after instantiation.
+    pub active_slot: PaneSlot,
+}
+
+impl WindowPlan {
+    /// A single-pane window over one slot, that slot active.
+    #[must_use]
+    pub fn single(name: impl Into<String>, slot: PaneSlot) -> Self {
+        Self {
+            name: name.into(),
+            layout: LayoutPlan::leaf(slot),
+            active_slot: slot,
+        }
+    }
+}
+
 /// Why a [`LayoutPlan`] failed [`LayoutPlan::validate`]. Mirrors the
 /// shipped [`crate::LayoutError`] discipline for the plan's id space
 /// (slots, not panes). A plan that fails to validate never reaches
@@ -159,6 +185,18 @@ impl LayoutPlan {
         match self {
             Self::Leaf { .. } => 1,
             Self::Split { a, b, .. } => a.slot_count() + b.slot_count(),
+        }
+    }
+
+    /// The first slot in left-to-right (top-to-bottom) order — the slot
+    /// the session's initial pane (from `new_session`) holds when the plan
+    /// is instantiated. The interpreter spawns this slot's shell first,
+    /// then splits outward to build the rest of the tree.
+    #[must_use]
+    pub fn leftmost_slot(&self) -> PaneSlot {
+        match self {
+            Self::Leaf { slot } => *slot,
+            Self::Split { a, .. } => a.leftmost_slot(),
         }
     }
 

@@ -39,16 +39,20 @@
 
 pub mod attach;
 pub mod binding;
+pub mod definition;
 pub mod frecency;
 pub mod index;
+pub mod instance_registry;
 pub mod project;
 pub mod record;
 
-pub use attach::{decide, decide_with_root, AttachDecision, AttachPolicy};
+pub use attach::{decide, decide_with_root, AttachAction, AttachDecision, AttachPolicy};
 pub use binding::ProjectBinding;
+pub use definition::{DefinitionError, SessionDefinition, SessionOrigin};
 pub use index::SessionIndex;
+pub use instance_registry::InstanceRegistry;
 pub use project::{find_project_root, find_project_root_with, project_root, project_root_with};
-pub use record::{NameStyle, SessionRecord, SessionState, ThemeMirror};
+pub use record::{display_name_for, identity_for, NameStyle, SessionRecord, SessionState, ThemeMirror};
 pub use snapshot::{PolicyMirror, PracaSnapshot};
 
 // Re-export the ishou name primitives so consumers (tear-daemon, mado) can

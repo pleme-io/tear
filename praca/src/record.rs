@@ -111,6 +111,38 @@ impl From<ThemeMirror> for SessionTheme {
 /// `ishou_tokens::stable_seed` of the project root (the same seed
 /// `FleetSessionNames::from_project_path` uses), so a record's name is
 /// stable for its project across restarts.
+/// Resolve the emoji identity for a `(name_seed, theme)` pair — the one
+/// place the fleet name lattice is consulted. Shared by [`SessionRecord`]
+/// and `SessionDefinition` so the naming logic lives once (the prime
+/// directive: a pattern used twice becomes a shared helper).
+#[must_use]
+pub fn identity_for(name_seed: u64, theme: Option<ThemeMirror>) -> SessionIdentity {
+    match theme {
+        Some(t) => FleetSessionNames::in_theme(name_seed, t.into()),
+        None => FleetSessionNames::identity(name_seed),
+    }
+}
+
+/// Resolve the display name for a `(name_seed, style, theme, custom_name)`
+/// tuple: the operator's custom name if set, else the rendered themed
+/// emoji name (`🌊 tide`). The shared counterpart to [`identity_for`].
+#[must_use]
+pub fn display_name_for(
+    name_seed: u64,
+    name_style: NameStyle,
+    theme: Option<ThemeMirror>,
+    custom_name: Option<&str>,
+) -> String {
+    match custom_name {
+        Some(n) => n.to_string(),
+        None => SessionName {
+            identity: identity_for(name_seed, theme),
+            style: name_style.into(),
+        }
+        .to_string(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
     /// Stable daemon handle.
@@ -210,20 +242,14 @@ impl SessionRecord {
     /// when a theme is set, else the whole-pool [`FleetSessionNames::identity`].
     #[must_use]
     pub fn identity(&self) -> SessionIdentity {
-        match self.theme {
-            Some(t) => FleetSessionNames::in_theme(self.name_seed, t.into()),
-            None => FleetSessionNames::identity(self.name_seed),
-        }
+        identity_for(self.name_seed, self.theme)
     }
 
     /// The session's display name: the operator's custom name if set, else
     /// the rendered themed emoji name (`🌊 tide`).
     #[must_use]
     pub fn display_name(&self) -> String {
-        match &self.custom_name {
-            Some(n) => n.clone(),
-            None => self.name().to_string(),
-        }
+        display_name_for(self.name_seed, self.name_style, self.theme, self.custom_name.as_deref())
     }
 
     /// Rename the session (operator jumped in and gave it a human name).

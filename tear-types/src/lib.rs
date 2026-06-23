@@ -67,7 +67,7 @@ pub use id::{DefinitionId, InstanceId, PaneId, SessionId, WindowId};
 pub use keybind::{Action, KeyBind, KeyChord, KeyTable, KeyTableName};
 pub use layout::{LayoutError, LayoutKind, LayoutNode, LeafRemoval, Size, MIN_RATIO};
 pub use live::{Durability, LiveSession};
-pub use plan::{LayoutPlan, PaneSlot, PlanError, SpawnSpec};
+pub use plan::{LayoutPlan, PaneSlot, PlanError, SpawnSpec, WindowPlan};
 pub use block::Block;
 pub use cast::{CastParseError, CastRow, CastRowKind};
 pub use pane::{InputPolicy, PaneState, PaneStats, TearPane};
