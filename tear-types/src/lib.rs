@@ -44,6 +44,7 @@ pub mod control;
 #[cfg(feature = "engate")]
 pub mod engate_wrap;
 pub mod direction;
+pub mod geometry;
 pub mod id;
 pub mod keybind;
 pub mod layout;
@@ -59,9 +60,10 @@ pub mod wire;
 
 pub use control::{ControlError, ControlResult, MultiplexerControl};
 pub use direction::{Direction, SplitOrientation};
+pub use geometry::Rect;
 pub use id::{PaneId, SessionId, WindowId};
 pub use keybind::{Action, KeyBind, KeyChord, KeyTable, KeyTableName};
-pub use layout::{LayoutKind, LayoutNode, Size};
+pub use layout::{LayoutError, LayoutKind, LayoutNode, LeafRemoval, Size, MIN_RATIO};
 pub use block::Block;
 pub use cast::{CastParseError, CastRow, CastRowKind};
 pub use pane::{InputPolicy, PaneState, PaneStats, TearPane};

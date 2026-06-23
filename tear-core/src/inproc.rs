@@ -29,8 +29,8 @@ use portable_pty::PtySize;
 use tracing::{debug, info};
 
 use tear_types::{
-    ControlError, ControlResult, Direction, MultiplexerControl, PaneId, SessionId, TearPane,
-    TearSession, TearWindow, WindowId,
+    ControlError, ControlResult, Direction, LeafRemoval, MultiplexerControl, PaneId, Rect,
+    SessionId, SplitOrientation, TearPane, TearSession, TearWindow, WindowId,
 };
 
 use std::sync::mpsc;
@@ -783,17 +783,20 @@ impl MultiplexerControl for InProcess {
     fn split_pane(
         &self,
         origin: PaneId,
-        _direction: Direction,
+        direction: Direction,
         shell: &str,
     ) -> ControlResult<PaneId> {
-        // M0 minimal viable split: locate parent, add a leaf to the
-        // window's layout as a balanced split with the origin. The
-        // full directional / ratio logic lands in M2.
+        // Correct split: replace ONLY the origin leaf in the window's
+        // layout tree with a balanced split (origin, new). Every other
+        // pane keeps its slot — no whole-window re-wrap. Geometry is
+        // reflowed from the tree afterwards (apply_layout_geometry).
         let (sid, wid) = self
             .registry
             .read()
             .locate_pane(origin)
             .ok_or(ControlError::NoSuchPane(origin))?;
+        // Placeholder spawn size; apply_layout_geometry SIGWINCHes the
+        // real per-pane geometry right after the PTY is up.
         let size = (80, 12);
         let pid = {
             let mut r = self.registry.write();
@@ -816,23 +819,25 @@ impl MultiplexerControl for InProcess {
                     input_policy: tear_types::InputPolicy::default(),
                 },
             );
-            // Replace the window's layout with a balanced split.
-            if let Some(w) = s.windows.get_mut(&wid) {
-                let old = std::mem::replace(
-                    &mut w.layout,
-                    tear_types::LayoutNode::leaf(tear_types::PaneId::NULL),
-                );
-                w.layout = tear_types::LayoutNode::split(
-                    _direction.orientation(),
-                    old,
-                    tear_types::LayoutNode::leaf(new_pid),
-                );
-                w.active_pane = new_pid;
+            // Split the matched leaf only. If `origin` isn't in this
+            // window's tree (it should be — we just located it), roll
+            // back the pane we inserted so we never leave an orphan.
+            let split_ok = s.windows.get_mut(&wid).is_some_and(|w| {
+                let ok = w.layout.split_leaf(origin, new_pid, direction, 0.5);
+                if ok {
+                    w.active_pane = new_pid;
+                }
+                ok
+            });
+            if !split_ok {
+                s.panes.remove(&new_pid);
+                return Err(ControlError::NoSuchPane(origin));
             }
             new_pid
         };
         self.spawn_pty_for(pid, shell, size)
             .map_err(ControlError::Internal)?;
+        self.apply_layout_geometry(sid, wid);
         info!(pane = %pid, "tear-core: split pane");
         Ok(pid)
     }
@@ -843,24 +848,50 @@ impl MultiplexerControl for InProcess {
         // guard (reverse creation order), i.e. the kill + reap ran
         // with the ptys lock held. Same wedge class as kill_session;
         // same cure: detach under the locks, drop outside them.
+        let Some((sid, wid)) = self.registry.read().locate_pane(id) else {
+            return Err(ControlError::NoSuchPane(id));
+        };
         let detached = self.detach_panes(&[id]);
-        let found = {
+        // true → pane removed from a multi-pane window, geometry needs a
+        // reflow; false → the window collapsed (was its last pane) so
+        // there's nothing left to reflow.
+        let needs_reflow = {
             let mut r = self.registry.write();
-            let mut found = false;
-            for s in r.sessions.values_mut() {
-                if s.panes.remove(&id).is_some() {
-                    found = true;
-                    // Layout update — M2 will properly rebalance the
-                    // tree. For now we leave the leaf reference dangling;
-                    // the renderer treats a missing pane as blank.
-                    break;
+            let Some(s) = r.sessions.get_mut(&sid) else {
+                drop(detached);
+                return Err(ControlError::NoSuchSession(sid));
+            };
+            let outcome = match s.windows.get_mut(&wid) {
+                Some(w) => w.layout.remove_leaf(id),
+                None => LeafRemoval::NotFound,
+            };
+            match outcome {
+                // Parent split collapsed into the sibling — the flat pane
+                // record goes too, and active_pane retargets if it pointed
+                // at the dead pane. NotFound heals a pre-existing dangling
+                // record the same way.
+                LeafRemoval::Removed | LeafRemoval::NotFound => {
+                    s.panes.remove(&id);
+                    if let Some(w) = s.windows.get_mut(&wid) {
+                        if w.active_pane == id {
+                            w.active_pane =
+                                w.layout.panes().first().copied().unwrap_or(PaneId::NULL);
+                        }
+                    }
+                    true
+                }
+                // The window's only pane — nothing the tree can represent
+                // remains, so the whole window closes (tmux semantics).
+                LeafRemoval::WasRoot => {
+                    s.panes.remove(&id);
+                    s.windows.remove(&wid);
+                    false
                 }
             }
-            found
         };
         drop(detached);
-        if !found {
-            return Err(ControlError::NoSuchPane(id));
+        if needs_reflow {
+            self.apply_layout_geometry(sid, wid);
         }
         Ok(())
     }
@@ -883,11 +914,39 @@ impl MultiplexerControl for InProcess {
     fn resize_pane(
         &self,
         id: PaneId,
-        _direction: Direction,
-        _delta_cells: i16,
+        direction: Direction,
+        delta_cells: i16,
     ) -> ControlResult<()> {
-        // M2 — proper layout-tree resize. For M0 we acknowledge.
-        let _ = self.registry.read().locate_pane(id).ok_or(ControlError::NoSuchPane(id))?;
+        // Slide the divider of the split governing `id` along `direction`.
+        // delta_cells is converted to a fraction of the window's span on
+        // the relevant axis, then resize_leaf clamps + applies it. If the
+        // pane has no governing split that way (single pane / wrong axis)
+        // it's a no-op — still Ok, like tmux.
+        let (sid, wid) = self
+            .registry
+            .read()
+            .locate_pane(id)
+            .ok_or(ControlError::NoSuchPane(id))?;
+        {
+            let mut r = self.registry.write();
+            let Some(s) = r.sessions.get_mut(&sid) else {
+                return Err(ControlError::NoSuchSession(sid));
+            };
+            let Some(w) = s.windows.get_mut(&wid) else {
+                return Err(ControlError::NoSuchWindow(wid));
+            };
+            let span = match direction.orientation() {
+                SplitOrientation::Vertical => w.size_cells.0,
+                SplitOrientation::Horizontal => w.size_cells.1,
+            };
+            let delta_frac = if span > 0 {
+                f32::from(delta_cells) / f32::from(span)
+            } else {
+                0.0
+            };
+            w.layout.resize_leaf(id, direction, delta_frac);
+        }
+        self.apply_layout_geometry(sid, wid);
         Ok(())
     }
 
@@ -1003,6 +1062,52 @@ impl MultiplexerControl for InProcess {
             grid.lock().resize(cols as usize, rows as usize);
         }
         Ok(())
+    }
+}
+
+/// Inherent helpers that aren't part of the [`MultiplexerControl`] trait
+/// surface — internal reflow + geometry plumbing the trait methods call.
+impl InProcess {
+    /// Reflow a window's panes from its [`LayoutNode`] tree — the single
+    /// geometry source. Computes every pane's rect against the window's
+    /// cell size, writes the cell size/origin onto each flat pane record,
+    /// and SIGWINCHes each PTY to match. `split_pane`/`kill_pane`/
+    /// `resize_pane` all call this after mutating the tree, so what a
+    /// window displays always matches its layout. Best-effort: a pane
+    /// squeezed to zero cells (too-small window) or whose PTY hasn't
+    /// spawned yet is skipped, never an error.
+    fn apply_layout_geometry(&self, sid: SessionId, wid: WindowId) {
+        // Phase 1 — under the registry lock, recompute rects + stamp them
+        // onto the pane records. We collect the rect set to apply to PTYs
+        // AFTER dropping the lock (pane_resize_absolute takes ptys/grids
+        // locks; holding registry across that is the wedge class we avoid
+        // elsewhere in this file).
+        let rects = {
+            let mut r = self.registry.write();
+            let Some(s) = r.sessions.get_mut(&sid) else {
+                return;
+            };
+            let rects = match s.windows.get(&wid) {
+                Some(w) => w
+                    .layout
+                    .compute_rects(Rect::sized(w.size_cells.0, w.size_cells.1)),
+                None => return,
+            };
+            for (pane, rect) in &rects {
+                if let Some(p) = s.panes.get_mut(pane) {
+                    p.size_cells = (rect.w.max(1), rect.h.max(1));
+                    p.origin_cells = (rect.x, rect.y);
+                }
+            }
+            rects
+        };
+        // Phase 2 — SIGWINCH each PTY to its new geometry.
+        for (pane, rect) in rects {
+            if rect.w == 0 || rect.h == 0 {
+                continue;
+            }
+            let _ = self.pane_resize_absolute(pane, rect.w, rect.h);
+        }
     }
 }
 
@@ -1610,5 +1715,85 @@ mod tests {
         // precision); same-second creates are ordered by BTreeMap key
         // (BLAKE3-derived SessionId). Tests asserting strict
         // insertion order would be flaky.
+    }
+
+    /// The active pane of a session's active window — the usual split
+    /// origin.
+    fn active_pane(inproc: &InProcess, sid: SessionId) -> PaneId {
+        let s = inproc.get_session(sid).unwrap();
+        s.windows[&s.active_window].active_pane
+    }
+
+    #[test]
+    fn split_pane_targets_the_origin_leaf_and_validates() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("split", "/bin/sh").unwrap();
+        let origin = active_pane(&inproc, sid);
+        let new = inproc.split_pane(origin, Direction::Right, "/bin/sh").unwrap();
+
+        let s = inproc.get_session(sid).unwrap();
+        let w = &s.windows[&s.active_window];
+        // The tree now holds exactly two leaves, origin then new (Right
+        // puts the new pane after the origin).
+        assert_eq!(w.layout.pane_count(), 2);
+        assert_eq!(w.layout.panes(), vec![origin, new]);
+        assert_eq!(w.active_pane, new);
+        assert!(s.panes.contains_key(&origin) && s.panes.contains_key(&new));
+        // Structurally sound — no NULL leaf, no aliasing, ratio in range.
+        w.layout.validate().unwrap();
+    }
+
+    #[test]
+    fn kill_pane_collapses_tree_without_dangling_leaf() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("kill", "/bin/sh").unwrap();
+        let origin = active_pane(&inproc, sid);
+        let new = inproc.split_pane(origin, Direction::Below, "/bin/sh").unwrap();
+
+        inproc.kill_pane(new).unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        let w = &s.windows[&s.active_window];
+        // The split collapsed back into the surviving origin leaf — no
+        // PaneId::NULL hole, validate() proves it.
+        assert_eq!(w.layout, tear_types::LayoutNode::leaf(origin));
+        assert_eq!(w.active_pane, origin);
+        assert!(!s.panes.contains_key(&new));
+        w.layout.validate().unwrap();
+    }
+
+    #[test]
+    fn kill_last_pane_closes_the_window() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("solo", "/bin/sh").unwrap();
+        let only = active_pane(&inproc, sid);
+        // Killing the window's only pane closes the window (tmux
+        // semantics) — nothing the layout tree can represent remains.
+        inproc.kill_pane(only).unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        assert!(s.windows.is_empty());
+        assert!(!s.panes.contains_key(&only));
+    }
+
+    #[test]
+    fn resize_pane_shifts_the_governing_divider() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("resize", "/bin/sh").unwrap();
+        let origin = active_pane(&inproc, sid);
+        let _new = inproc.split_pane(origin, Direction::Right, "/bin/sh").unwrap();
+
+        let w_before = {
+            let s = inproc.get_session(sid).unwrap();
+            s.windows[&s.active_window].size_cells.0
+        };
+        let origin_w_before = inproc.get_session(sid).unwrap().panes[&origin].size_cells.0;
+        // Grow the (left) origin pane rightward by a quarter of the window.
+        inproc
+            .resize_pane(origin, Direction::Right, (w_before / 4) as i16)
+            .unwrap();
+        let origin_w_after = inproc.get_session(sid).unwrap().panes[&origin].size_cells.0;
+        assert!(
+            origin_w_after > origin_w_before,
+            "origin pane should have widened: {origin_w_after} !> {origin_w_before}"
+        );
     }
 }
