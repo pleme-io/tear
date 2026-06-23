@@ -266,11 +266,17 @@ impl LayoutPlan {
     pub fn from_node(node: &LayoutNode) -> (LayoutPlan, BTreeMap<PaneSlot, PaneId>) {
         let mut next = 0u32;
         let mut map = BTreeMap::new();
-        let plan = Self::harvest(node, &mut next, &mut map);
+        let plan = Self::from_node_into(node, &mut next, &mut map);
         (plan, map)
     }
 
-    fn harvest(
+    /// The running-counter harvest behind [`from_node`](Self::from_node):
+    /// assign slots starting at `*next`, advancing it, and record each
+    /// `slot → PaneId` in `map`. Use this to harvest *several* trees into
+    /// one global slot space — e.g. a multi-window session, where each
+    /// window's panes must get distinct slots (per-window `from_node`
+    /// would restart at 0 and collide).
+    pub fn from_node_into(
         node: &LayoutNode,
         next: &mut u32,
         map: &mut BTreeMap<PaneSlot, PaneId>,
@@ -290,8 +296,8 @@ impl LayoutPlan {
             } => LayoutPlan::Split {
                 orientation: *orientation,
                 ratio: *ratio,
-                a: Box::new(Self::harvest(a, next, map)),
-                b: Box::new(Self::harvest(b, next, map)),
+                a: Box::new(Self::from_node_into(a, next, map)),
+                b: Box::new(Self::from_node_into(b, next, map)),
             },
         }
     }

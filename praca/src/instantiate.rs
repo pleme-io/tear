@@ -331,6 +331,52 @@ mod tests {
         assert_ne!(first.instance(), second.instance());
     }
 
+    /// A `format!`-free structural fingerprint of a layout tree:
+    /// orientations + shape, ignoring exact `PaneId`s and ratios.
+    fn shape(n: &tear_types::LayoutNode, out: &mut String) {
+        match n {
+            tear_types::LayoutNode::Leaf { .. } => out.push('L'),
+            tear_types::LayoutNode::Split { orientation, a, b, .. } => {
+                out.push('(');
+                out.push(if *orientation == SplitOrientation::Vertical {
+                    'V'
+                } else {
+                    'H'
+                });
+                shape(a, out);
+                shape(b, out);
+                out.push(')');
+            }
+        }
+    }
+
+    #[test]
+    fn capture_then_instantiate_reproduces_the_layout_structure() {
+        use crate::definition::SessionDefinition;
+        // Original: a 3-pane shape p0 | (p1 / p2).
+        let backend = InProcess::new();
+        let sid = backend.new_session("orig", "/bin/sh").unwrap();
+        let w = backend.get_session(sid).unwrap().active_window;
+        let p0 = backend.get_session(sid).unwrap().windows[&w].active_pane;
+        let p1 = backend.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
+        backend.split_pane(p1, Direction::Below, "/bin/sh").unwrap();
+        let original = backend.get_session(sid).unwrap();
+        let mut orig_shape = String::new();
+        shape(&original.windows[&w].layout, &mut orig_shape);
+
+        // Capture → definition → instantiate into a FRESH backend.
+        let def = SessionDefinition::from_live(&original, "/code/x", 0);
+        let backend2 = InProcess::new();
+        let live = instantiate(&def, &backend2).unwrap();
+        let new_w = &live.session.windows[&live.session.active_window];
+        let mut new_shape = String::new();
+        shape(&new_w.layout, &mut new_shape);
+
+        // The structural fingerprint round-trips (orientations + tree shape).
+        assert_eq!(new_shape, orig_shape, "captured layout structure differs");
+        assert_eq!(new_w.layout.pane_count(), 3);
+    }
+
     #[test]
     fn instantiate_rejects_invalid_definition_before_spawning() {
         let backend = InProcess::new();

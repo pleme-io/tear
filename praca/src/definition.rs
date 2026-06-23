@@ -22,7 +22,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tear_types::{DefinitionId, PaneSlot, PlanError, SpawnSpec, WindowPlan};
+use tear_types::{
+    DefinitionId, LayoutPlan, PaneSlot, PlanError, SpawnSpec, TearSession, WindowPlan,
+};
 
 use crate::index::Searchable;
 use crate::record::{display_name_for, identity_for, NameStyle, ThemeMirror};
@@ -135,6 +137,81 @@ impl SessionDefinition {
         }
     }
 
+    /// Capture a RUNNING session into a reusable definition — the inverse
+    /// of [`crate::instantiate`], built on `LayoutPlan::from_node`. Each
+    /// window's live layout is dehydrated to a [`tear_types::LayoutPlan`]
+    /// over fresh slots (globally unique across windows, via the shared
+    /// `from_node_into` counter), and each pane becomes a
+    /// [`tear_types::SpawnSpec`] carrying its shell/args/cwd/env/title so
+    /// re-instantiating reproduces the layout. Identity + naming come from
+    /// `project_root` (stable, like [`single_pane`](Self::single_pane));
+    /// origin is [`SessionOrigin::Authored`] — the operator authored this
+    /// preset by saving a live session.
+    ///
+    /// This is the "save-as-preset" morphism: `from_live` produces the
+    /// definition; *persisting* it (a `PracaSnapshot.definitions` store) is
+    /// the separate M2 leg. The captured definition is faithful by
+    /// construction — it always [`validate`](Self::validate)s.
+    #[must_use]
+    pub fn from_live(
+        session: &TearSession,
+        project_root: impl Into<PathBuf>,
+        last_seen: u64,
+    ) -> Self {
+        let project_root = project_root.into();
+        let def_id = DefinitionId::from_project(&project_root);
+        let mut next = 0u32;
+        let mut pane_specs = BTreeMap::new();
+        let mut windows = Vec::new();
+        for win in session.windows.values() {
+            // Dehydrate this window's live tree into the GLOBAL slot space.
+            let mut slot_map = BTreeMap::new();
+            let plan = LayoutPlan::from_node_into(&win.layout, &mut next, &mut slot_map);
+            let mut active_slot = None;
+            for (slot, pane_id) in &slot_map {
+                let spec = match session.panes.get(pane_id) {
+                    Some(p) => SpawnSpec {
+                        slot: *slot,
+                        shell: p.shell.clone(),
+                        args: p.args.clone(),
+                        cwd: p.cwd.clone(),
+                        env: p.env.clone(),
+                        title: p.title.clone(),
+                        input_policy: p.input_policy,
+                    },
+                    // Pane vanished mid-capture — keep the slot, empty shell.
+                    None => SpawnSpec::shell(*slot, String::new()),
+                };
+                pane_specs.insert(*slot, spec);
+                if *pane_id == win.active_pane {
+                    active_slot = Some(*slot);
+                }
+            }
+            let active_slot = active_slot
+                .or_else(|| slot_map.keys().next().copied())
+                .unwrap_or(PaneSlot(0));
+            windows.push(WindowPlan {
+                name: win.name.clone(),
+                layout: plan,
+                active_slot,
+            });
+        }
+        Self {
+            def_id,
+            origin: SessionOrigin::Authored,
+            name_seed: def_id.0,
+            name_style: NameStyle::Emoji,
+            theme: None,
+            custom_name: None,
+            project_root,
+            windows,
+            pane_specs,
+            visits: 1,
+            last_seen,
+            tags: Vec::new(),
+        }
+    }
+
     /// The session's display name (custom name, else the themed emoji
     /// name). Shares the resolver with [`crate::record::SessionRecord`].
     #[must_use]
@@ -226,7 +303,7 @@ impl Searchable for SessionDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tear_types::{LayoutPlan, SplitOrientation};
+    use tear_types::SplitOrientation;
 
     #[test]
     fn single_pane_definition_validates() {
@@ -307,5 +384,34 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         let back: SessionDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(d, back);
+    }
+
+    #[test]
+    fn from_live_captures_a_running_multi_pane_session() {
+        use tear_core::inproc::InProcess;
+        use tear_types::{Direction, MultiplexerControl};
+        // Build a 2-pane running session, then capture it.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("cap", "/bin/sh").unwrap();
+        let s0 = inproc.get_session(sid).unwrap();
+        let wid = s0.active_window;
+        let p0 = s0.windows[&wid].active_pane;
+        inproc.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
+        let session = inproc.get_session(sid).unwrap();
+
+        let def = SessionDefinition::from_live(&session, "/code/captured", 0);
+        // A faithful capture validates + carries both panes' specs.
+        def.validate().unwrap();
+        assert_eq!(def.slot_count(), 2);
+        assert_eq!(def.pane_specs.len(), 2);
+        assert_eq!(def.windows.len(), 1);
+        // Authored origin; identity from the project root.
+        assert_eq!(def.origin, SessionOrigin::Authored);
+        assert_eq!(
+            def.def_id,
+            DefinitionId::from_project(std::path::Path::new("/code/captured"))
+        );
+        // Every captured pane kept its shell.
+        assert!(def.pane_specs.values().all(|s| s.shell == "/bin/sh"));
     }
 }
