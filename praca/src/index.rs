@@ -323,37 +323,69 @@ pub fn best_match(query: &str, item: &dyn Searchable) -> Option<(i32, i32)> {
     best
 }
 
-/// Case-insensitive subsequence fuzzy scorer — **optimal** alignment by DP.
+/// Case-insensitive fuzzy scorer — **optimal** alignment by DP, **multi-term**
+/// AND matching.
 ///
-/// Returns `Some(score)` if every char of `needle` appears in `haystack`
-/// in order, else `None`. Higher is better. Unlike a greedy left-to-right
-/// scan (which locks onto the *first* occurrence of each needle char and can
-/// miss a tighter alignment later), this computes the maximum-scoring
-/// subsequence alignment with a Smith-Waterman-style dynamic program, so the
-/// reported score is the *best* the needle can achieve against the haystack —
-/// the ranking quality the Ctrl-S picker depends on.
+/// The needle is split on whitespace into terms; **every** term must match
+/// `haystack` (fzf-style AND, order-independent) for the whole to match, and
+/// the score is their sum. A single-term needle is the plain subsequence
+/// score. This is what makes a query like `mado pr` work — as one literal
+/// subsequence it would demand a space in the haystack and match almost
+/// nothing; as two terms it finds rows carrying both.
+///
+/// Each term returns `Some(score)` iff its chars appear in `haystack` in
+/// order. Higher is better. Unlike a greedy left-to-right scan (which locks
+/// onto the *first* occurrence of each char and can miss a tighter alignment
+/// later), each term is scored by a Smith-Waterman-style dynamic program that
+/// reports the maximum-scoring alignment — the ranking quality the Ctrl-S
+/// picker depends on.
 ///
 /// Rewards (fzf-style fixed bonuses, the model that makes contiguity dominate):
 /// * `MATCH` per matched char,
-/// * `CONSEC` for a char matched immediately after the previous needle char
+/// * `CONSEC` for a char matched immediately after the previous char
 ///   (contiguous run),
 /// * `FIRST` at the haystack start, `BOUNDARY` right after a separator
 ///   (`/`, `-`, `_`, `.`, space) — word boundaries,
-/// and a light length penalty so a tight match on a short field outranks the
-/// same subsequence buried in a long path.
+/// and a light length penalty (applied once) so a tight match on a short
+/// field outranks the same subsequence buried in a long path.
 ///
-/// An empty needle scores 0 against any haystack (matches everything) —
-/// callers route the empty-query case to frecency-only before reaching here.
+/// An empty / whitespace-only needle scores 0 against any haystack (matches
+/// everything) — callers route the empty-query case to frecency-only before
+/// reaching here.
 #[must_use]
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
-    let n: Vec<char> = needle.to_lowercase().chars().collect();
-    if n.is_empty() {
+    let needle = needle.trim();
+    if needle.is_empty() {
         return Some(0);
     }
+    // Lowercase the haystack ONCE, then AND every whitespace term against it.
     let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let mut total = 0i32;
+    let mut saw_term = false;
+    for term in needle.split_whitespace() {
+        let n: Vec<char> = term.to_lowercase().chars().collect();
+        if n.is_empty() {
+            continue;
+        }
+        saw_term = true;
+        total += align_score(&n, &hay)?; // any term missing → whole miss
+    }
+    if !saw_term {
+        return Some(0);
+    }
+    // light length penalty (once): tighter haystack wins ties.
+    let m = i32::try_from(hay.len()).unwrap_or(i32::MAX);
+    Some(total - m / 16)
+}
+
+/// Maximum-scoring subsequence alignment of one already-lowercased term `n`
+/// against an already-lowercased haystack `hay`. Returns the **raw** score (no
+/// length penalty — the caller applies that once across all terms), or `None`
+/// if `n` is not a subsequence of `hay`.
+fn align_score(n: &[char], hay: &[char]) -> Option<i32> {
     let m = hay.len();
-    if m < n.len() {
-        return None; // can't fit the needle as a subsequence
+    if m < n.len() || n.is_empty() {
+        return if n.is_empty() { Some(0) } else { None };
     }
 
     const MATCH: i32 = 1;
@@ -375,8 +407,8 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
         }
     };
 
-    // `prev[j]` = best score aligning the needle prefix processed so far with
-    // its last char placed at `hay[j]`. Row 0 = the first needle char.
+    // `prev[j]` = best score aligning the term prefix processed so far with
+    // its last char placed at `hay[j]`. Row 0 = the first term char.
     let mut prev = vec![MISS; m];
     let mut curr = vec![MISS; m];
     for (j, &hc) in hay.iter().enumerate() {
@@ -409,8 +441,7 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     if best <= MISS / 2 {
         None
     } else {
-        // light length penalty: tighter haystack wins ties.
-        Some(best - (m as i32 / 16))
+        Some(best)
     }
 }
 
@@ -636,6 +667,41 @@ mod tests {
     fn fuzzy_empty_needle_matches_everything() {
         assert_eq!(fuzzy_score("", "anything"), Some(0));
         assert_eq!(fuzzy_score("", ""), Some(0));
+        // Whitespace-only is treated as empty (matches everything).
+        assert_eq!(fuzzy_score("   ", "anything"), Some(0));
+    }
+
+    #[test]
+    fn fuzzy_multi_term_is_and_and_order_independent() {
+        // Both terms present (in either order) → match. A space-separated
+        // query is the common Ctrl-S case; as one literal subsequence it would
+        // demand a space in the haystack and match almost nothing.
+        assert!(fuzzy_score("mado pr", "pr#7 fix mado").is_some());
+        assert!(fuzzy_score("pr mado", "pr#7 fix mado").is_some());
+        // A missing term fails the whole match (AND, not OR).
+        assert!(fuzzy_score("mado pr", "pr#7 fix tear").is_none());
+        assert!(fuzzy_score("mado zzz", "pr#7 fix mado").is_none());
+        // Each term may be a subsequence, not just a substring.
+        assert!(fuzzy_score("md pr", "pr#7 fix mado").is_some());
+    }
+
+    #[test]
+    fn fuzzy_multi_term_outranks_single_term() {
+        // Two satisfied terms accumulate score over a single term on the same
+        // haystack, so a more-specific query ranks its target higher.
+        let hay = "deploy-mado-service";
+        let one = fuzzy_score("mado", hay).unwrap();
+        let two = fuzzy_score("mado deploy", hay).unwrap();
+        assert!(two > one, "more matched terms → higher score: {two} vs {one}");
+    }
+
+    #[test]
+    fn fuzzy_extra_internal_whitespace_is_ignored() {
+        // Collapsed/duplicated spaces don't change the term set.
+        assert_eq!(
+            fuzzy_score("mado   pr", "pr#7 mado"),
+            fuzzy_score("mado pr", "pr#7 mado")
+        );
     }
 
     #[test]
