@@ -460,6 +460,137 @@ fn align_score(n: &[char], hay: &[char]) -> Option<i32> {
     }
 }
 
+/// Like [`fuzzy_score`], but also returns the haystack CHAR positions that
+/// matched in the best alignment — the substrate for matched-character
+/// highlighting in the picker. Same smart-case + multi-term semantics; the
+/// returned positions are sorted, de-duplicated char indices into `haystack`
+/// (so a UI can bold/tint exactly the chars the query hit). The score is
+/// identical to [`fuzzy_score`] (a parity test guards the two against drift).
+///
+/// Caveat: for a case-insensitive term the positions are recovered against the
+/// lowercased haystack; when `to_lowercase` changes the char count (rare,
+/// non-ASCII) they may shift — highlighting is cosmetic, so this is best-effort.
+#[must_use]
+pub fn fuzzy_indices(needle: &str, haystack: &str) -> Option<(i32, Vec<usize>)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Some((0, Vec::new()));
+    }
+    let hay_orig: Vec<char> = haystack.chars().collect();
+    let hay_lc: Vec<char> = haystack.to_lowercase().chars().collect();
+    let mut total = 0i32;
+    let mut positions: Vec<usize> = Vec::new();
+    let mut saw_term = false;
+    for term in needle.split_whitespace() {
+        if term.is_empty() {
+            continue;
+        }
+        saw_term = true;
+        let (n, hay): (Vec<char>, &[char]) = if term.chars().any(char::is_uppercase) {
+            (term.chars().collect(), &hay_orig)
+        } else {
+            (term.to_lowercase().chars().collect(), &hay_lc)
+        };
+        let (s, idxs) = align_indices(&n, hay)?;
+        total += s;
+        positions.extend(idxs);
+    }
+    if !saw_term {
+        return Some((0, Vec::new()));
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    let m = i32::try_from(hay_orig.len()).unwrap_or(i32::MAX);
+    Some((total - m / 16, positions))
+}
+
+/// [`align_score`] with backpointers: returns the raw score AND the matched
+/// haystack char indices of the best alignment. Separate from `align_score`
+/// (which stays a lean two-row DP for the hot ranking path) — this allocates a
+/// full DP table to reconstruct positions, only for the visible rows being
+/// highlighted.
+fn align_indices(n: &[char], hay: &[char]) -> Option<(i32, Vec<usize>)> {
+    if n.is_empty() {
+        return Some((0, Vec::new()));
+    }
+    let m = hay.len();
+    if m < n.len() {
+        return None;
+    }
+
+    const MATCH: i32 = 1;
+    const CONSEC: i32 = 4;
+    const BOUNDARY: i32 = 6;
+    const FIRST: i32 = 8;
+    const MISS: i32 = i32::MIN / 4;
+
+    let is_sep = |c: char| matches!(c, '/' | '-' | '_' | '.' | ' ');
+    let boundary_bonus = |j: usize| -> i32 {
+        if j == 0 {
+            FIRST
+        } else if is_sep(hay[j - 1]) {
+            BOUNDARY
+        } else {
+            0
+        }
+    };
+
+    // score[i][j] = best score with n[i] placed at hay[j]; back[i][j] = the
+    // haystack index n[i-1] was placed at on that best path (usize::MAX for i=0).
+    let mut score = vec![vec![MISS; m]; n.len()];
+    let mut back = vec![vec![usize::MAX; m]; n.len()];
+    for (j, &hc) in hay.iter().enumerate() {
+        if hc == n[0] {
+            score[0][j] = MATCH + boundary_bonus(j);
+        }
+    }
+    for i in 1..n.len() {
+        let mut best_nc_val = MISS;
+        let mut best_nc_idx = usize::MAX;
+        for j in i..m {
+            if j >= 2 && score[i - 1][j - 2] > best_nc_val {
+                best_nc_val = score[i - 1][j - 2];
+                best_nc_idx = j - 2;
+            }
+            if hay[j] == n[i] {
+                // Prefer the contiguous predecessor on ties (tighter run).
+                let (mut pred_val, mut pred_idx) = (best_nc_val, best_nc_idx);
+                if score[i - 1][j - 1] > MISS / 2 && score[i - 1][j - 1] + CONSEC >= pred_val {
+                    pred_val = score[i - 1][j - 1] + CONSEC;
+                    pred_idx = j - 1;
+                }
+                if pred_val > MISS / 2 {
+                    score[i][j] = pred_val + MATCH + boundary_bonus(j);
+                    back[i][j] = pred_idx;
+                }
+            }
+        }
+    }
+    let last = n.len() - 1;
+    let (mut best, mut best_j) = (MISS, usize::MAX);
+    for j in 0..m {
+        if score[last][j] > best {
+            best = score[last][j];
+            best_j = j;
+        }
+    }
+    if best <= MISS / 2 {
+        return None;
+    }
+    let mut idxs = Vec::with_capacity(n.len());
+    let (mut i, mut j) = (last, best_j);
+    loop {
+        idxs.push(j);
+        if i == 0 {
+            break;
+        }
+        j = back[i][j];
+        i -= 1;
+    }
+    idxs.reverse();
+    Some((best, idxs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +842,48 @@ mod tests {
         let one = fuzzy_score("mado", hay).unwrap();
         let two = fuzzy_score("mado deploy", hay).unwrap();
         assert!(two > one, "more matched terms → higher score: {two} vs {one}");
+    }
+
+    #[test]
+    fn fuzzy_indices_marks_the_matched_chars() {
+        // "dpl" in "deploy" (d e p l o y): d@0, p@2, l@3.
+        let (_, idx) = fuzzy_indices("dpl", "deploy").unwrap();
+        assert_eq!(idx, vec![0, 2, 3]);
+        // Contiguous run "api" in "x/api": a@2, p@3, i@4.
+        let (_, idx) = fuzzy_indices("api", "x/api").unwrap();
+        assert_eq!(idx, vec![2, 3, 4]);
+        // No match → None.
+        assert!(fuzzy_indices("zzz", "deploy").is_none());
+        // Empty needle → empty positions.
+        assert_eq!(fuzzy_indices("", "deploy"), Some((0, vec![])));
+    }
+
+    #[test]
+    fn fuzzy_indices_multi_term_unions_positions() {
+        // Both terms contribute their matched positions, sorted + deduped.
+        let (_, idx) = fuzzy_indices("pr mado", "pr#7 mado").unwrap();
+        // "pr" → 0,1 ; "mado" → 5,6,7,8.
+        assert_eq!(idx, vec![0, 1, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn fuzzy_indices_score_matches_fuzzy_score() {
+        // Parity guard: the highlight path and the ranking path must never
+        // disagree on the score (they share the same bonus model).
+        let cases = [
+            ("dpl", "deploy"),
+            ("api", "svc/api"),
+            ("mado pr", "pr#7 fix mado"),
+            ("PLEME", "PLEME-42"),
+            ("xyz", "deploy"),
+            ("", "anything"),
+            ("ab", "ax_ab"),
+        ];
+        for (needle, hay) in cases {
+            let s = fuzzy_score(needle, hay);
+            let si = fuzzy_indices(needle, hay).map(|(sc, _)| sc);
+            assert_eq!(s, si, "score parity for ({needle:?}, {hay:?})");
+        }
     }
 
     #[test]
