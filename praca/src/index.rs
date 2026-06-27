@@ -349,6 +349,13 @@ pub fn best_match(query: &str, item: &dyn Searchable) -> Option<(i32, i32)> {
 /// and a light length penalty (applied once) so a tight match on a short
 /// field outranks the same subsequence buried in a long path.
 ///
+/// **Smart-case** (fzf/telescope convention): a term with NO uppercase char is
+/// matched case-insensitively (forgiving — `pleme` finds `PLEME-42`); a term
+/// that contains an uppercase char is matched case-SENSITIVELY (`PLEME` targets
+/// the upper-case key precisely, `Api` won't match `api`). The opt-in is the
+/// user typing an uppercase char, so there's no surprise. Each whitespace term
+/// decides its own case mode.
+///
 /// An empty / whitespace-only needle scores 0 against any haystack (matches
 /// everything) — callers route the empty-query case to frecency-only before
 /// reaching here.
@@ -358,30 +365,38 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
-    // Lowercase the haystack ONCE, then AND every whitespace term against it.
-    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    // Keep BOTH cases of the haystack: case-insensitive terms align against the
+    // lowercased copy, case-sensitive terms against the original (smart-case).
+    let hay_orig: Vec<char> = haystack.chars().collect();
+    let hay_lc: Vec<char> = haystack.to_lowercase().chars().collect();
     let mut total = 0i32;
     let mut saw_term = false;
     for term in needle.split_whitespace() {
-        let n: Vec<char> = term.to_lowercase().chars().collect();
-        if n.is_empty() {
+        if term.is_empty() {
             continue;
         }
         saw_term = true;
-        total += align_score(&n, &hay)?; // any term missing → whole miss
+        // Smart-case: any uppercase in the term ⇒ case-sensitive for this term.
+        let (n, hay): (Vec<char>, &[char]) = if term.chars().any(char::is_uppercase) {
+            (term.chars().collect(), &hay_orig)
+        } else {
+            (term.to_lowercase().chars().collect(), &hay_lc)
+        };
+        total += align_score(&n, hay)?; // any term missing → whole miss
     }
     if !saw_term {
         return Some(0);
     }
     // light length penalty (once): tighter haystack wins ties.
-    let m = i32::try_from(hay.len()).unwrap_or(i32::MAX);
+    let m = i32::try_from(hay_orig.len()).unwrap_or(i32::MAX);
     Some(total - m / 16)
 }
 
-/// Maximum-scoring subsequence alignment of one already-lowercased term `n`
-/// against an already-lowercased haystack `hay`. Returns the **raw** score (no
-/// length penalty — the caller applies that once across all terms), or `None`
-/// if `n` is not a subsequence of `hay`.
+/// Maximum-scoring subsequence alignment of one term `n` against a haystack
+/// `hay` — both already case-folded the same way by the caller (smart-case:
+/// both lowercased, or both original). Returns the **raw** score (no length
+/// penalty — the caller applies that once across all terms), or `None` if `n`
+/// is not a subsequence of `hay`.
 fn align_score(n: &[char], hay: &[char]) -> Option<i32> {
     let m = hay.len();
     if m < n.len() || n.is_empty() {
@@ -616,8 +631,11 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_is_case_insensitive() {
-        assert!(fuzzy_score("MADO", "code/mado").is_some());
+    fn fuzzy_lowercase_query_is_case_insensitive() {
+        // Smart-case: a lowercase query matches regardless of haystack case.
+        // (An uppercase query is precise — see `fuzzy_smart_case`.)
+        assert!(fuzzy_score("mado", "code/MADO").is_some());
+        assert!(fuzzy_score("mado", "code/mado").is_some());
     }
 
     #[test]
@@ -693,6 +711,25 @@ mod tests {
         let one = fuzzy_score("mado", hay).unwrap();
         let two = fuzzy_score("mado deploy", hay).unwrap();
         assert!(two > one, "more matched terms → higher score: {two} vs {one}");
+    }
+
+    #[test]
+    fn fuzzy_smart_case() {
+        // Lowercase term → case-insensitive (forgiving): finds any case.
+        assert!(fuzzy_score("api", "API").is_some());
+        assert!(fuzzy_score("api", "api").is_some());
+        assert!(fuzzy_score("pleme", "PLEME-42").is_some());
+        // A term WITH an uppercase char → case-sensitive (precise).
+        assert!(fuzzy_score("PLEME", "PLEME-42").is_some());
+        assert!(fuzzy_score("API", "api").is_none(), "uppercase query is precise");
+        assert!(fuzzy_score("Api", "api").is_none(), "any uppercase ⇒ sensitive");
+        // Per-term: a lowercase term stays forgiving while an uppercase term in
+        // the same query is precise.
+        assert!(fuzzy_score("PLEME parser", "PLEME-42 fix the parser").is_some());
+        assert!(
+            fuzzy_score("PLEME PARSER", "PLEME-42 fix the parser").is_none(),
+            "the uppercase 'PARSER' term can't match lowercase 'parser'"
+        );
     }
 
     #[test]
