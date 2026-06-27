@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "praca"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "ishou-tokens",
  "serde",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "tear"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "tear-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "engate-attach",
  "engate-types",
@@ -2368,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "tear-config"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "tear-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "tear-daemon"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2427,7 +2427,7 @@ dependencies = [
 
 [[package]]
 name = "tear-tmux-backend"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "tear-config",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "tear-types"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "tear-ws-bridge"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",

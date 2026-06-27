@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "1d667939e7a4e272c5dd2da6b730fd75fc922eb753cbea23b312362c340743f9",
+  "cargo_lock_sha256": "50c6ae62743c43b449a0a795e93511c95d9ae7aa5ea7c995f38cbc48eef98627",
   "target_resolves": {
     "base": {
       "aho-corasick-1.1.4": {
@@ -3819,7 +3819,7 @@
           "std"
         ]
       },
-      "praca-0.1.3": {
+      "praca-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "ishou_tokens",
@@ -3845,7 +3845,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6225,7 +6225,7 @@
           "proc-macro"
         ]
       },
-      "tear-0.1.3": {
+      "tear-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6390,7 +6390,7 @@
           },
           {
             "name": "tear_client",
-            "package_key": "tear-client-0.1.3",
+            "package_key": "tear-client-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6400,7 +6400,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.3",
+            "package_key": "tear-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6410,7 +6410,7 @@
           },
           {
             "name": "tear_core",
-            "package_key": "tear-core-0.1.3",
+            "package_key": "tear-core-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6420,7 +6420,7 @@
           },
           {
             "name": "tear_daemon",
-            "package_key": "tear-daemon-0.1.3",
+            "package_key": "tear-daemon-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6430,7 +6430,7 @@
           },
           {
             "name": "tear_tmux_backend",
-            "package_key": "tear-tmux-backend-0.1.3",
+            "package_key": "tear-tmux-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6440,7 +6440,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6503,7 +6503,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tear-client-0.1.3": {
+      "tear-client-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "parking_lot",
@@ -6527,7 +6527,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.3",
+            "package_key": "tear-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6537,7 +6537,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6551,7 +6551,7 @@
           "default"
         ]
       },
-      "tear-config-0.1.3": {
+      "tear-config-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6641,7 +6641,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6673,7 +6673,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tear-core-0.1.3": {
+      "tear-core-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6759,7 +6759,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.3",
+            "package_key": "tear-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6769,7 +6769,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6813,7 +6813,7 @@
           "default"
         ]
       },
-      "tear-daemon-0.1.3": {
+      "tear-daemon-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6859,7 +6859,7 @@
           },
           {
             "name": "praca",
-            "package_key": "praca-0.1.3",
+            "package_key": "praca-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6901,7 +6901,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.3",
+            "package_key": "tear-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6911,7 +6911,7 @@
           },
           {
             "name": "tear_core",
-            "package_key": "tear-core-0.1.3",
+            "package_key": "tear-core-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6921,7 +6921,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6959,7 +6959,7 @@
           "default"
         ]
       },
-      "tear-tmux-backend-0.1.3": {
+      "tear-tmux-backend-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6973,7 +6973,7 @@
           },
           {
             "name": "tear_config",
-            "package_key": "tear-config-0.1.3",
+            "package_key": "tear-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6983,7 +6983,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6995,7 +6995,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "tear-types-0.1.3": {
+      "tear-types-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7075,7 +7075,7 @@
           "default"
         ]
       },
-      "tear-ws-bridge-0.1.3": {
+      "tear-ws-bridge-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7123,7 +7123,7 @@
           },
           {
             "name": "tear_client",
-            "package_key": "tear-client-0.1.3",
+            "package_key": "tear-client-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7133,7 +7133,7 @@
           },
           {
             "name": "tear_types",
-            "package_key": "tear-types-0.1.3",
+            "package_key": "tear-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -13431,7 +13431,7 @@
     "ppv-lite86-0.2.21": {
       "edition": "2021"
     },
-    "praca-0.1.3": {
+    "praca-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "praca",
@@ -13663,7 +13663,7 @@
     "sysinfo-0.32.1": {
       "edition": "2021"
     },
-    "tear-0.1.3": {
+    "tear-0.1.4": {
       "edition": "2024",
       "binaries": [
         {
@@ -13672,49 +13672,49 @@
         }
       ]
     },
-    "tear-client-0.1.3": {
+    "tear-client-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_client",
         "path": "src/lib.rs"
       }
     },
-    "tear-config-0.1.3": {
+    "tear-config-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_config",
         "path": "src/lib.rs"
       }
     },
-    "tear-core-0.1.3": {
+    "tear-core-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_core",
         "path": "src/lib.rs"
       }
     },
-    "tear-daemon-0.1.3": {
+    "tear-daemon-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_daemon",
         "path": "src/lib.rs"
       }
     },
-    "tear-tmux-backend-0.1.3": {
+    "tear-tmux-backend-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_tmux_backend",
         "path": "src/lib.rs"
       }
     },
-    "tear-types-0.1.3": {
+    "tear-types-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_types",
         "path": "src/lib.rs"
       }
     },
-    "tear-ws-bridge-0.1.3": {
+    "tear-ws-bridge-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "tear_ws_bridge",
