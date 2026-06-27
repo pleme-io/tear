@@ -323,54 +323,94 @@ pub fn best_match(query: &str, item: &dyn Searchable) -> Option<(i32, i32)> {
     best
 }
 
-/// Case-insensitive subsequence fuzzy scorer.
+/// Case-insensitive subsequence fuzzy scorer — **optimal** alignment by DP.
 ///
 /// Returns `Some(score)` if every char of `needle` appears in `haystack`
-/// in order, else `None`. Higher is better. Rewards:
-/// * contiguous runs of matched chars (`+contiguous_len`),
-/// * a match at the haystack start (`+bonus`),
-/// * matches right after a separator (`/`, `-`, `_`, `.`, space) — word
-///   boundaries (`+bonus`),
-/// and lightly penalizes a longer haystack so a tight match on a short
-/// field outranks the same subsequence buried in a long path.
+/// in order, else `None`. Higher is better. Unlike a greedy left-to-right
+/// scan (which locks onto the *first* occurrence of each needle char and can
+/// miss a tighter alignment later), this computes the maximum-scoring
+/// subsequence alignment with a Smith-Waterman-style dynamic program, so the
+/// reported score is the *best* the needle can achieve against the haystack —
+/// the ranking quality the Ctrl-S picker depends on.
+///
+/// Rewards (fzf-style fixed bonuses, the model that makes contiguity dominate):
+/// * `MATCH` per matched char,
+/// * `CONSEC` for a char matched immediately after the previous needle char
+///   (contiguous run),
+/// * `FIRST` at the haystack start, `BOUNDARY` right after a separator
+///   (`/`, `-`, `_`, `.`, space) — word boundaries,
+/// and a light length penalty so a tight match on a short field outranks the
+/// same subsequence buried in a long path.
 ///
 /// An empty needle scores 0 against any haystack (matches everything) —
-/// callers route the empty-query case to frecency-only before reaching
-/// here.
+/// callers route the empty-query case to frecency-only before reaching here.
 #[must_use]
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
-    let needle = needle.to_lowercase();
-    let haystack_lc = haystack.to_lowercase();
-    let n: Vec<char> = needle.chars().collect();
+    let n: Vec<char> = needle.to_lowercase().chars().collect();
     if n.is_empty() {
         return Some(0);
     }
-    let hay: Vec<char> = haystack_lc.chars().collect();
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let m = hay.len();
+    if m < n.len() {
+        return None; // can't fit the needle as a subsequence
+    }
+
+    const MATCH: i32 = 1;
+    const CONSEC: i32 = 4;
+    const BOUNDARY: i32 = 6;
+    const FIRST: i32 = 8;
+    // Sentinel for "no alignment reaches this cell" — small enough that adding
+    // a bonus to it can never overtake a real score, large enough not to wrap.
+    const MISS: i32 = i32::MIN / 4;
 
     let is_sep = |c: char| matches!(c, '/' | '-' | '_' | '.' | ' ');
-
-    let mut ni = 0usize;
-    let mut score = 0i32;
-    let mut run = 0i32;
-    for (hi, &hc) in hay.iter().enumerate() {
-        if ni < n.len() && hc == n[ni] {
-            run += 1;
-            score += run; // contiguity reward grows within a run
-            if hi == 0 {
-                score += 8; // start-of-string bonus
-            } else if is_sep(hay[hi - 1]) {
-                score += 6; // word-boundary bonus
-            }
-            ni += 1;
+    let boundary_bonus = |j: usize| -> i32 {
+        if j == 0 {
+            FIRST
+        } else if is_sep(hay[j - 1]) {
+            BOUNDARY
         } else {
-            run = 0;
+            0
+        }
+    };
+
+    // `prev[j]` = best score aligning the needle prefix processed so far with
+    // its last char placed at `hay[j]`. Row 0 = the first needle char.
+    let mut prev = vec![MISS; m];
+    let mut curr = vec![MISS; m];
+    for (j, &hc) in hay.iter().enumerate() {
+        if hc == n[0] {
+            prev[j] = MATCH + boundary_bonus(j);
         }
     }
-    if ni == n.len() {
-        // light length penalty: tighter haystack wins ties.
-        Some(score - (hay.len() as i32 / 16))
-    } else {
+    for i in 1..n.len() {
+        curr.iter_mut().for_each(|c| *c = MISS);
+        // Best `prev[k]` for k ≤ j-2 (a non-contiguous predecessor), grown as
+        // j sweeps up. A contiguous predecessor is `prev[j-1] + CONSEC`.
+        let mut best_non_contig = MISS;
+        for j in i..m {
+            if j >= 2 {
+                best_non_contig = best_non_contig.max(prev[j - 2]);
+            }
+            if hay[j] == n[i] {
+                let mut pred = best_non_contig;
+                if prev[j - 1] > MISS / 2 {
+                    pred = pred.max(prev[j - 1] + CONSEC);
+                }
+                if pred > MISS / 2 {
+                    curr[j] = pred + MATCH + boundary_bonus(j);
+                }
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    let best = prev.iter().copied().max().unwrap_or(MISS);
+    if best <= MISS / 2 {
         None
+    } else {
+        // light length penalty: tighter haystack wins ties.
+        Some(best - (m as i32 / 16))
     }
 }
 
@@ -547,6 +587,60 @@ mod tests {
     #[test]
     fn fuzzy_is_case_insensitive() {
         assert!(fuzzy_score("MADO", "code/mado").is_some());
+    }
+
+    #[test]
+    fn fuzzy_picks_the_optimal_alignment_not_the_greedy_one() {
+        // "ab" appears spread out early (a@0 … b@4) AND contiguous late (a@3 b@4).
+        // A greedy scan locks onto a@0 then b@4 (run broken). The DP must find
+        // the contiguous "ab" and score it HIGHER than a pure-spread haystack.
+        let contiguous = fuzzy_score("ab", "ax_ab").unwrap();
+        let spread = fuzzy_score("ab", "axxxb").unwrap();
+        assert!(
+            contiguous > spread,
+            "optimal alignment must reward the contiguous run: {contiguous} vs {spread}"
+        );
+    }
+
+    #[test]
+    fn fuzzy_contiguous_beats_scattered_same_length() {
+        // Same haystack length, same matched chars — the run on a word boundary
+        // must outscore a scattered match.
+        let run = fuzzy_score("api", "x/apiabc").unwrap(); // contiguous after '/'
+        let scattered = fuzzy_score("api", "axpxixz").unwrap(); // a..p..i spread
+        assert!(run > scattered, "{run} vs {scattered}");
+    }
+
+    #[test]
+    fn fuzzy_boundary_and_start_bonuses_apply() {
+        // Start-of-string match beats a mid-word match of the same needle.
+        let at_start = fuzzy_score("dep", "deploy").unwrap();
+        let mid_word = fuzzy_score("dep", "xxdeploy").unwrap();
+        assert!(at_start > mid_word, "start bonus: {at_start} vs {mid_word}");
+        // A match right after a separator beats one buried mid-word.
+        let after_sep = fuzzy_score("api", "svc/api").unwrap();
+        let buried = fuzzy_score("api", "svcxapi").unwrap();
+        assert!(after_sep > buried, "boundary bonus: {after_sep} vs {buried}");
+    }
+
+    #[test]
+    fn fuzzy_shorter_haystack_wins_ties() {
+        // Same alignment quality; the tighter (shorter) field wins via the
+        // length penalty.
+        let tight = fuzzy_score("api", "api").unwrap();
+        let loose = fuzzy_score("api", "api/very/long/buried/path/segment").unwrap();
+        assert!(tight > loose, "{tight} vs {loose}");
+    }
+
+    #[test]
+    fn fuzzy_empty_needle_matches_everything() {
+        assert_eq!(fuzzy_score("", "anything"), Some(0));
+        assert_eq!(fuzzy_score("", ""), Some(0));
+    }
+
+    #[test]
+    fn fuzzy_needle_longer_than_haystack_is_none() {
+        assert!(fuzzy_score("abcdef", "abc").is_none());
     }
 
     #[test]
