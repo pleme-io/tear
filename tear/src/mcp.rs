@@ -448,22 +448,24 @@ struct TopPanesInput {
 #[tool_handler]
 impl ServerHandler for TearMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some(
-                "tear MCP server. Read-only state exploration: \
-                 daemon_status, system_resources, socket_info, \
-                 list_sessions, session_detail, list_panes, \
-                 pane_stats, pane_snapshot_text, top_panes, ping. \
-                 Use pane_snapshot_text to see what's actually on \
-                 screen in any pane RIGHT NOW (the canonical \
-                 'what's happening' surface). Write operations \
-                 (send_keys, new_session, set_input_policy) live \
-                 on mado's MCP — tear stays read-only."
-                    .into(),
-            ),
-            ..Default::default()
-        }
+        // rmcp 1.x marks ServerInfo #[non_exhaustive], which forbids any
+        // struct expression outside its crate (even functional-update
+        // syntax) — default-then-mutate is the sanctioned construction.
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.instructions = Some(
+            "tear MCP server. Read-only state exploration: \
+             daemon_status, system_resources, socket_info, \
+             list_sessions, session_detail, list_panes, \
+             pane_stats, pane_snapshot_text, top_panes, ping. \
+             Use pane_snapshot_text to see what's actually on \
+             screen in any pane RIGHT NOW (the canonical \
+             'what's happening' surface). Write operations \
+             (send_keys, new_session, set_input_policy) live \
+             on mado's MCP — tear stays read-only."
+                .into(),
+        );
+        info
     }
 }
 

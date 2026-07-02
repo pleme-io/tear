@@ -51,7 +51,7 @@ ureq = { version = "3", default-features = false, features = ["rustls", "json"] 
 # subcommand wired into Claude Code's MCP server list so agents
 # can interrogate the daemon (sessions / panes / bytes / CPU /
 # RSS) over JSON-RPC without scraping `tear list` output.
-rmcp = { version = "0.15", features = ["server", "transport-io"] }
+rmcp = { version = "1.4", features = ["server", "transport-io"] }
 schemars = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util"] }
 sysinfo = "0.32"
