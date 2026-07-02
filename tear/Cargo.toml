@@ -61,5 +61,8 @@ shidou = { git = "https://github.com/pleme-io/shidou" , version = "0.1" }
 tempfile = "3"
 # Enables tear_daemon::testing::{DaemonHarness, DuplexStream}
 # during test compilation only; production builds keep the feature
-# off so the helpers are gated out.
-tear-daemon = { path = "../tear-daemon" }
+# off so the helpers are gated out. The `testing` feature must be
+# NAMED here — the module is `#[cfg(any(test, feature = "testing"))]`
+# and `test` is never set when tear-daemon is built as a dependency
+# of an integration test, so omitting the feature is E0432.
+tear-daemon = { path = "../tear-daemon", features = ["testing"] }
