@@ -6956,7 +6956,8 @@
         ],
         "build_dependencies": [],
         "features": [
-          "default"
+          "default",
+          "testing"
         ]
       },
       "tear-tmux-backend-0.1.6": {
