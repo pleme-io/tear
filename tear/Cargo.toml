@@ -40,7 +40,7 @@ serde_yaml_ng = { workspace = true }
 serde_json = { workspace = true }
 ctrlc = "3"
 # `tear top` interactive dashboard (48a)
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 # `tear ai` LLM proxy — sync HTTP client (no tokio runtime needed
 # because the CLI is short-lived; matches tear's existing sync

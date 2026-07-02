@@ -59,11 +59,17 @@ pub fn run(client: Client, refresh_ms: u64) -> Result<()> {
     result
 }
 
+// ratatui 0.30 made Backend::Error an associated type; anyhow's `?`
+// needs it Send + Sync + 'static (trivially true for the crossterm
+// backend's io::Error — the bound just names it).
 fn run_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     client: &Client,
     refresh_ms: u64,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let mut state = DashboardState::default();
     let mut last_refresh = Instant::now() - Duration::from_secs(60);
     let refresh = Duration::from_millis(refresh_ms);
