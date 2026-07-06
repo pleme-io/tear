@@ -528,10 +528,10 @@ impl InProcess {
             debug!(pane_id = %pane_id, n = bytes.len(), "tear-core: pty bytes fed to grid + subscribers");
         });
         // on_exit — fired once by the PTY reader thread when the child
-        // exits (PTY EOF). Two typed consequences:
+        // exits (PTY EOF). Three typed consequences:
         //
         //  1. Mark the pane `PaneState::Exited { code }` in the typed
-        //     registry. The pane + its final grid stay (tmux
+        //     registry. A *watched* pane + its final grid stay (tmux
         //     remain-on-exit) so `tear list` / snapshots still see it;
         //     only the live byte stream ends.
         //  2. Mark the subscriber entry `closed` + drop every live
@@ -541,41 +541,128 @@ impl InProcess {
         //     block on. Without this the channel stays open forever and
         //     a single-pane GUI (mado embedded) never learns the shell
         //     exited, so its window never closes.
+        //  3. Reap-on-exit (session-leak fix, 2026-07-06): when EVERY
+        //     pane of the owning session has exited AND no pane carried
+        //     a live subscriber at exit time (nothing was watching),
+        //     the whole session is removed from the registry and its
+        //     runtime artifacts are detached. Without this, sessions
+        //     whose shell exited unwatched (agent spawns that never
+        //     attached, one-shot commands) linger in the registry
+        //     forever — surfacing as ghost rows in mado's Ctrl-S
+        //     picker. Conservative by construction: any live sender on
+        //     any pane of the session (a mado window, a recorder)
+        //     preserves the remain-on-exit behavior unchanged, and a
+        //     session with any Running/Spawning pane is never touched.
         //
-        // Lock order matches the kill paths (the registry write is a
-        // separate critical section from the subscribers lock — never
-        // nested — so no inversion). The subscribers step is gated on
-        // the pane still being present in the registry so an explicit
-        // `kill_pane` that races with natural exit doesn't leave a
-        // lingering empty entry.
+        // Lock order matches the kill paths (the registry write, the
+        // subscribers lock, and the reap's detach scope are separate
+        // critical sections — never nested — so no inversion). The
+        // subscribers step is gated on the pane still being present in
+        // the registry so an explicit `kill_pane` that races with
+        // natural exit doesn't leave a lingering empty entry. The reap
+        // runs on this pane's own reader thread, which is safe: on the
+        // natural-exit path the child slot is already `take()`n +
+        // reaped (so `PtyHandle::drop` skips the kill) and every
+        // sibling pane is `Exited` (their readers finished), and the
+        // handle drops happen with NO `InProcess` lock held
+        // (`detach_panes`' deadlock contract).
         let subscribers_for_exit = Arc::clone(&self.subscribers);
         let registry_for_exit = Arc::clone(&self.registry);
+        let ptys_for_exit = Arc::clone(&self.ptys);
+        let grids_for_exit = Arc::clone(&self.grids);
         let on_exit = Box::new(move |code: Option<i32>| {
-            let still_present = {
+            let (still_present, fully_exited) = {
                 let mut r = registry_for_exit.write();
                 let mut found = false;
+                let mut fully: Option<SessionId> = None;
                 for s in r.sessions.values_mut() {
                     if let Some(p) = s.panes.get_mut(&pane_id) {
                         p.state = tear_types::PaneState::Exited {
                             code: code.unwrap_or(-1),
                         };
                         found = true;
+                        if s.panes.values().all(|p| {
+                            matches!(p.state, tear_types::PaneState::Exited { .. })
+                        }) {
+                            fully = Some(s.id);
+                        }
                         break;
                     }
                 }
-                found
+                (found, fully)
             };
-            let mut subs = subscribers_for_exit.lock();
-            if still_present {
-                let ps = subs.entry(pane_id).or_default();
-                ps.closed = Some(code.unwrap_or(-1));
-                ps.senders.clear();
-            } else {
-                // Pane was explicitly killed concurrently — drop any
-                // entry rather than recreating one for a dead id.
-                subs.remove(&pane_id);
-            }
+            // `watched` = any pane of the (fully-exited) session still
+            // carried a live sender at exit time — this pane's senders
+            // inspected BEFORE the clear, siblings' as they stand
+            // (their own on_exit already cleared them if they exited
+            // unwatched). Watched sessions keep remain-on-exit.
+            let watched = {
+                let mut subs = subscribers_for_exit.lock();
+                let this_pane_watched = if still_present {
+                    let ps = subs.entry(pane_id).or_default();
+                    let had_live_sender = !ps.senders.is_empty();
+                    ps.closed = Some(code.unwrap_or(-1));
+                    ps.senders.clear();
+                    had_live_sender
+                } else {
+                    // Pane was explicitly killed concurrently — drop any
+                    // entry rather than recreating one for a dead id.
+                    subs.remove(&pane_id);
+                    true
+                };
+                this_pane_watched
+                    || fully_exited.is_some_and(|sid| {
+                        registry_for_exit.read().sessions.get(&sid).is_some_and(|s| {
+                            s.panes.keys().any(|p| {
+                                *p != pane_id
+                                    && subs.get(p).is_some_and(|ps| !ps.senders.is_empty())
+                            })
+                        })
+                    })
+            };
             debug!(pane_id = %pane_id, ?code, "tear-core: pane child exited — marked Exited + disconnected subscribers");
+            if let Some(sid) = fully_exited.filter(|_| !watched) {
+                // Re-verify under the write lock: a window/pane
+                // spawned into the session between the mark and
+                // here (or a concurrent explicit kill) aborts the
+                // reap.
+                let panes_to_detach: Vec<PaneId> = {
+                    let mut r = registry_for_exit.write();
+                    let still_fully = r.sessions.get(&sid).is_some_and(|s| {
+                        s.panes
+                            .values()
+                            .all(|p| matches!(p.state, tear_types::PaneState::Exited { .. }))
+                    });
+                    if still_fully {
+                        r.sessions
+                            .remove(&sid)
+                            .map(|s| s.panes.keys().copied().collect())
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                if !panes_to_detach.is_empty() {
+                    // Same shape as `detach_panes`: artifacts leave
+                    // the maps under the locks, handles die outside
+                    // them.
+                    let detached: Vec<PtyHandle> = {
+                        let mut ptys = ptys_for_exit.lock();
+                        let mut grids = grids_for_exit.lock();
+                        let mut subs = subscribers_for_exit.lock();
+                        panes_to_detach
+                            .iter()
+                            .filter_map(|p| {
+                                grids.remove(p);
+                                subs.remove(p);
+                                ptys.remove(p)
+                            })
+                            .collect()
+                    };
+                    drop(detached);
+                    info!(session = %sid, "tear-core: reaped fully-exited unwatched session");
+                }
+            }
         });
         let pty = PtyHandle::spawn(
             shell,
@@ -587,6 +674,27 @@ impl InProcess {
             on_exit,
         )?;
         self.ptys.lock().insert(pane_id, pty);
+        // Reap-race guard: a child that exits faster than this insert
+        // lands may already have been reaped (session gone from the
+        // registry) — pull the handle straight back out so a dead
+        // session can't strand a PtyHandle in the map. The handle (if
+        // any) drops outside every lock, per `detach_panes`' contract.
+        let orphaned = {
+            let in_registry = self
+                .registry
+                .read()
+                .sessions
+                .values()
+                .any(|s| s.panes.contains_key(&pane_id));
+            if in_registry {
+                None
+            } else {
+                self.grids.lock().remove(&pane_id);
+                self.subscribers.lock().remove(&pane_id);
+                self.ptys.lock().remove(&pane_id)
+            }
+        };
+        drop(orphaned);
         Ok(())
     }
 
@@ -1446,6 +1554,87 @@ mod tests {
         assert!(
             matches!(rx2.recv(), Err(mpsc::RecvError)),
             "post-exit subscribe must yield an immediately-disconnected receiver"
+        );
+    }
+
+    #[test]
+    fn fully_exited_unwatched_session_is_reaped() {
+        // Session-leak fix (2026-07-06): a session whose shell exits
+        // with NO subscriber ever attached (agent spawn-and-walk-away,
+        // one-shot command) must leave the registry entirely — before
+        // the fix it lingered forever as a ghost row in mado's Ctrl-S
+        // picker.
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session("reap-test", "/bin/sh")
+            .expect("new_session");
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        // No subscriber attaches. Exit the shell.
+        inproc.send_keys(pane, b"exit\n").expect("send_keys");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if inproc.list_sessions().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            inproc.list_sessions().unwrap().is_empty(),
+            "fully-exited unwatched session was not reaped from the registry"
+        );
+        // Runtime artifacts must be gone too — a reaped session that
+        // strands a PtyHandle/grid/subscriber entry is a slow leak.
+        assert!(inproc.ptys.lock().is_empty(), "reap left a PtyHandle behind");
+        assert!(inproc.grids.lock().is_empty(), "reap left a grid behind");
+        assert!(
+            inproc.subscribers.lock().is_empty(),
+            "reap left a subscriber entry behind"
+        );
+    }
+
+    #[test]
+    fn watched_session_survives_exit_with_remain_on_exit() {
+        // The conservative half of the reap: a session SOMEONE was
+        // watching (live sender at exit time — a mado window, a
+        // recorder) keeps tmux remain-on-exit semantics: pane marked
+        // Exited, final grid inspectable, session still listed.
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session("remain-test", "/bin/sh")
+            .expect("new_session");
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
+        inproc.send_keys(pane, b"exit\n").expect("send_keys");
+
+        // Wait for the end-of-stream disconnect (fires after the exit
+        // handler ran its reap decision with `watched = true`).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut disconnected = false;
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(_) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        assert!(disconnected, "subscriber never disconnected after exit");
+
+        let sessions = inproc.list_sessions().unwrap();
+        assert_eq!(
+            sessions.len(),
+            1,
+            "watched session must remain-on-exit, not be reaped"
+        );
+        let state = sessions[0].panes.get(&pane).map(|p| p.state);
+        assert!(
+            matches!(state, Some(tear_types::PaneState::Exited { .. })),
+            "pane should be Exited, got {state:?}"
         );
     }
 
