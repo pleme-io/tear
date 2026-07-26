@@ -1100,6 +1100,51 @@ mod tests {
         assert!(snap.cells[0][0].attrs.contains(CellAttrs::BOLD));
     }
 
+    /// No realistic SGR form may leave UNDERLINE stuck on the pen — the
+    /// "everything is underlined" regression class. Each case writes a
+    /// marker `X` AFTER an underline-off (or a non-underline) sequence;
+    /// the marker must not carry UNDERLINE. Covers the legacy `24`
+    /// reset, `0` reset, the styled `4:N` sub-param forms, `21`, the
+    /// underline-colour pair `58`/`59`, and both the semicolon and
+    /// COLON extended-colour spellings (the colon form flattens with an
+    /// empty colourspace slot, so a mis-consumed component can leak into
+    /// the SGR walk and land on an attribute code).
+    #[test]
+    fn no_sgr_form_leaves_underline_stuck_on_the_pen() {
+        let cases: &[(&str, &[u8])] = &[
+            ("4m then 24m", b"\x1b[4mU\x1b[24mX"),
+            ("4m then 0m", b"\x1b[4mU\x1b[0mX"),
+            ("4:3m then 4:0m", b"\x1b[4:3mU\x1b[4:0mX"),
+            ("4:3m then 24m", b"\x1b[4:3mU\x1b[24mX"),
+            ("21m (double-underline)", b"\x1b[21mX"),
+            ("58:2::255:0:0 then 59m", b"\x1b[58:2::255:0:0mU\x1b[59mX"),
+            ("fg truecolor semicolon", b"\x1b[38;2;177;185;249mX"),
+            ("fg truecolor COLON", b"\x1b[38:2::177:185:249mX"),
+            ("fg 256 semicolon", b"\x1b[38;5;4mX"),
+            ("fg 256 COLON", b"\x1b[38:5:4mX"),
+            ("bold+italic only", b"\x1b[1;3mX"),
+        ];
+        let mut leaked = Vec::new();
+        for (name, bytes) in cases {
+            let mut g = PaneGrid::new(20, 1);
+            g.feed(bytes);
+            let snap = g.snapshot();
+            // The marker 'X' is the LAST printed cell on row 0.
+            let marker = snap.cells[0]
+                .iter()
+                .rev()
+                .find(|c| c.ch == 'X')
+                .expect("marker X present");
+            if marker.attrs.contains(CellAttrs::UNDERLINE) {
+                leaked.push(*name);
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "these SGR forms leave UNDERLINE stuck on the pen: {leaked:?}"
+        );
+    }
+
     #[test]
     fn sgr_reset_returns_default_pen() {
         let mut g = PaneGrid::new(10, 1);
