@@ -1917,6 +1917,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pleme-tear"
+version = "0.1.8"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm 0.28.1",
+ "ctrlc",
+ "ishou-tokens",
+ "mimalloc",
+ "ratatui",
+ "rmcp",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "shidou",
+ "shikumi 0.1.0",
+ "sysinfo",
+ "tear-client",
+ "tear-config",
+ "tear-core",
+ "tear-daemon",
+ "tear-tmux-backend",
+ "tear-types",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2853,38 +2885,6 @@ dependencies = [
  "ntapi",
  "rayon",
  "windows",
-]
-
-[[package]]
-name = "tear"
-version = "0.1.8"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm 0.28.1",
- "ctrlc",
- "ishou-tokens",
- "mimalloc",
- "ratatui",
- "rmcp",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "shidou",
- "shikumi 0.1.0",
- "sysinfo",
- "tear-client",
- "tear-config",
- "tear-core",
- "tear-daemon",
- "tear-tmux-backend",
- "tear-types",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]

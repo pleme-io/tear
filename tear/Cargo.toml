@@ -1,5 +1,14 @@
 [package]
-name = "tear"
+# Published as `pleme-tear`: the bare `tear` name on crates.io is owned by
+# an unrelated crate (tear v0.5.1), so publishing it returns
+# `403 Forbidden: this crate exists but you don't seem to be an owner` and
+# auto-release has been red since 2026-07-18. Same remedy as `pleme-dojo`
+# (the bare `dojo` was squatted). The BINARY stays `tear` via the [[bin]]
+# target below, so nothing an operator types changes; only the registry
+# coordinate moves. No crate depends on this package (consumers use
+# tear-types / tear-core / tear-client / tear-config), so the rename has
+# no downstream breakage.
+name = "pleme-tear"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

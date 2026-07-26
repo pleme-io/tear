@@ -17,7 +17,12 @@
         inherit nixpkgs crate2nix flake-utils;
       }) {
         toolName = "tear";
-        packageName = "tear";
+        # The Cargo workspace MEMBER crate, which is published as
+        # `pleme-tear` (the bare `tear` is owned by an unrelated crate on
+        # crates.io — see tear/Cargo.toml). Everything operator-facing
+        # stays `tear`: `packageAttr` below keeps `nix run .#tear`, and
+        # `binaryName` keeps the installed binary named `tear`.
+        packageName = "pleme-tear";
         src = self;
         repo = "pleme-io/tear";
 

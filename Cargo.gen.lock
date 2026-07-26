@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "fcd7721548df58078cedee80a2e053302884ea764c5aee20d9a237886ab1c507",
+  "cargo_lock_sha256": "40881dae43ec3604ca01d5f6e0338cbc1b44e761f0256c62c20963eecb647e1e",
   "target_resolves": {
     "base": {
       "aho-corasick-1.1.4": {
@@ -4781,6 +4781,284 @@
         "build_dependencies": [],
         "features": []
       },
+      "pleme-tear-0.1.8": {
+        "runtime_dependencies": [
+          {
+            "name": "anyhow",
+            "package_key": "anyhow-1.0.102",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "clap",
+            "package_key": "clap-4.6.1",
+            "kind": "normal",
+            "features": [
+              "derive",
+              "env",
+              "wrap_help"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "crossterm",
+            "package_key": "crossterm-0.28.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ctrlc",
+            "package_key": "ctrlc-3.5.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ishou_tokens",
+            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "mimalloc",
+            "package_key": "mimalloc-0.1.52",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ratatui",
+            "package_key": "ratatui-0.30.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rmcp",
+            "package_key": "rmcp-1.8.0",
+            "kind": "normal",
+            "features": [
+              "server",
+              "transport-io"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "schemars",
+            "package_key": "schemars-0.8.22",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_yaml_ng",
+            "package_key": "serde_yaml_ng-0.10.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shidou",
+            "package_key": "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shikumi",
+            "package_key": "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484",
+            "kind": "normal",
+            "features": [
+              "cli"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sysinfo",
+            "package_key": "sysinfo-0.32.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tear_client",
+            "package_key": "tear-client-0.1.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tear_config",
+            "package_key": "tear-config-0.1.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tear_core",
+            "package_key": "tear-core-0.1.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tear_daemon",
+            "package_key": "tear-daemon-0.1.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tear_tmux_backend",
+            "package_key": "tear-tmux-backend-0.1.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tear_types",
+            "package_key": "tear-types-0.1.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "io-util",
+              "macros",
+              "rt-multi-thread",
+              "sync"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing_subscriber",
+            "package_key": "tracing-subscriber-0.3.23",
+            "kind": "normal",
+            "features": [
+              "env-filter",
+              "json"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ureq",
+            "package_key": "ureq-3.3.0",
+            "kind": "normal",
+            "features": [
+              "json",
+              "rustls"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "portable-atomic-1.13.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -7888,284 +8166,6 @@
           "default",
           "proc-macro"
         ]
-      },
-      "tear-0.1.8": {
-        "runtime_dependencies": [
-          {
-            "name": "anyhow",
-            "package_key": "anyhow-1.0.102",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "clap",
-            "package_key": "clap-4.6.1",
-            "kind": "normal",
-            "features": [
-              "derive",
-              "env",
-              "wrap_help"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "crossterm",
-            "package_key": "crossterm-0.28.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ctrlc",
-            "package_key": "ctrlc-3.5.2",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "mimalloc",
-            "package_key": "mimalloc-0.1.52",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ratatui",
-            "package_key": "ratatui-0.30.2",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "rmcp",
-            "package_key": "rmcp-1.8.0",
-            "kind": "normal",
-            "features": [
-              "server",
-              "transport-io"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "schemars",
-            "package_key": "schemars-0.8.22",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.228",
-            "kind": "normal",
-            "features": [
-              "derive"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_json",
-            "package_key": "serde_json-1.0.150",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "shidou",
-            "package_key": "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "shikumi",
-            "package_key": "shikumi-0.1.0-5139dd2d37cae674912c169b4b20a03aecc08484",
-            "kind": "normal",
-            "features": [
-              "cli"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sysinfo",
-            "package_key": "sysinfo-0.32.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tear_client",
-            "package_key": "tear-client-0.1.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tear_config",
-            "package_key": "tear-config-0.1.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tear_core",
-            "package_key": "tear-core-0.1.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tear_daemon",
-            "package_key": "tear-daemon-0.1.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tear_tmux_backend",
-            "package_key": "tear-tmux-backend-0.1.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tear_types",
-            "package_key": "tear-types-0.1.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tokio",
-            "package_key": "tokio-1.52.3",
-            "kind": "normal",
-            "features": [
-              "io-util",
-              "macros",
-              "rt-multi-thread",
-              "sync"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tracing",
-            "package_key": "tracing-0.1.44",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tracing_subscriber",
-            "package_key": "tracing-subscriber-0.3.23",
-            "kind": "normal",
-            "features": [
-              "env-filter",
-              "json"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ureq",
-            "package_key": "ureq-3.3.0",
-            "kind": "normal",
-            "features": [
-              "json",
-              "rustls"
-            ],
-            "uses_default_features": false,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
       },
       "tear-client-0.1.8": {
         "runtime_dependencies": [
@@ -16103,6 +16103,15 @@
     "pin-project-lite-0.2.17": {
       "edition": "2018"
     },
+    "pleme-tear-0.1.8": {
+      "edition": "2024",
+      "binaries": [
+        {
+          "name": "tear",
+          "path": "src/main.rs"
+        }
+      ]
+    },
     "portable-atomic-1.13.1": {
       "edition": "2018",
       "build_script": "build.rs"
@@ -16393,15 +16402,6 @@
     },
     "sysinfo-0.32.1": {
       "edition": "2021"
-    },
-    "tear-0.1.8": {
-      "edition": "2024",
-      "binaries": [
-        {
-          "name": "tear",
-          "path": "src/main.rs"
-        }
-      ]
     },
     "tear-client-0.1.8": {
       "edition": "2024",
