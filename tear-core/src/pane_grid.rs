@@ -18,9 +18,7 @@
 
 use std::collections::VecDeque;
 
-use tear_types::pane_snapshot::{
-    ansi_256_color, default_ansi_palette, CellAttrs, Color,
-};
+use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
 use vte::{Params, Parser, Perform};
 
 pub use tear_types::pane_snapshot::{Cell, PaneSnapshot};
@@ -396,19 +394,142 @@ impl GridState {
     // ── SGR ────────────────────────────────────────────────────
 
     fn apply_sgr(&mut self, params: &Params) {
-        // SGR params can include sub-params for 38/48;5;n and
-        // 38/48;2;r;g;b. We flatten + walk.
-        let flat: Vec<u16> = params
-            .iter()
-            .flat_map(|p| p.iter().copied())
-            .collect();
-        if flat.is_empty() {
+        // ── PARAMETERS AND SUB-PARAMETERS ARE NOT THE SAME THING ──────
+        //
+        // SGR has two spellings for an extended colour, and they are NOT
+        // interchangeable:
+        //
+        //   ESC[38;2;r;g;b m      five PARAMETERS      (legacy xterm)
+        //   ESC[38:2:cs:r:g:b m   one parameter with
+        //                         six SUB-PARAMETERS   (ISO 8613-6)
+        //
+        // The colon form carries a colour-space id in slot 2, which is
+        // almost always empty (`38:2::r:g:b`) and arrives as a 0.
+        //
+        // This used to `flat_map` both spellings into one stream, which
+        // erases the distinction. The colon form then read the empty
+        // colour-space slot AS THE RED CHANNEL: every channel shifted by
+        // one and the real blue component fell out the end of the colour
+        // and was executed as an SGR attribute code. Measured live in a
+        // tear pane before this change:
+        //
+        //   ESC[38;2;248;248;242m  -> fg (248,248,242)   correct
+        //   ESC[38:2::248:248:242m -> fg (0,248,248)     WRONG
+        //
+        // and when that trailing component happened to be 4, UNDERLINE
+        // latched on for the rest of the session. SGR 58/59 (underline
+        // colour) had the same shape of bug from the other direction: 58
+        // was dropped as unknown and its components then walked as
+        // attribute codes, so `ESC[58;5;4m` also stuck UNDERLINE on.
+        //
+        // So: walk PARAMETERS, and let a parameter that carries
+        // sub-parameters be self-contained.
+        let items: Vec<&[u16]> = params.iter().collect();
+        if items.is_empty() {
             self.sgr_reset();
             return;
         }
-        let mut i = 0;
-        while i < flat.len() {
-            let p = flat[i];
+        let mut idx = 0;
+        while idx < items.len() {
+            let param = items[idx];
+            let Some(&code) = param.first() else {
+                idx += 1;
+                continue;
+            };
+
+            // Colon form: everything this directive needs is in `param`.
+            if param.len() > 1 {
+                self.apply_sgr_subparams(param);
+                idx += 1;
+                continue;
+            }
+
+            // Semicolon form: 38/48/58 consume the parameters that follow.
+            // 58/59 are underline COLOUR — tear's CellAttrs has no
+            // underline-colour field, so the value is discarded, but the
+            // parameters must still be CONSUMED or they walk as codes.
+            if matches!(code, 38 | 48 | 58) {
+                let (colour, consumed) = self.parse_extended_color_params(&items[idx..]);
+                match (code, colour) {
+                    (38, Some(c)) => self.pen_fg = c,
+                    (48, Some(c)) => self.pen_bg = c,
+                    _ => {}
+                }
+                idx += consumed;
+                continue;
+            }
+
+            self.apply_sgr_code(code);
+            idx += 1;
+        }
+    }
+
+    /// One SGR directive spelled with sub-parameters (`38:2::r:g:b`,
+    /// `38:5:n`, `4:3`, `58:2::r:g:b`). Self-contained by construction.
+    fn apply_sgr_subparams(&mut self, param: &[u16]) {
+        match param[0] {
+            // Styled underline. tear's CellAttrs carries a single boolean,
+            // so every style except `4:0` is "on"; `4:0` is the modern
+            // spelling of SGR 24.
+            4 => {
+                if param[1] == 0 {
+                    self.pen_attrs.remove(CellAttrs::UNDERLINE);
+                } else {
+                    self.pen_attrs.insert(CellAttrs::UNDERLINE);
+                }
+            }
+            code @ (38 | 48 | 58) => {
+                let colour = match param[1] {
+                    5 => param.get(2).map(|&n| ansi_256_color(n, &self.palette)),
+                    // `38:2:cs:r:g:b` has SIX slots — skip the colour-space
+                    // id. `38:2:r:g:b` (five) omits it. Choosing by length
+                    // is what keeps the channels aligned.
+                    2 => match param.len() {
+                        n if n >= 6 => {
+                            Some(Color::new(param[3] as u8, param[4] as u8, param[5] as u8))
+                        }
+                        5 => Some(Color::new(param[2] as u8, param[3] as u8, param[4] as u8)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match (code, colour) {
+                    (38, Some(c)) => self.pen_fg = c,
+                    (48, Some(c)) => self.pen_bg = c,
+                    // 58 = underline colour: parsed so it cannot leak,
+                    // then dropped because there is nowhere to put it.
+                    _ => {}
+                }
+            }
+            other => self.apply_sgr_code(other),
+        }
+    }
+
+    /// Semicolon-form extended colour. `rest[0]` is the 38/48/58
+    /// directive. Returns the colour (None for 58 or malformed input) and
+    /// how many PARAMETERS were consumed — always at least 1, so the
+    /// caller can never fail to advance.
+    fn parse_extended_color_params(&self, rest: &[&[u16]]) -> (Option<Color>, usize) {
+        let first = |i: usize| rest.get(i).and_then(|p| p.first().copied());
+        match first(1) {
+            Some(5) => match first(2) {
+                // `self.palette`, not the default one: a pane whose
+                // palette has been re-set by OSC 4 must resolve indexed
+                // colours against ITS palette.
+                Some(n) => (Some(ansi_256_color(n, &self.palette)), 3),
+                None => (None, 2),
+            },
+            Some(2) => match (first(2), first(3), first(4)) {
+                (Some(r), Some(g), Some(b)) => (Some(Color::new(r as u8, g as u8, b as u8)), 5),
+                _ => (None, rest.len().min(5)),
+            },
+            _ => (None, 1),
+        }
+    }
+
+    fn apply_sgr_code(&mut self, code: u16) {
+        {
+            let p = code;
             match p {
                 0 => self.sgr_reset(),
                 1 => self.pen_attrs.insert(CellAttrs::BOLD),
@@ -430,25 +551,13 @@ impl GridState {
                 28 => self.pen_attrs.remove(CellAttrs::HIDDEN),
                 29 => self.pen_attrs.remove(CellAttrs::STRIKETHROUGH),
                 30..=37 => self.pen_fg = self.palette[(p - 30) as usize],
-                38 => {
-                    // 38;5;n (256) or 38;2;r;g;b (truecolor)
-                    if let Some(c) = self.parse_extended_color(&flat, &mut i) {
-                        self.pen_fg = c;
-                    }
-                }
                 39 => self.pen_fg = Color::WHITE,
                 40..=47 => self.pen_bg = self.palette[(p - 40) as usize],
-                48 => {
-                    if let Some(c) = self.parse_extended_color(&flat, &mut i) {
-                        self.pen_bg = c;
-                    }
-                }
                 49 => self.pen_bg = Color::BLACK,
                 90..=97 => self.pen_fg = self.palette[8 + (p - 90) as usize],
                 100..=107 => self.pen_bg = self.palette[8 + (p - 100) as usize],
                 _ => {} // unknown — drop
             }
-            i += 1;
         }
     }
 
@@ -456,29 +565,6 @@ impl GridState {
         self.pen_fg = Color::WHITE;
         self.pen_bg = Color::BLACK;
         self.pen_attrs = CellAttrs::NONE;
-    }
-
-    /// Parse the extended-color params that follow a 38 or 48
-    /// directive. `i` points at the 38/48; advances it past the
-    /// consumed sub-params on success. Returns None on malformed
-    /// input.
-    fn parse_extended_color(&self, flat: &[u16], i: &mut usize) -> Option<Color> {
-        let mode = *flat.get(*i + 1)?;
-        match mode {
-            5 => {
-                let n = *flat.get(*i + 2)?;
-                *i += 2;
-                Some(ansi_256_color(n, &self.palette))
-            }
-            2 => {
-                let r = *flat.get(*i + 2)? as u8;
-                let g = *flat.get(*i + 3)? as u8;
-                let b = *flat.get(*i + 4)? as u8;
-                *i += 4;
-                Some(Color::new(r, g, b))
-            }
-            _ => None,
-        }
     }
 }
 
@@ -529,13 +615,7 @@ impl Perform for GridState {
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        intermediates: &[u8],
-        _ignore: bool,
-        c: char,
-    ) {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         // CSI sequences other than pure-SGR clear a pending wrap.
         if c != 'm' {
             self.wrap_pending = false;
@@ -749,8 +829,7 @@ impl Perform for GridState {
                     let blank = vec![self.blank_cell(); self.cols];
                     if self.alt_active {
                         if self.scroll_top < self.alternate.len() {
-                            self.alternate
-                                .insert(self.scroll_top, blank);
+                            self.alternate.insert(self.scroll_top, blank);
                             if self.scroll_bottom + 1 < self.alternate.len() {
                                 self.alternate.remove(self.scroll_bottom + 1);
                             }
@@ -914,7 +993,7 @@ impl GridState {
                 }
             }
             1 => self.cursor_keys_mode = set, // DECCKM
-            25 => self.cursor_visible = set, // DECTCEM
+            25 => self.cursor_visible = set,  // DECTCEM
             _ => {} // Autowrap, bracketed-paste, mouse modes etc. land later.
         }
     }
@@ -1251,6 +1330,128 @@ mod tests {
             row.starts_with("keep"),
             "private CSI ?J/?K must not erase; row was {row:?}"
         );
+    }
+
+    fn marker_fg(seq: &[u8]) -> Color {
+        let mut g = PaneGrid::new(20, 1);
+        let mut buf = seq.to_vec();
+        buf.push(b'X');
+        g.feed(&buf);
+        g.snapshot().cells[0]
+            .iter()
+            .rev()
+            .find(|c| c.ch == 'X')
+            .expect("marker X present")
+            .fg
+    }
+
+    /// The two spellings of an extended colour must agree, and neither
+    /// may leak a component into the attribute walk.
+    ///
+    /// The colon form carries a colour-space id in slot 2 (`38:2::r:g:b`,
+    /// usually empty). Flattening parameters and sub-parameters into one
+    /// stream read that empty slot as RED: every channel shifted by one
+    /// and the real blue fell out the end to be executed as an SGR code.
+    #[test]
+    fn semicolon_and_colon_extended_colour_agree() {
+        let cases: &[(&[u8], &[u8], Color)] = &[
+            (
+                b"\x1b[38;2;248;248;242m",
+                b"\x1b[38:2::248:248:242m",
+                Color::new(248, 248, 242),
+            ),
+            (
+                b"\x1b[38;2;177;185;249m",
+                b"\x1b[38:2::177:185:249m",
+                Color::new(177, 185, 249),
+            ),
+            // the channel value that used to latch UNDERLINE on
+            (
+                b"\x1b[38;2;4;4;4m",
+                b"\x1b[38:2::4:4:4m",
+                Color::new(4, 4, 4),
+            ),
+        ];
+        for (semi, colon, want) in cases {
+            assert_eq!(marker_fg(semi), *want, "semicolon form {semi:?}");
+            assert_eq!(marker_fg(colon), *want, "COLON form {colon:?}");
+        }
+        // the 5-slot colon form (no colour-space id) is also legal
+        assert_eq!(
+            marker_fg(b"\x1b[38:2:10:20:30m"),
+            Color::new(10, 20, 30),
+            "5-slot colon truecolor"
+        );
+    }
+
+    /// No extended-colour spelling may leave an attribute behind. This is
+    /// the generalisation of the XTMODKEYS bug: a directive whose
+    /// parameters are not fully consumed leaks them into the attribute
+    /// walk, and a leaked `4` is a permanently underlined session.
+    #[test]
+    fn extended_colour_never_leaks_an_attribute() {
+        let mut leaked = Vec::new();
+        for seq in [
+            &b"\x1b[38;2;4;4;4m"[..],
+            &b"\x1b[38:2::4:4:4m"[..],
+            &b"\x1b[48;2;4;4;4m"[..],
+            &b"\x1b[48:2::4:4:4m"[..],
+            &b"\x1b[38;5;4m"[..],
+            &b"\x1b[38:5:4m"[..],
+            &b"\x1b[48;5;4m"[..],
+            // SGR 58/59 — underline COLOUR. tear has nowhere to store it,
+            // but it must still be consumed or its components walk.
+            &b"\x1b[58;5;4m"[..],
+            &b"\x1b[58;2;4;4;4m"[..],
+            &b"\x1b[58:2::255:0:0m"[..],
+            &b"\x1b[59m"[..],
+            // truncated / malformed forms must not hang or leak
+            &b"\x1b[38m"[..],
+            &b"\x1b[38;2m"[..],
+            &b"\x1b[38;5m"[..],
+        ] {
+            if marker_attrs(seq) != CellAttrs::NONE {
+                leaked.push(String::from_utf8_lossy(seq).replace('\x1b', "ESC"));
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "these forms leaked an attribute: {leaked:?}"
+        );
+    }
+
+    /// `4:N` is the styled-underline sub-parameter form. tear stores a
+    /// boolean, so `4:0` is off and every other style is on — but a
+    /// flattened walk read `4:3` as SGR 4 THEN SGR 3, turning a curly
+    /// underline into underline + italic.
+    #[test]
+    fn styled_underline_subparams() {
+        assert!(marker_attrs(b"\x1b[4:3m").contains(CellAttrs::UNDERLINE));
+        assert!(
+            !marker_attrs(b"\x1b[4:3m").contains(CellAttrs::ITALIC),
+            "4:3 is a curly underline, not underline + italic"
+        );
+        assert!(!marker_attrs(b"\x1b[4:0m").contains(CellAttrs::UNDERLINE));
+        assert!(!marker_attrs(b"\x1b[4mU\x1b[4:0m").contains(CellAttrs::UNDERLINE));
+    }
+
+    /// Plain attributes and the legacy palette codes must be untouched by
+    /// the parameter/sub-parameter split.
+    #[test]
+    fn plain_sgr_still_works() {
+        assert!(marker_attrs(b"\x1b[1m").contains(CellAttrs::BOLD));
+        assert!(marker_attrs(b"\x1b[3m").contains(CellAttrs::ITALIC));
+        assert!(marker_attrs(b"\x1b[1;3m").contains(CellAttrs::BOLD));
+        assert!(marker_attrs(b"\x1b[1;3m").contains(CellAttrs::ITALIC));
+        assert_eq!(marker_attrs(b"\x1b[1;3m\x1b[0m"), CellAttrs::NONE);
+        assert_eq!(
+            marker_attrs(b"\x1b[1m\x1b[m"),
+            CellAttrs::NONE,
+            "bare ESC[m resets"
+        );
+        // 31 = red from the palette; 39 = default fg
+        assert_eq!(marker_fg(b"\x1b[31m"), default_ansi_palette()[1]);
+        assert_eq!(marker_fg(b"\x1b[31m\x1b[39m"), Color::WHITE);
     }
 
     /// The `?`-private modes we DO implement must keep working — the
@@ -1708,8 +1909,10 @@ mod tests {
         g.feed(b"\x1b[?1h"); // DECCKM set
         g.feed(b"\x1b[?25l"); // hide cursor (mode 25)
         g.feed(b"\x1b[?1049h"); // enter alt-screen (mode 1049)
-        assert!(g.cursor_keys_mode(),
-            "DECCKM must persist across cursor-visibility + alt-screen toggles");
+        assert!(
+            g.cursor_keys_mode(),
+            "DECCKM must persist across cursor-visibility + alt-screen toggles"
+        );
     }
 
     #[test]
@@ -1718,8 +1921,10 @@ mod tests {
         g.feed(b"\x1b[?1h"); // DECCKM set
         assert!(g.cursor_keys_mode());
         g.feed(b"\x1bc"); // RIS
-        assert!(!g.cursor_keys_mode(),
-            "RIS must reset DECCKM to normal mode");
+        assert!(
+            !g.cursor_keys_mode(),
+            "RIS must reset DECCKM to normal mode"
+        );
     }
 
     #[test]
