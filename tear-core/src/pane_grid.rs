@@ -546,13 +546,39 @@ impl Perform for GridState {
             .and_then(|p| p.first().copied())
             .unwrap_or(0);
         let n = first.max(1) as isize;
-        // DEC private (CSI ? ... h/l) mode toggles — recognised by
-        // the leading '?' intermediate.
-        if intermediates.first() == Some(&b'?') && (c == 'h' || c == 'l') {
-            let set = c == 'h';
-            for p in params.iter() {
-                if let Some(&code) = p.first() {
-                    self.apply_dec_mode(code, set);
+        // ── Private-parameter CSI is a SEPARATE NAMESPACE ─────────────
+        //
+        // A prefix byte in 0x3C..=0x3F (`<` `=` `>` `?`) makes the
+        // sequence private: it shares FINAL BYTES with the standard
+        // sequences but means something entirely different. Dispatching
+        // on the final byte alone therefore runs the wrong command.
+        //
+        // Not hypothetical. Claude Code emits `CSI > 4 ; 2 m` (xterm
+        // XTMODKEYS / modifyOtherKeys) at startup. Read as SGR that is
+        // params [4, 2] → UNDERLINE + DIM latched onto the pen, and
+        // since nothing later emits SGR 0 or 24, every cell printed for
+        // the rest of the session came out underlined — the standing
+        // "everything is underlined in mado" artifact. Measured on a
+        // real capture: 205/205 non-blank cells underlined before this
+        // guard, 0 after. `CSI > … h` and `CSI ? … J/K` (DECSED/DECSEL)
+        // are the same class one final byte over.
+        //
+        // So: recognise the private sequences we implement, and make
+        // every other private sequence a no-op. Falling through to the
+        // standard `match` is what must stay unrepresentable — adding a
+        // new standard arm must never silently hand some private
+        // sequence a meaning it does not have.
+        if let Some(prefix) = intermediates
+            .first()
+            .copied()
+            .filter(|b| (0x3C..=0x3F).contains(b))
+        {
+            if prefix == b'?' && (c == 'h' || c == 'l') {
+                let set = c == 'h';
+                for p in params.iter() {
+                    if let Some(&code) = p.first() {
+                        self.apply_dec_mode(code, set);
+                    }
                 }
             }
             return;
@@ -1143,6 +1169,102 @@ mod tests {
             leaked.is_empty(),
             "these SGR forms leave UNDERLINE stuck on the pen: {leaked:?}"
         );
+    }
+
+    /// Attrs of the last `X` printed by `seq` + `X`.
+    fn marker_attrs(seq: &[u8]) -> CellAttrs {
+        let mut g = PaneGrid::new(20, 1);
+        let mut buf = seq.to_vec();
+        buf.push(b'X');
+        g.feed(&buf);
+        g.snapshot().cells[0]
+            .iter()
+            .rev()
+            .find(|c| c.ch == 'X')
+            .expect("marker X present")
+            .attrs
+    }
+
+    /// THE regression. `CSI > 4 ; 2 m` is xterm's XTMODKEYS
+    /// (modifyOtherKeys), not SGR — Claude Code emits it at startup.
+    /// Dispatching on the final byte `m` alone read it as SGR 4 + SGR 2
+    /// and latched UNDERLINE + DIM onto the pen for the whole session,
+    /// so every subsequent cell rendered underlined.
+    #[test]
+    fn xtmodkeys_is_not_sgr() {
+        let attrs = marker_attrs(b"\x1b[>4;2m");
+        assert!(
+            !attrs.contains(CellAttrs::UNDERLINE),
+            "CSI >4;2m (XTMODKEYS) must not set UNDERLINE"
+        );
+        assert!(
+            !attrs.contains(CellAttrs::DIM),
+            "CSI >4;2m (XTMODKEYS) must not set DIM"
+        );
+        assert_eq!(attrs, CellAttrs::NONE, "XTMODKEYS must touch no attribute");
+    }
+
+    /// The whole private-parameter namespace, not just the one sequence
+    /// that bit us. A prefix in 0x3C..=0x3F shares final bytes with the
+    /// standard sequences; none may execute the standard command. This
+    /// guards every future `match c` arm from silently giving a private
+    /// sequence a meaning.
+    #[test]
+    fn private_parameter_csi_never_runs_the_standard_command() {
+        for seq in [
+            &b"\x1b[>4;2m"[..],
+            &b"\x1b[>1m"[..],
+            &b"\x1b[?4m"[..],
+            &b"\x1b[=4m"[..],
+            &b"\x1b[<4m"[..],
+        ] {
+            assert_eq!(
+                marker_attrs(seq),
+                CellAttrs::NONE,
+                "private CSI {:?} must not act as SGR",
+                String::from_utf8_lossy(seq),
+            );
+        }
+
+        for seq in [
+            &b"\x1b[>5A"[..],
+            &b"\x1b[>5C"[..],
+            &b"\x1b[?5G"[..],
+            &b"\x1b[>2;3H"[..],
+        ] {
+            let mut g = PaneGrid::new(20, 3);
+            g.feed(b"\x1b[H");
+            g.feed(seq);
+            let snap = g.snapshot();
+            assert_eq!(
+                (snap.cursor_row, snap.cursor_col),
+                (0, 0),
+                "private CSI {:?} must not move the cursor",
+                String::from_utf8_lossy(seq),
+            );
+        }
+
+        let mut g = PaneGrid::new(20, 1);
+        g.feed(b"keep\x1b[H\x1b[?2J\x1b[?0K");
+        let row: String = g.snapshot().cells[0].iter().map(|c| c.ch).collect();
+        assert!(
+            row.starts_with("keep"),
+            "private CSI ?J/?K must not erase; row was {row:?}"
+        );
+    }
+
+    /// The `?`-private modes we DO implement must keep working — the
+    /// namespace split must not throw them out with the rest.
+    #[test]
+    fn dec_private_modes_still_dispatch() {
+        let mut g = PaneGrid::new(20, 2);
+        g.feed(b"\x1b[?25l");
+        assert!(
+            !g.snapshot().cursor_visible,
+            "DECTCEM reset must hide cursor"
+        );
+        g.feed(b"\x1b[?25h");
+        assert!(g.snapshot().cursor_visible, "DECTCEM set must show cursor");
     }
 
     #[test]
