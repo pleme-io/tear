@@ -544,13 +544,14 @@ impl MultiplexerControl for Client {
     ) -> ControlResult<SessionId> {
         // Defer to new_session_with_source_and_size with the
         // default (80, 24) so the wire path is one method.
-        self.new_session_with_source_and_size(name, shell, source, (80, 24))
+        self.new_session_with_source_and_size(name, shell, &[], source, (80, 24))
     }
 
     fn new_session_with_source_and_size(
         &self,
         name: &str,
         shell: &str,
+        args: &[String],
         source: tear_types::SessionSource,
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId> {
@@ -559,6 +560,7 @@ impl MultiplexerControl for Client {
             shell: shell.to_owned(),
             source: Some(source),
             size_cells: Some(size_cells),
+            args: args.to_vec(),
         })? {
             Response::SessionId(id) => Ok(id),
             other => Err(unexpected("SessionId", other)),
@@ -587,11 +589,13 @@ impl MultiplexerControl for Client {
         session: SessionId,
         name: &str,
         shell: &str,
+        args: &[String],
     ) -> ControlResult<WindowId> {
         match self.rpc(Request::NewWindow {
             session,
             name: name.to_owned(),
             shell: shell.to_owned(),
+            args: args.to_vec(),
         })? {
             Response::WindowId(id) => Ok(id),
             other => Err(unexpected("WindowId", other)),
@@ -617,11 +621,13 @@ impl MultiplexerControl for Client {
         origin: PaneId,
         direction: Direction,
         shell: &str,
+        args: &[String],
     ) -> ControlResult<PaneId> {
         match self.rpc(Request::SplitPane {
             origin,
             direction,
             shell: shell.to_owned(),
+            args: args.to_vec(),
         })? {
             Response::PaneId(id) => Ok(id),
             other => Err(unexpected("PaneId", other)),

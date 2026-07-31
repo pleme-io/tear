@@ -104,7 +104,7 @@ pub trait MultiplexerControl: Send + Sync {
         shell: &str,
         source: crate::session::SessionSource,
     ) -> ControlResult<SessionId> {
-        self.new_session_with_source_and_size(name, shell, source, (80, 24))
+        self.new_session_with_source_and_size(name, shell, &[], source, (80, 24))
     }
 
     /// Same as [`Self::new_session_with_source`] but the first
@@ -117,10 +117,17 @@ pub trait MultiplexerControl: Send + Sync {
     /// target geometry; otherwise the consumer should pass the
     /// renderer's exact cell grid (e.g. mado's
     /// `TerminalRenderer::cells_for_window_phys(...)`).
+    ///
+    /// `args` is `shell`'s argv[1..]. It is passed to the child
+    /// **as an argument vector**, never through a shell — so a
+    /// consumer that wants to run `nvim -u NONE file.rs` passes
+    /// three elements rather than smuggling them into one command
+    /// string. Pass `&[]` for a bare shell.
     fn new_session_with_source_and_size(
         &self,
         name: &str,
         shell: &str,
+        args: &[String],
         source: crate::session::SessionSource,
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId>;
@@ -135,8 +142,15 @@ pub trait MultiplexerControl: Send + Sync {
     // ── Windows ──────────────────────────────────────────────────
 
     /// Create a new window in a session, spawning `shell` as its
-    /// first pane.
-    fn new_window(&self, session: SessionId, name: &str, shell: &str) -> ControlResult<WindowId>;
+    /// first pane. `args` is that program's argv[1..] — passed as a
+    /// vector, never through a shell. `&[]` for a bare shell.
+    fn new_window(
+        &self,
+        session: SessionId,
+        name: &str,
+        shell: &str,
+        args: &[String],
+    ) -> ControlResult<WindowId>;
 
     fn kill_window(&self, id: WindowId) -> ControlResult<()>;
 
@@ -145,12 +159,14 @@ pub trait MultiplexerControl: Send + Sync {
     // ── Panes ────────────────────────────────────────────────────
 
     /// Split a pane in the given direction. `shell` is the program
-    /// spawned in the new pane.
+    /// spawned in the new pane and `args` is its argv[1..] — passed
+    /// as a vector, never through a shell. `&[]` for a bare shell.
     fn split_pane(
         &self,
         origin: PaneId,
         direction: Direction,
         shell: &str,
+        args: &[String],
     ) -> ControlResult<PaneId>;
 
     fn kill_pane(&self, id: PaneId) -> ControlResult<()>;

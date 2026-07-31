@@ -840,11 +840,11 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             window: w,
         }),
         Request::GetPane(id) => map_result(inproc.get_pane(id), Response::Pane),
-        Request::NewSession { name, shell, source, size_cells } => {
+        Request::NewSession { name, shell, source, size_cells, args } => {
             let src = source.unwrap_or_default();
             let size = size_cells.unwrap_or((80, 24));
             map_result(
-                inproc.new_session_with_source_and_size(&name, &shell, src, size),
+                inproc.new_session_with_source_and_size(&name, &shell, &args, src, size),
                 Response::SessionId,
             )
         }
@@ -852,13 +852,19 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             map_unit(inproc.rename_session(id, &new_name))
         }
         Request::KillSession(id) => map_unit(inproc.kill_session(id)),
-        Request::NewWindow { session, name, shell } => {
-            map_result(inproc.new_window(session, &name, &shell), Response::WindowId)
+        Request::NewWindow { session, name, shell, args } => {
+            map_result(
+                inproc.new_window(session, &name, &shell, &args),
+                Response::WindowId,
+            )
         }
         Request::KillWindow(id) => map_unit(inproc.kill_window(id)),
         Request::SelectWindow(id) => map_unit(inproc.select_window(id)),
-        Request::SplitPane { origin, direction, shell } => {
-            map_result(inproc.split_pane(origin, direction, &shell), Response::PaneId)
+        Request::SplitPane { origin, direction, shell, args } => {
+            map_result(
+                inproc.split_pane(origin, direction, &shell, &args),
+                Response::PaneId,
+            )
         }
         Request::KillPane(id) => map_unit(inproc.kill_pane(id)),
         Request::SelectPane(id) => map_unit(inproc.select_pane(id)),
@@ -1018,10 +1024,11 @@ pub fn dispatch_with_config(
             }
             resp
         }
-        Request::NewSession { name, shell, source, size_cells } => {
+        Request::NewSession { name, shell, source, size_cells, args } => {
             let src = source.unwrap_or_default();
             let size = size_cells.unwrap_or((80, 24));
-            let result = inproc.new_session_with_source_and_size(&name, &shell, src.clone(), size);
+            let result =
+                inproc.new_session_with_source_and_size(&name, &shell, &args, src.clone(), size);
             if let Ok(sid) = &result {
                 if let Some(a) = audit {
                     a.emit(&AuditEvent::SessionCreate {
@@ -1289,6 +1296,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 source: None,
                 size_cells: None,
+                args: Vec::new(),
             },
         );
         let session_id = match resp {
@@ -1390,6 +1398,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 source: None,
                 size_cells: None,
+                args: Vec::new(),
             },
         ) {
             Response::SessionId(s) => s,
@@ -1731,6 +1740,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 source: None,
                 size_cells: None,
+                args: Vec::new(),
             },
             None,
             Some(&store),
@@ -1786,6 +1796,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 source: None,
                 size_cells: None,
+                args: Vec::new(),
             },
             None,
             Some(&store),
@@ -1838,6 +1849,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 source: None,
                 size_cells: None,
+                args: Vec::new(),
             },
             None,
             Some(&store),

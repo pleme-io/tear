@@ -366,7 +366,16 @@ impl InProcess {
     /// the per-pane VT parser AND injects the `TEAR_*` env vars so
     /// shells and prompts (starship) can see they're running inside
     /// a tear session.
-    fn spawn_pty_for(&self, pane_id: PaneId, shell: &str, size: (u16, u16)) -> anyhow::Result<()> {
+    /// `args` is `shell`'s argv[1..], handed to [`PtyHandle::spawn`]
+    /// as an argument vector. It reaches `execvp` directly — there is
+    /// no shell in between, so no quoting or escaping applies.
+    fn spawn_pty_for(
+        &self,
+        pane_id: PaneId,
+        shell: &str,
+        args: &[String],
+        size: (u16, u16),
+    ) -> anyhow::Result<()> {
         // Typed cross-tool env-var names (the SAME source seki's prompt
         // reads) — hoisted to the top of the fn so it's an item, not a
         // statement-position import.
@@ -666,7 +675,7 @@ impl InProcess {
         });
         let pty = PtyHandle::spawn(
             shell,
-            &[],
+            args,
             cwd.as_deref(),
             &env,
             pty_size,
@@ -769,10 +778,15 @@ impl MultiplexerControl for InProcess {
         &self,
         name: &str,
         shell: &str,
+        args: &[String],
         source: tear_types::SessionSource,
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId> {
         let size = (size_cells.0.max(1), size_cells.1.max(1));
+        // The embedder's cwd projection is the same value
+        // `spawn_pty_for` will apply, so recording it here keeps the
+        // typed pane record and the real child in agreement.
+        let cwd = self.spawn_env.read().cwd.clone();
         let mut r = self.registry.write();
         let sid = r.create_session(name);
         // Stamp provenance on the typed session entry. The
@@ -782,13 +796,15 @@ impl MultiplexerControl for InProcess {
         if let Some(s) = r.sessions.get_mut(&sid) {
             s.source = source.clone();
         }
-        let Some((_wid, pane_id)) = r.add_window(sid, "main", shell, size) else {
+        let Some((_wid, pane_id)) =
+            r.add_window(sid, "main", shell, args, cwd.as_deref(), &[], size)
+        else {
             return Err(ControlError::Internal(anyhow::anyhow!(
                 "registry.add_window returned None after fresh create_session"
             )));
         };
         drop(r); // release write lock before spawning PTY
-        if let Err(e) = self.spawn_pty_for(pane_id, shell, size) {
+        if let Err(e) = self.spawn_pty_for(pane_id, shell, args, size) {
             // Roll back the session — registry is small, easier to
             // remove than to leave a sessionless typed entry.
             self.registry.write().sessions.remove(&sid);
@@ -829,14 +845,21 @@ impl MultiplexerControl for InProcess {
         Ok(())
     }
 
-    fn new_window(&self, session: SessionId, name: &str, shell: &str) -> ControlResult<WindowId> {
+    fn new_window(
+        &self,
+        session: SessionId,
+        name: &str,
+        shell: &str,
+        args: &[String],
+    ) -> ControlResult<WindowId> {
         let size = (80, 24);
+        let cwd = self.spawn_env.read().cwd.clone();
         let (wid, pid) = {
             let mut r = self.registry.write();
-            r.add_window(session, name, shell, size)
+            r.add_window(session, name, shell, args, cwd.as_deref(), &[], size)
                 .ok_or(ControlError::NoSuchSession(session))?
         };
-        if let Err(e) = self.spawn_pty_for(pid, shell, size) {
+        if let Err(e) = self.spawn_pty_for(pid, shell, args, size) {
             return Err(ControlError::Internal(e));
         }
         info!(session = %session, window = %wid, name, "tear-core: new window");
@@ -901,6 +924,7 @@ impl MultiplexerControl for InProcess {
         origin: PaneId,
         direction: Direction,
         shell: &str,
+        args: &[String],
     ) -> ControlResult<PaneId> {
         // Correct split: replace ONLY the origin leaf in the window's
         // layout tree with a balanced split (origin, new). Every other
@@ -914,6 +938,7 @@ impl MultiplexerControl for InProcess {
         // Placeholder spawn size; apply_layout_geometry SIGWINCHes the
         // real per-pane geometry right after the PTY is up.
         let size = (80, 12);
+        let cwd = self.spawn_env.read().cwd.clone();
         let pid = {
             let mut r = self.registry.write();
             let Some(s) = r.sessions.get_mut(&sid) else {
@@ -925,8 +950,8 @@ impl MultiplexerControl for InProcess {
                 TearPane {
                     id: new_pid,
                     shell: shell.into(),
-                    args: vec![],
-                    cwd: None,
+                    args: args.to_vec(),
+                    cwd: cwd.clone(),
                     env: vec![],
                     size_cells: size,
                     origin_cells: (0, 0),
@@ -951,7 +976,7 @@ impl MultiplexerControl for InProcess {
             }
             new_pid
         };
-        self.spawn_pty_for(pid, shell, size)
+        self.spawn_pty_for(pid, shell, args, size)
             .map_err(ControlError::Internal)?;
         self.apply_layout_geometry(sid, wid);
         info!(pane = %pid, "tear-core: split pane");
@@ -1969,7 +1994,7 @@ mod tests {
         let inproc = InProcess::new();
         let sid = inproc.new_session("split", "/bin/sh").unwrap();
         let origin = active_pane(&inproc, sid);
-        let new = inproc.split_pane(origin, Direction::Right, "/bin/sh").unwrap();
+        let new = inproc.split_pane(origin, Direction::Right, "/bin/sh", &[]).unwrap();
 
         let s = inproc.get_session(sid).unwrap();
         let w = &s.windows[&s.active_window];
@@ -1988,7 +2013,7 @@ mod tests {
         let inproc = InProcess::new();
         let sid = inproc.new_session("kill", "/bin/sh").unwrap();
         let origin = active_pane(&inproc, sid);
-        let new = inproc.split_pane(origin, Direction::Below, "/bin/sh").unwrap();
+        let new = inproc.split_pane(origin, Direction::Below, "/bin/sh", &[]).unwrap();
 
         inproc.kill_pane(new).unwrap();
         let s = inproc.get_session(sid).unwrap();
@@ -2011,7 +2036,7 @@ mod tests {
         let sid = inproc.new_session("multi", "/bin/sh").unwrap();
         let w1 = inproc.get_session(sid).unwrap().active_window;
         // A second window — and make it the active one we then kill.
-        let w2 = inproc.new_window(sid, "second", "/bin/sh").unwrap();
+        let w2 = inproc.new_window(sid, "second", "/bin/sh", &[]).unwrap();
         inproc.select_window(w2).unwrap();
         let only_pane_w2 = {
             let s = inproc.get_session(sid).unwrap();
@@ -2044,7 +2069,7 @@ mod tests {
         let inproc = InProcess::new();
         let sid = inproc.new_session("resize", "/bin/sh").unwrap();
         let origin = active_pane(&inproc, sid);
-        let _new = inproc.split_pane(origin, Direction::Right, "/bin/sh").unwrap();
+        let _new = inproc.split_pane(origin, Direction::Right, "/bin/sh", &[]).unwrap();
 
         let w_before = {
             let s = inproc.get_session(sid).unwrap();
@@ -2070,8 +2095,8 @@ mod tests {
         let wid = s0.active_window;
         let p0 = s0.windows[&wid].active_pane;
         // Build an arbitrary 3-pane shape: p0 | (p1 / p2).
-        let p1 = inproc.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
-        let _p2 = inproc.split_pane(p1, Direction::Below, "/bin/sh").unwrap();
+        let p1 = inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
+        let _p2 = inproc.split_pane(p1, Direction::Below, "/bin/sh", &[]).unwrap();
         let before: std::collections::BTreeSet<PaneId> =
             inproc.get_window(wid).unwrap().1.layout.panes().into_iter().collect();
 
@@ -2096,7 +2121,7 @@ mod tests {
         let sid = inproc.new_session("custom", "/bin/sh").unwrap();
         let wid = inproc.get_session(sid).unwrap().active_window;
         let p0 = inproc.get_session(sid).unwrap().windows[&wid].active_pane;
-        inproc.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
+        inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
         let before = inproc.get_window(wid).unwrap().1.layout.clone();
         // Custom has no canonical arrangement → no-op.
         inproc.apply_layout(wid, LayoutKind::Custom).unwrap();

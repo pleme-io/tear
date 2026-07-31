@@ -399,7 +399,7 @@ mod tests {
         let s0 = inproc.get_session(sid).unwrap();
         let wid = s0.active_window;
         let p0 = s0.windows[&wid].active_pane;
-        inproc.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
+        inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
         let session = inproc.get_session(sid).unwrap();
 
         let def = SessionDefinition::from_live(&session, "/code/captured", 0);

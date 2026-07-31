@@ -22,11 +22,26 @@
 //!
 //! ## Versioning
 //!
-//! The wire is bincode + serde, so adding a new variant to either
+//! The wire is **CBOR + serde** (see the framing note above — an
+//! earlier revision of this paragraph said "bincode", which was
+//! stale: bincode was evaluated and rejected for the tagging reason
+//! stated above, and never shipped). Adding a new variant to either
 //! enum at the *end* is backwards-compatible (older clients ignore
 //! variants they don't understand because they never emit them).
 //! Removing or reordering variants is a breaking wire change — bump
 //! the workspace minor version when that happens.
+//!
+//! **Field-level compatibility.** `Request` is externally tagged and
+//! its struct variants are encoded as *field-name-keyed CBOR maps*.
+//! No type here sets `deny_unknown_fields`, so a `#[serde(default)]`
+//! field is compatible in BOTH directions: an old daemon decoding a
+//! new client's frame ignores the key it doesn't know, and a new
+//! daemon decoding an old client's frame fills the missing key from
+//! `Default`. There is **no protocol version constant and no
+//! negotiation** — which means an old daemon silently *drops* a new
+//! field rather than rejecting the request. For `args` that is
+//! visible as "the program spawned without its arguments", not as an
+//! error. Restart the daemon after upgrading a client.
 
 use std::io::{self, Read, Write};
 
@@ -65,6 +80,14 @@ pub enum Request {
         /// query, no resize-flicker on attach.
         #[serde(default)]
         size_cells: Option<(u16, u16)>,
+        /// Arguments passed to `shell` as argv[1..]. Defaults to
+        /// empty on pre-args wire bytes. Because there is no
+        /// protocol negotiation, a *stale daemon* decoding this
+        /// frame drops the key and spawns the bare program — the
+        /// failure is silent and looks like "my arguments were
+        /// ignored", so restart the daemon after upgrading.
+        #[serde(default)]
+        args: Vec<String>,
     },
     RenameSession {
         id: SessionId,
@@ -76,6 +99,10 @@ pub enum Request {
         session: SessionId,
         name: String,
         shell: String,
+        /// Arguments passed to `shell` as argv[1..]. See the
+        /// `NewSession::args` note on stale-daemon behaviour.
+        #[serde(default)]
+        args: Vec<String>,
     },
     KillWindow(WindowId),
     SelectWindow(WindowId),
@@ -84,6 +111,10 @@ pub enum Request {
         origin: PaneId,
         direction: Direction,
         shell: String,
+        /// Arguments passed to `shell` as argv[1..]. See the
+        /// `NewSession::args` note on stale-daemon behaviour.
+        #[serde(default)]
+        args: Vec<String>,
     },
     KillPane(PaneId),
     SelectPane(PaneId),
@@ -446,6 +477,131 @@ mod tests {
                 assert_eq!(kind, LayoutKind::MainVertical);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    /// **Old client → new daemon.** A frame written WITHOUT the `args`
+    /// key must still decode, filling `args` from `Default`. This is the
+    /// half of the compat verdict that lets a new daemon accept traffic
+    /// from a client built before `args` existed.
+    ///
+    /// The pre-args frame is reconstructed structurally rather than
+    /// checked in as a byte blob: `Request` is externally tagged with
+    /// field-name-keyed struct variants, so a CBOR map carrying only the
+    /// old keys IS exactly what an old client emitted.
+    #[test]
+    fn new_daemon_decodes_a_pre_args_new_session_frame() {
+        use ciborium::value::Value;
+        // { "NewSession": { "name": …, "shell": … } } — no args, and no
+        // source/size_cells either (those are the older `#[serde(default)]`
+        // fields, which is the precedent this follows).
+        let old = Value::Map(vec![(
+            Value::Text("NewSession".into()),
+            Value::Map(vec![
+                (Value::Text("name".into()), Value::Text("work".into())),
+                (Value::Text("shell".into()), Value::Text("/bin/sh".into())),
+            ]),
+        )]);
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&old, &mut bytes).unwrap();
+        let got: Request = ciborium::de::from_reader(&bytes[..])
+            .expect("a pre-args frame must still decode");
+        match got {
+            Request::NewSession { name, shell, source, size_cells, args } => {
+                assert_eq!(name, "work");
+                assert_eq!(shell, "/bin/sh");
+                assert!(source.is_none());
+                assert!(size_cells.is_none());
+                assert!(args.is_empty(), "missing args must default to empty");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// **New client → old daemon.** No type here sets
+    /// `deny_unknown_fields`, so a frame carrying an EXTRA key decodes
+    /// cleanly against a struct that has never heard of it — the key is
+    /// ignored. That is what makes the new `args` field safe to send at
+    /// a stale daemon, and equally what makes the failure SILENT: the
+    /// daemon does not reject the request, it spawns without the
+    /// arguments. Restart the daemon to get the feature.
+    ///
+    /// Modelled by taking a real frame, splicing in a bogus future key,
+    /// and decoding it back: `args` plays exactly that role for a binary
+    /// built before it existed.
+    #[test]
+    fn unknown_fields_are_ignored_so_a_stale_peer_never_errors() {
+        use ciborium::value::Value;
+        let req = Request::SplitPane {
+            origin: PaneId::from_seed("p"),
+            direction: Direction::Right,
+            shell: "/bin/sh".into(),
+            args: vec!["-l".to_string()],
+        };
+        // Round-trip through Value so the id/direction encodings are
+        // whatever serde really produces, not a guess.
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&req, &mut bytes).unwrap();
+        let mut val: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+        // Splice a key no version of this enum has ever declared into the
+        // variant's field map.
+        let Value::Map(outer) = &mut val else {
+            panic!("externally-tagged variant must encode as a map")
+        };
+        let Value::Map(fields) = &mut outer[0].1 else {
+            panic!("struct variant must encode as a field map")
+        };
+        fields.push((Value::Text("not_a_field_we_know".into()), Value::Bool(true)));
+        let mut spliced = Vec::new();
+        ciborium::ser::into_writer(&val, &mut spliced).unwrap();
+        let got: Request = ciborium::de::from_reader(&spliced[..])
+            .expect("an unknown key must be ignored, not rejected");
+        match got {
+            Request::SplitPane { shell, args, .. } => {
+                assert_eq!(shell, "/bin/sh");
+                assert_eq!(args, vec!["-l".to_string()]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// `args` survives a real write→read round-trip on all three
+    /// arg-bearing variants.
+    #[test]
+    fn args_roundtrip_on_every_arg_bearing_variant() {
+        let args = vec!["-u".to_string(), "NONE".to_string()];
+        let reqs = vec![
+            Request::NewSession {
+                name: "w".into(),
+                shell: "/bin/nvim".into(),
+                source: None,
+                size_cells: None,
+                args: args.clone(),
+            },
+            Request::NewWindow {
+                session: SessionId::from_seed("s"),
+                name: "w".into(),
+                shell: "/bin/nvim".into(),
+                args: args.clone(),
+            },
+            Request::SplitPane {
+                origin: PaneId::from_seed("p"),
+                direction: Direction::Right,
+                shell: "/bin/nvim".into(),
+                args: args.clone(),
+            },
+        ];
+        for req in reqs {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &req).unwrap();
+            let got: Request = read_msg(&mut Cursor::new(&buf)).unwrap();
+            let seen = match got {
+                Request::NewSession { args, .. }
+                | Request::NewWindow { args, .. }
+                | Request::SplitPane { args, .. } => args,
+                other => panic!("wrong variant: {other:?}"),
+            };
+            assert_eq!(seen, args);
         }
     }
 

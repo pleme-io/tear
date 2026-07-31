@@ -89,11 +89,21 @@ impl Registry {
     }
 
     /// Insert a window into a session, with a single seed-pane.
+    ///
+    /// `args` / `cwd` / `env` are recorded on the seed [`TearPane`]
+    /// so the pane's typed record matches what was actually spawned.
+    /// They used to be hardcoded `vec![]` / `None` / `vec![]` here,
+    /// which is what made a captured-then-replayed session lose its
+    /// arguments: `praca`'s `from_live` read these fields faithfully,
+    /// but they had never been populated in the first place.
     pub fn add_window(
         &mut self,
         session_id: SessionId,
         name: &str,
         shell: &str,
+        args: &[String],
+        cwd: Option<&str>,
+        env: &[(String, String)],
         size_cells: (u16, u16),
     ) -> Option<(WindowId, PaneId)> {
         let s = self.sessions.get_mut(&session_id)?;
@@ -102,9 +112,9 @@ impl Registry {
         let pane = TearPane {
             id: pane_id,
             shell: shell.into(),
-            args: vec![],
-            cwd: None,
-            env: vec![],
+            args: args.to_vec(),
+            cwd: cwd.map(Into::into),
+            env: env.to_vec(),
             size_cells,
             origin_cells: (0, 0),
             state: PaneState::Running,
@@ -160,7 +170,9 @@ mod tests {
     fn add_window_creates_initial_pane_and_focuses_it() {
         let mut r = Registry::new();
         let sid = r.create_session("work");
-        let (wid, pid) = r.add_window(sid, "main", "/bin/zsh", (80, 24)).unwrap();
+        let (wid, pid) = r
+            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24))
+            .unwrap();
         let s = &r.sessions[&sid];
         assert!(s.windows.contains_key(&wid));
         assert!(s.panes.contains_key(&pid));
@@ -169,11 +181,35 @@ mod tests {
         assert_eq!(s.windows[&wid].layout.pane_count(), 1);
     }
 
+    /// The seed pane's typed record must carry what was actually
+    /// spawned. Before args/cwd/env were threaded, `add_window`
+    /// hardcoded `vec![]` / `None` / `vec![]` here, so `praca`'s
+    /// capture read empty fields off every pane and replay silently
+    /// dropped the arguments. This is the fail-once seal on that
+    /// class at its lowest layer: revert any of the three fields to
+    /// its old hardcode and this test goes red.
+    #[test]
+    fn add_window_records_the_spawn_args_cwd_and_env_on_the_seed_pane() {
+        let mut r = Registry::new();
+        let sid = r.create_session("work");
+        let args = vec!["-u".to_string(), "NONE".to_string()];
+        let env = vec![("EDITOR".to_string(), "nvim".to_string())];
+        let (_wid, pid) = r
+            .add_window(sid, "main", "/bin/nvim", &args, Some("/code"), &env, (80, 24))
+            .unwrap();
+        let pane = &r.sessions[&sid].panes[&pid];
+        assert_eq!(pane.args, args, "seed pane must record its spawn args");
+        assert_eq!(pane.cwd.as_deref(), Some("/code"));
+        assert_eq!(pane.env, env);
+    }
+
     #[test]
     fn locate_pane_finds_its_parent() {
         let mut r = Registry::new();
         let sid = r.create_session("work");
-        let (wid, pid) = r.add_window(sid, "main", "/bin/zsh", (80, 24)).unwrap();
+        let (wid, pid) = r
+            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24))
+            .unwrap();
         assert_eq!(r.locate_pane(pid), Some((sid, wid)));
     }
 }

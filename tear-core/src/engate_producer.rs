@@ -90,6 +90,7 @@ mod tests {
             .new_session_with_source_and_size(
                 "engate-test",
                 "/bin/sh",
+                &[],
                 SessionSource::Human,
                 (80, 24),
             )

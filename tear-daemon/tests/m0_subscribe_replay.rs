@@ -35,6 +35,7 @@ fn spawn_pane_with_known_content(inproc: &InProcess) -> (SessionId, PaneId) {
         .new_session_with_source_and_size(
             "m0-test",
             "/bin/sh",
+            &[],
             SessionSource::Human,
             (80, 24),
         )

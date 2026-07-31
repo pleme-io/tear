@@ -22,11 +22,21 @@
 //! to rebuild the plan's tree: spawn the leftmost slot's shell, then split
 //! outward so every leaf lands on its slot's pane with its slot's shell.
 //!
-//! Tier-honest (M1): the tree *shape* and per-pane *shell* are exact; the
-//! split *ratios* default to the backend's balanced split (the plan's
-//! ratios are not yet applied — that needs a ratio-bearing split op or a
-//! post-spawn resize pass, a named follow-up). Per-pane `cwd`/`env`/`args`
-//! beyond the shell likewise await a richer backend spawn op.
+//! Tier-honest (M1): the tree *shape*, the per-pane *shell* and the
+//! per-pane *args* are exact; the split *ratios* default to the backend's
+//! balanced split (the plan's ratios are not yet applied — that needs a
+//! ratio-bearing split op or a post-spawn resize pass, a named follow-up).
+//! Per-pane `cwd`/`env` still await a richer backend spawn op:
+//! [`MultiplexerControl`] now carries `args` but not those two, so a
+//! replayed pane inherits the session's cwd/env rather than its own.
+//!
+//! Until `args` was threaded, this interpreter *silently dropped* them —
+//! `SpawnSpec::args` was captured faithfully by
+//! [`crate::definition::SessionDefinition::from_live`] and then never
+//! read, so replaying `nvim -u NONE` spawned a bare `nvim`. Consumers
+//! worked around it by folding argv into the shell string, which is what
+//! forced them to think about quoting at all. They no longer need to:
+//! `args` reaches `execvp` as a vector, with no shell in between.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -106,10 +116,16 @@ fn realize_into(
             orientation, a, b, ..
         } => {
             // The new pane takes the b-side; spawn it with b's leftmost
-            // slot's shell. `validate()` guaranteed every slot has a spec.
+            // slot's shell + args. `validate()` guaranteed every slot has
+            // a spec.
             let b_first = b.leftmost_slot();
-            let b_shell = specs[&b_first].shell.clone();
-            let new_pane = backend.split_pane(occupant, split_direction(*orientation), &b_shell)?;
+            let b_spec = &specs[&b_first];
+            let new_pane = backend.split_pane(
+                occupant,
+                split_direction(*orientation),
+                &b_spec.shell,
+                &b_spec.args,
+            )?;
             // `occupant` stays as side a; recurse into both halves.
             realize_into(a, occupant, specs, backend, out)?;
             realize_into(b, new_pane, specs, backend, out)?;
@@ -156,11 +172,14 @@ pub fn instantiate(
     let mut first_window = None;
     for (i, window) in def.windows.iter().enumerate() {
         let leftmost = window.layout.leftmost_slot();
-        let first_shell = def.pane_specs[&leftmost].shell.clone();
+        // The leftmost slot's FULL spec — shell *and* args. Reading only
+        // `.shell` here is precisely what made replay lossy.
+        let first = &def.pane_specs[&leftmost];
         let wid = if i == 0 {
             let sid = backend.new_session_with_source_and_size(
                 &display,
-                &first_shell,
+                &first.shell,
+                &first.args,
                 source.clone(),
                 (80, 24),
             )?;
@@ -169,7 +188,12 @@ pub fn instantiate(
             first_window = Some(w);
             w
         } else {
-            backend.new_window(session_id.expect("first window set"), &window.name, &first_shell)?
+            backend.new_window(
+                session_id.expect("first window set"),
+                &window.name,
+                &first.shell,
+                &first.args,
+            )?
         };
         realize_window(window, wid, &def.pane_specs, backend)?;
     }
@@ -358,8 +382,8 @@ mod tests {
         let sid = backend.new_session("orig", "/bin/sh").unwrap();
         let w = backend.get_session(sid).unwrap().active_window;
         let p0 = backend.get_session(sid).unwrap().windows[&w].active_pane;
-        let p1 = backend.split_pane(p0, Direction::Right, "/bin/sh").unwrap();
-        backend.split_pane(p1, Direction::Below, "/bin/sh").unwrap();
+        let p1 = backend.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
+        backend.split_pane(p1, Direction::Below, "/bin/sh", &[]).unwrap();
         let original = backend.get_session(sid).unwrap();
         let mut orig_shape = String::new();
         shape(&original.windows[&w].layout, &mut orig_shape);
@@ -375,6 +399,68 @@ mod tests {
         // The structural fingerprint round-trips (orientations + tree shape).
         assert_eq!(new_shape, orig_shape, "captured layout structure differs");
         assert_eq!(new_w.layout.pane_count(), 3);
+    }
+
+    /// The whole point of threading `args`: a definition that carries
+    /// arguments must instantiate panes that actually RECORD them.
+    ///
+    /// This is the end-to-end fail-once seal on the lossy-replay class.
+    /// Before the fix the interpreter read only `SpawnSpec::shell`, so
+    /// every replayed pane came back with `args == []` and consumers had
+    /// to fold argv into the shell string to get it across. Break the
+    /// threading anywhere on the path — `instantiate`'s spec read,
+    /// `InProcess::new_session_with_source_and_size`, `split_pane`, or
+    /// `Registry::add_window`'s record — and this goes red.
+    #[test]
+    fn instantiate_carries_each_slots_args_onto_the_live_panes() {
+        let backend = InProcess::new();
+        let mut left = tear_types::SpawnSpec::shell(PaneSlot(0), "/bin/sh");
+        left.args = vec!["-c".into(), "sleep 30".into()];
+        let mut right = tear_types::SpawnSpec::shell(PaneSlot(1), "/bin/sh");
+        right.args = vec!["-c".into(), "sleep 31".into()];
+        let def = SessionDefinition {
+            def_id: tear_types::DefinitionId::from_project(std::path::Path::new("/args")),
+            origin: SessionOrigin::Project,
+            name_seed: 0,
+            name_style: NameStyle::Emoji,
+            theme: None,
+            custom_name: None,
+            project_root: "/args".into(),
+            windows: vec![WindowPlan {
+                name: "work".into(),
+                layout: LayoutPlan::split(
+                    SplitOrientation::Vertical,
+                    LayoutPlan::leaf(PaneSlot(0)),
+                    LayoutPlan::leaf(PaneSlot(1)),
+                ),
+                active_slot: PaneSlot(0),
+            }],
+            pane_specs: [(PaneSlot(0), left.clone()), (PaneSlot(1), right.clone())]
+                .into_iter()
+                .collect(),
+            visits: 1,
+            last_seen: 0,
+            tags: Vec::new(),
+        };
+        let live = instantiate(&def, &backend).unwrap();
+        let w = &live.session.windows[&live.session.active_window];
+        let panes = w.layout.panes();
+        assert_eq!(panes.len(), 2);
+        // Leftmost leaf ← slot 0 (spawned by new_session), rightmost ←
+        // slot 1 (spawned by split_pane). Both paths must record args.
+        let a = &live.session.panes[&panes[0]];
+        let b = &live.session.panes[&panes[1]];
+        assert_eq!(a.args, left.args, "new_session path dropped its args");
+        assert_eq!(b.args, right.args, "split_pane path dropped its args");
+        // And the round-trip closes: re-capturing the live session
+        // recovers the same args, so capture→replay→capture is stable.
+        let recaptured = SessionDefinition::from_live(&live.session, "/args", 0);
+        let mut seen: Vec<Vec<String>> =
+            recaptured.pane_specs.values().map(|s| s.args.clone()).collect();
+        seen.sort();
+        let mut want = vec![left.args.clone(), right.args.clone()];
+        want.sort();
+        assert_eq!(seen, want, "capture→replay→capture lost the args");
     }
 
     #[test]
