@@ -1,5 +1,31 @@
 name: auto-release
 
+# ┌─ DORMANT: Actions are DISABLED for this repository ────────────────────┐
+#
+# Nothing in this file runs today, and no trigger below can change that.
+# `GET /repos/pleme-io/tear/actions/permissions` returns
+# {"enabled": false} (measured 2026-07-30), and that is DECLARED, not drift:
+# pangea-architectures `workspaces/pleme-io-opensource/org.yaml` carries
+# `actions_enabled: false` on the `tear` record. 14 of 860 records set it
+# explicitly — a deliberate CI-cost/noise posture, not an oversight.
+#
+# CONSEQUENCE, stated plainly so the next reader doesn't hunt for a bug:
+# `pleme-tear` and `mado-web` are ABSENT from crates.io (both 404) and no
+# automated path can put them there while Actions are off. That is an
+# accepted state, not a stranded release. `tear-types` and `praca` are on
+# the registry from before the posture changed.
+#
+# THE REVERSAL IS ONE LINE: flip `actions_enabled` to `true` on the `tear`
+# record in that org.yaml and let the reconciler apply it. Do NOT enable
+# Actions through the GitHub UI or API — open_source_repo.rb emits
+# `github_actions_repository_permissions enabled=false` from the declared
+# value, so an unmanaged re-enable is REVERTED on the next reconcile.
+#
+# The wiring below is kept, not deleted (MODULARIZE, DON'T DELETE): it is
+# correct, and it resumes on its own the moment the declaration flips.
+#
+# └────────────────────────────────────────────────────────────────────────┘
+
 on:
   push:
     branches: [main]
@@ -9,15 +35,31 @@ on:
         description: "patch | minor | major"
         required: false
         default: patch
-  # */15 drip tick: the substrate reusable's `drip` job fires on this
-  # schedule to publish whatever crates.io capacity allows and defer the
-  # rest, draining a large new-crate bootstrap across the rate-limit refill
-  # until every workspace member is on the registry. Idempotent + a no-op in
-  # seconds once converged, so it's safe to leave armed. (Without this
-  # schedule the drip job — which substrate ships for exactly this — never
-  # ran, so a deferred/stranded ship was never finished.)
-  schedule:
-    - cron: "*/15 * * * *"
+  #
+  # RETIRED 2026-07-30 — the `*/15 * * * *` drip tick that used to sit here.
+  #
+  # Its comment claimed the tick was "idempotent + a no-op in seconds once
+  # converged, so it's safe to leave armed". That was measurably false. The
+  # last 100 schedule-triggered runs — 2026-07-12T11:37:31Z through
+  # 2026-07-19T00:09:36Z, the newest run of any kind in this repo — were
+  # 100/100 FAILURES. Every one died the same way:
+  #
+  #   JOB:  release / Drip-publish remaining capacity => failure
+  #   step: pleme-io/actions/rust-workspace-publish@main => failure
+  #
+  # So the tick was not draining a stranded publish; it was a self-renewing
+  # red-run generator firing 96×/day on a metered hosted runner, and the
+  # comment asserting otherwise is what made it invisible. It now cannot
+  # fire at all (Actions disabled, above), which means re-enabling Actions
+  # with this cron still present would resume the failure storm rather than
+  # finish anything.
+  #
+  # The drip job itself is NOT retired — substrate's rust-auto-release.yml
+  # still ships it, and `push` + `workflow_dispatch` below still reach it.
+  # What is retired is the unattended timer, whose only demonstrated effect
+  # was noise. If a genuinely stranded publish needs draining after Actions
+  # come back, run `workflow_dispatch` deliberately and read the result.
+  #
 
 # NO concurrency override here — the substrate reusable
 # (rust-auto-release.yml) OWNS serialization: `cancel-in-progress: false`
