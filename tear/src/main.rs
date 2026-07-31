@@ -1571,6 +1571,13 @@ fn cmd_status(
         anyhow::anyhow!("invalid --socket value `{raw}`: {e}")
     })?;
     let socket_str = transport.display_string();
+    // NOTE: this is the CLI binary's OWN version, and the `version`
+    // key below has always carried it — never the daemon's. Two
+    // different binaries; a daemon left running across an upgrade
+    // reports whatever it was built as, not this. The key keeps its
+    // meaning because prompt hooks read it as a consumer contract;
+    // `daemon_version` (added alongside, never in place of it) is
+    // the one that answers "what is actually serving me".
     let version = env!("CARGO_PKG_VERSION");
 
     let probe = tear_client::Client::connect_transport(transport);
@@ -1580,6 +1587,12 @@ fn cmd_status(
             if quiet {
                 return Ok(());
             }
+            let daemon = client.daemon();
+            // `null` when the daemon predates capability negotiation
+            // — deliberately not filled in from the CLI's own
+            // version, which would recreate the lie one level down.
+            let daemon_version = daemon.version();
+            let caps = daemon.capability_names();
             if json {
                 println!(
                     "{}",
@@ -1587,12 +1600,26 @@ fn cmd_status(
                         "reachable": true,
                         "socket": socket_str,
                         "sessions": sessions.len(),
+                        // Unchanged consumer contract: the CLI's version.
                         "version": version,
+                        // Same value under an unambiguous name, so a
+                        // new consumer never has to learn the history.
+                        "client_version": version,
+                        // The DAEMON's own version, or null when it
+                        // predates the probe.
+                        "daemon_version": daemon_version,
+                        "daemon_capabilities": caps,
                     })
                 );
             } else {
+                let daemon_desc = match daemon_version {
+                    Some(v) => format!("daemon={v} capabilities={}", caps.join(",")),
+                    None => "daemon=unknown (predates capability negotiation; \
+                             restart it to pick up new wire fields)"
+                        .to_owned(),
+                };
                 println!(
-                    "tear-daemon: ok  socket={socket_str}  sessions={}  version={version}",
+                    "tear-daemon: ok  socket={socket_str}  sessions={}  version={version}  {daemon_desc}",
                     sessions.len()
                 );
             }
@@ -1608,6 +1635,11 @@ fn cmd_status(
                             "socket": socket_str,
                             "error": e.to_string(),
                             "version": version,
+                            "client_version": version,
+                            // Unreachable: nothing to probe, so the
+                            // daemon's identity is genuinely unknown.
+                            "daemon_version": serde_json::Value::Null,
+                            "daemon_capabilities": Vec::<String>::new(),
                             "hint": "tear daemon (or enable programs.tear.daemon.enable in HM)",
                         })
                     );

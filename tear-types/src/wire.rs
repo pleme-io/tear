@@ -37,11 +37,36 @@
 //! field is compatible in BOTH directions: an old daemon decoding a
 //! new client's frame ignores the key it doesn't know, and a new
 //! daemon decoding an old client's frame fills the missing key from
-//! `Default`. There is **no protocol version constant and no
-//! negotiation** — which means an old daemon silently *drops* a new
-//! field rather than rejecting the request. For `args` that is
-//! visible as "the program spawned without its arguments", not as an
-//! error. Restart the daemon after upgrading a client.
+//! `Default`. That is what makes a new field *safe*, and equally
+//! what makes it **silent**: an old daemon drops the key and does
+//! the old thing. For `args` that reads as "the program spawned
+//! without its arguments", with no error anywhere.
+//!
+//! ## Capability negotiation
+//!
+//! [`Request::Hello`] / [`Response::Hello`] close that hole. A
+//! client probes once at connect time and gets back a
+//! [`crate::capability::DaemonHello`] naming every field/behaviour
+//! the daemon implements; a call site that needs one refuses with
+//! [`crate::ControlError::Unsupported`] instead of sending a frame
+//! that will be half-ignored. Read
+//! [`crate::capability`] for why this is a capability **set** and
+//! not a protocol version integer.
+//!
+//! **An unknown variant does not have to end the connection.** A
+//! frame whose length prefix was honoured and whose bytes were all
+//! consumed leaves the stream aligned at the next frame boundary
+//! even when the payload names a variant the peer has never heard
+//! of — measured, not assumed. [`read_frame`] surfaces that as
+//! [`Framed::Undecodable`] so a server can answer
+//! `Response::Err(Rejected(..))` and keep serving, which is what
+//! `tear-daemon` now does. Before that, `serve_connection_full`'s
+//! read loop did `Err(e) => return Err(e)`, so the *first* client
+//! to send a variant the daemon didn't know got a bare connection
+//! close. A daemon built before this change still behaves that way,
+//! which is why the client treats a lost connection during the
+//! probe as "protocol 0 / no capabilities" and re-dials rather than
+//! failing.
 
 use std::io::{self, Read, Write};
 
@@ -257,6 +282,35 @@ pub enum Request {
     /// Ok. Idempotent — calling again overwrites the connection's
     /// identity. Default identity is `None` (anonymous).
     IdentifyClient(u64),
+    /// Capability probe. Replies [`Response::Hello`] carrying the
+    /// daemon's own version and every capability it implements.
+    ///
+    /// **This variant is the one the compatibility story hangs on,
+    /// so be precise about how an older peer sees it.** A daemon
+    /// built before this variant existed cannot decode the frame —
+    /// serde reports `unknown variant \`Hello\``. What happens next
+    /// depends on the daemon's read loop:
+    ///
+    /// - built **before** the [`read_frame`] fix: the loop returns
+    ///   the decode error and the connection closes. The client
+    ///   observes EOF and reads that as protocol 0.
+    /// - built **at or after** it: the loop answers
+    ///   `Response::Err(Rejected("unknown request …"))` and stays
+    ///   up. The client reads that as protocol 0 too.
+    ///
+    /// Both land on the same verdict, so the client needs no
+    /// version knowledge to interpret the outcome — which is the
+    /// property that makes this probe safe to send blind.
+    ///
+    /// Sent **after** `Authenticate` on an auth-required daemon,
+    /// because the auth gate rejects everything else first.
+    Hello {
+        /// The client binary's own version. Purely informational —
+        /// the daemon logs it so a "my args were ignored" report can
+        /// be matched to a build. No decision is made on it.
+        #[serde(default)]
+        client_version: String,
+    },
 }
 
 /// Reply shape for every [`Request`] variant. The daemon always
@@ -322,6 +376,15 @@ pub enum Response {
     /// is `Response::Ok`; subsequent frames are `ConfigChanged`
     /// until the connection is dropped.
     ConfigChanged(String),
+    /// Reply to [`Request::Hello`] — the daemon's own version plus
+    /// the wire names of every capability it implements.
+    ///
+    /// Adding a `Response` variant is safe in a way adding a
+    /// `Request` variant is not: only a *new* daemon emits this, and
+    /// only in reply to a probe an *old* client never sends. The
+    /// asymmetry is why the negotiation could be added at all
+    /// without a flag day.
+    Hello(crate::capability::DaemonHello),
     Ok,
     Err(WireError),
 }
@@ -349,6 +412,14 @@ impl From<ControlError> for WireError {
             ControlError::NoSuchPane(id) => WireError::NoSuchPane(id),
             ControlError::Transport(s) => WireError::Transport(s),
             ControlError::Rejected(s) => WireError::Rejected(s),
+            // Degrades to `Rejected` on purpose. A `WireError`
+            // variant would be a wire change an older client could
+            // not decode, and this error is produced client-side
+            // before a frame is ever written — so the lossy edge is
+            // unreachable in practice, and the message survives.
+            ControlError::Unsupported { capability, detail } => {
+                WireError::Rejected(format!("unsupported capability `{capability}`: {detail}"))
+            }
             ControlError::Internal(e) => WireError::Internal(e.to_string()),
         }
     }
@@ -407,10 +478,46 @@ pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
     Ok(())
 }
 
-/// Read a length-prefixed CBOR-encoded message. Caps the frame at
-/// [`MAX_FRAME_BYTES`] so a malformed prefix can't trigger an
-/// unbounded allocation.
-pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Result<T> {
+/// Outcome of reading one frame off the wire.
+///
+/// The distinction this type draws is the load-bearing one: a
+/// **payload** we could not understand is not the same event as a
+/// **stream** we could not read. The first leaves the connection
+/// perfectly usable and deserves an answer; the second does not.
+/// Collapsing them into one `io::Error` is what made an unknown
+/// request variant hang up the socket.
+#[derive(Debug)]
+pub enum Framed<T> {
+    /// A complete frame that decoded into `T`.
+    Msg(T),
+    /// A complete frame — length prefix honoured, every one of its
+    /// bytes consumed — whose payload did not decode into `T`. The
+    /// canonical cause is a variant from a newer peer's vocabulary.
+    ///
+    /// **The stream is still aligned at the next frame boundary**,
+    /// so the reader may reply and keep reading. Verified by
+    /// `an_undecodable_frame_leaves_the_stream_aligned`.
+    Undecodable {
+        /// serde's own message, e.g. ``unknown variant `Hello` ``.
+        reason: String,
+        /// Payload length that was consumed.
+        len: usize,
+    },
+}
+
+/// Read one length-prefixed CBOR frame, distinguishing an
+/// undecodable *payload* from an unreadable *stream*.
+///
+/// Caps the frame at [`MAX_FRAME_BYTES`] so a malformed prefix can't
+/// trigger an unbounded allocation. An oversized prefix stays a hard
+/// `io::Error` rather than an [`Framed::Undecodable`], because those
+/// bytes were never counted off the stream — the connection really
+/// is desynchronised at that point.
+///
+/// # Errors
+/// `io::Error` for anything that leaves the stream unusable: EOF,
+/// a short read, a transport failure, or an oversized length prefix.
+pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Result<Framed<T>> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
@@ -422,8 +529,37 @@ pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Result<
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
-    ciborium::de::from_reader(&buf[..])
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    match ciborium::de::from_reader(&buf[..]) {
+        Ok(v) => Ok(Framed::Msg(v)),
+        Err(e) => Ok(Framed::Undecodable {
+            reason: e.to_string(),
+            len,
+        }),
+    }
+}
+
+/// Read a length-prefixed CBOR-encoded message. Caps the frame at
+/// [`MAX_FRAME_BYTES`] so a malformed prefix can't trigger an
+/// unbounded allocation.
+///
+/// Thin wrapper over [`read_frame`] that collapses
+/// [`Framed::Undecodable`] back into `io::ErrorKind::InvalidData`
+/// with serde's message — byte-identical to what this function
+/// returned before `read_frame` existed, so every existing caller
+/// keeps its behaviour. A caller that wants to *answer* an unknown
+/// variant instead of hanging up should call [`read_frame`]
+/// directly; `tear-daemon`'s serve loop does.
+///
+/// # Errors
+/// `io::Error` on transport failure, EOF, an oversized length
+/// prefix, or a payload that does not decode into `T`.
+pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Result<T> {
+    match read_frame(r)? {
+        Framed::Msg(v) => Ok(v),
+        Framed::Undecodable { reason, .. } => {
+            Err(io::Error::new(io::ErrorKind::InvalidData, reason))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -743,6 +879,7 @@ mod tests {
         P,
         T,
         R,
+        U,
         I,
     }
     fn ce2_to_kind_marker(e: &ControlError) -> Kind {
@@ -752,8 +889,156 @@ mod tests {
             ControlError::NoSuchPane(_) => Kind::P,
             ControlError::Transport(_) => Kind::T,
             ControlError::Rejected(_) => Kind::R,
+            ControlError::Unsupported { .. } => Kind::U,
             ControlError::Internal(_) => Kind::I,
         }
+    }
+
+    /// `Unsupported` has no `WireError` mirror by design — it
+    /// degrades to `Rejected` and keeps its message. Pin that so a
+    /// later "let's add a WireError::Unsupported" is a deliberate
+    /// wire decision rather than a drive-by.
+    #[test]
+    fn unsupported_degrades_to_rejected_on_the_wire_keeping_its_message() {
+        let ce = ControlError::Unsupported {
+            capability: "spawn-args",
+            detail: "new_window was given 2 argument(s)".into(),
+        };
+        let we: WireError = ce.into();
+        match we {
+            WireError::Rejected(msg) => {
+                assert!(msg.contains("spawn-args"));
+                assert!(msg.contains("new_window was given 2 argument(s)"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    // ── Capability negotiation ───────────────────────────────────
+
+    #[test]
+    fn roundtrip_hello_request_and_response() {
+        let req = Request::Hello {
+            client_version: "1.2.3".into(),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        let got: Request = read_msg(&mut Cursor::new(&buf)).unwrap();
+        match got {
+            Request::Hello { client_version } => assert_eq!(client_version, "1.2.3"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let hello = crate::capability::DaemonHello::for_this_build("0.1.8");
+        let resp = Response::Hello(hello.clone());
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &resp).unwrap();
+        let got: Response = read_msg(&mut Cursor::new(&buf)).unwrap();
+        match got {
+            Response::Hello(h) => assert_eq!(h, hello),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// `client_version` is `#[serde(default)]`, so a Hello frame
+    /// without it still decodes — the same field-level tolerance the
+    /// rest of the wire relies on.
+    #[test]
+    fn a_hello_without_client_version_decodes_to_empty() {
+        use ciborium::value::Value;
+        let bare = Value::Map(vec![(Value::Text("Hello".into()), Value::Map(vec![]))]);
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&bare, &mut bytes).unwrap();
+        let got: Request = ciborium::de::from_reader(&bytes[..]).unwrap();
+        match got {
+            Request::Hello { client_version } => assert!(client_version.is_empty()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// **The measurement the whole negotiation design rests on.**
+    ///
+    /// A frame naming a variant the reader has never heard of does
+    /// NOT desynchronise the stream: the length prefix was honoured,
+    /// every payload byte was consumed, and the very next frame
+    /// decodes normally. So a server hanging up on an unknown
+    /// variant is a *choice*, not a necessity — which is what let
+    /// `serve_connection_full` be changed to answer instead.
+    ///
+    /// The undecodable frame here is a real `Request::Hello`
+    /// serialised against a reader (`OldRequest`) that predates it —
+    /// the exact shape of a new client meeting an old daemon.
+    #[test]
+    fn an_undecodable_frame_leaves_the_stream_aligned() {
+        /// A structural stand-in for the `Request` enum as it existed
+        /// before `Hello` — two variants is enough to prove the
+        /// point, since serde rejects on the tag before it looks at
+        /// anything else.
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        enum OldRequest {
+            ListSessions,
+            GetConfig,
+        }
+
+        let mut stream = Vec::new();
+        write_msg(
+            &mut stream,
+            &Request::Hello {
+                client_version: "0.1.9".into(),
+            },
+        )
+        .unwrap();
+        write_msg(&mut stream, &Request::ListSessions).unwrap();
+
+        let mut cur = Cursor::new(stream);
+        match read_frame::<_, OldRequest>(&mut cur).unwrap() {
+            Framed::Undecodable { reason, len } => {
+                assert!(
+                    reason.contains("unknown variant") && reason.contains("Hello"),
+                    "expected an unknown-variant reason, got: {reason}"
+                );
+                assert!(len > 0);
+            }
+            Framed::Msg(m) => panic!("Hello must not decode as OldRequest, got {m:?}"),
+        }
+        // The whole point: the reader is still aligned.
+        match read_frame::<_, OldRequest>(&mut cur).unwrap() {
+            Framed::Msg(OldRequest::ListSessions) => {}
+            other => panic!("stream desynchronised after an undecodable frame: {other:?}"),
+        }
+    }
+
+    /// `read_msg` must stay byte-identical in behaviour to what it
+    /// was before it was rebuilt on `read_frame` — same error kind,
+    /// serde's own message. Every existing caller depends on this.
+    #[test]
+    fn read_msg_still_collapses_an_undecodable_payload_into_invalid_data() {
+        #[derive(Debug, Deserialize)]
+        enum OldRequest {
+            ListSessions,
+        }
+        let mut stream = Vec::new();
+        write_msg(&mut stream, &Request::GetConfig).unwrap();
+        let err = read_msg::<_, OldRequest>(&mut Cursor::new(stream)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unknown variant"));
+        // Silence the never-constructed warning without weakening
+        // the enum: it exists purely as a decode target.
+        let _ = OldRequest::ListSessions;
+    }
+
+    /// An oversized length prefix is NOT an undecodable payload —
+    /// those bytes were never counted off the stream, so the
+    /// connection really is lost. Must stay a hard `io::Error`.
+    #[test]
+    fn an_oversized_prefix_stays_a_hard_error_not_an_undecodable_frame() {
+        let len: u32 = 32 * 1024 * 1024;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&len.to_be_bytes());
+        let err = read_frame::<_, Request>(&mut Cursor::new(buf)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("MAX_FRAME_BYTES"));
     }
 
     #[test]

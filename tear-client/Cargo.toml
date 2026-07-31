@@ -26,4 +26,11 @@ engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", o
 
 [dev-dependencies]
 tear-core = { path = "../tear-core" }
-tear-daemon = { path = "../tear-daemon" }
+# `testing` ships DaemonHarness — a real tear-daemon on a private
+# UDS. The capability tests need BOTH ends real: a current daemon for
+# the positive control, and a hand-built pre-capability serve loop for
+# the degradation case.
+tear-daemon = { path = "../tear-daemon", features = ["testing"] }
+# Derives the reconstructed pre-capability `Request` enum the
+# degradation test decodes against.
+serde = { workspace = true }

@@ -35,6 +35,14 @@ tokio = { version = "1", features = ["rt", "macros", "time"] }
 # watcher type from DaemonHandle for keep-alive semantics.
 notify = { workspace = true }
 
+[dev-dependencies]
+# Hand-encodes a request frame naming a variant this daemon's
+# `Request` enum does not have — the shape a client from a future
+# vocabulary sends. There is no way to produce that from the typed
+# enum (by construction it only emits variants that exist), so the
+# test reaches for the CBOR value model directly.
+ciborium = { workspace = true }
+
 [features]
 # Expose the in-memory test harness (DuplexStream + helpers) to
 # downstream test crates. Enabled by tear-daemon's own tests via

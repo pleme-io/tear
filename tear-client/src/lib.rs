@@ -20,6 +20,29 @@
 //! and proceed in parallel — that's how mado will scale across
 //! Tier-2/Tier-3 callers without head-of-line blocking.
 //!
+//! ## Connecting
+//!
+//! `Client::connect` is dial → (optional `Authenticate`) → **capability
+//! probe**. The probe is one `Request::Hello` round-trip whose answer
+//! is cached on the `Client`, so [`Client::daemon`] and
+//! `MultiplexerControl::capabilities` are field reads afterwards —
+//! never I/O, never fallible.
+//!
+//! Against a daemon old enough not to know `Hello`, the probe costs
+//! that connection: such a daemon's serve loop treats an undecodable
+//! request as a dead socket and hangs up. `connect` re-dials and
+//! records [`DaemonIdentity::pre_capability`], so a caller sees a
+//! working client either way — only the capability answer differs.
+//! That branch is the one that runs against the daemon shipping
+//! today, so it is the exercised path, not a fallback.
+//!
+//! What the capabilities are *for*: a call that needs a field the
+//! daemon cannot read (today, `args`) refuses with
+//! [`ControlError::Unsupported`] **before writing the frame**, rather
+//! than letting the daemon decode it, drop the unknown key and spawn
+//! something quietly wrong. A call that doesn't need the field is
+//! unaffected.
+//!
 //! ## Why sync
 //!
 //! The trait is sync. The PTY pump is on the daemon side, not the
@@ -44,8 +67,8 @@ use parking_lot::Mutex;
 
 use tear_types::wire::{read_msg, write_msg, Request, Response};
 use tear_types::{
-    ControlError, ControlResult, Direction, MultiplexerControl, PaneId, PaneSnapshot, SessionId,
-    TearPane, TearSession, TearWindow, WindowId,
+    Capability, ControlError, ControlResult, DaemonIdentity, Direction, MultiplexerControl, PaneId,
+    PaneSnapshot, SessionId, TearPane, TearSession, TearWindow, WindowId,
 };
 
 /// #5 — transport address. UDS for local daemons (~/.local/share/tear/
@@ -157,6 +180,11 @@ pub struct Client {
     socket_path: PathBuf,
     /// Typed transport — used by subscribe / re-connect paths.
     transport: Transport,
+    /// What the daemon on the other end told us it can do, probed
+    /// once at connect time. [`DaemonIdentity::pre_capability`] when
+    /// the daemon predates `Request::Hello` — which is the common
+    /// case today, not an error.
+    daemon: DaemonIdentity,
 }
 
 /// Handle returned by [`Client::subscribe_pane_bytes`] and
@@ -208,6 +236,33 @@ struct ClientInner {
     writer: BufWriter<TransportStream>,
 }
 
+/// Send one [`Request`], expect exactly one [`Response::Ok`].
+///
+/// Free function over `ClientInner` rather than a `Client` method
+/// because [`Client::dial`] needs it *before* a `Client` exists —
+/// which is what lets the re-dial after a lost capability probe run
+/// the identical handshake instead of a near-copy of it.
+fn round_trip_ok_on(
+    inner: &mut ClientInner,
+    req: Request,
+    label: &'static str,
+    reject_kind: io::ErrorKind,
+) -> io::Result<()> {
+    write_msg(&mut inner.writer, &req)?;
+    let resp: Response = read_msg(&mut inner.reader)?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Err(e) => Err(io::Error::new(
+            reject_kind,
+            format!("tear-daemon rejected {label}: {e:?}"),
+        )),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("tear-daemon returned unexpected response to {label}: {other:?}"),
+        )),
+    }
+}
+
 impl Client {
     /// Connect to a tear-daemon listening at a Unix domain socket
     /// at `path`.
@@ -248,20 +303,120 @@ impl Client {
         transport: Transport,
         auth_token: Option<String>,
     ) -> io::Result<Self> {
-        let stream = transport.connect()?;
-        let reader_stream = stream.try_clone()?;
-        let mut me = Self {
-            inner: Mutex::new(ClientInner {
-                reader: BufReader::new(reader_stream),
-                writer: BufWriter::new(stream),
-            }),
+        let mut inner = Self::dial(&transport, auth_token.as_deref())?;
+        // Probe BEFORE handing the client out, so `capabilities()` is
+        // infallible and I/O-free at every call site afterwards.
+        let daemon = Self::probe_capabilities(&transport, &mut inner, auth_token.as_deref())?;
+        Ok(Self {
+            inner: Mutex::new(inner),
             socket_path: PathBuf::from(transport.display_string()),
             transport,
+            daemon,
+        })
+    }
+
+    /// Open one connection and authenticate it. Everything that
+    /// establishes a control connection goes through here, so the
+    /// re-dial after a lost probe is byte-for-byte the same
+    /// handshake as the original.
+    fn dial(transport: &Transport, auth_token: Option<&str>) -> io::Result<ClientInner> {
+        let stream = transport.connect()?;
+        let reader_stream = stream.try_clone()?;
+        let mut inner = ClientInner {
+            reader: BufReader::new(reader_stream),
+            writer: BufWriter::new(stream),
         };
         if let Some(token) = auth_token {
-            me.authenticate(&token)?;
+            round_trip_ok_on(
+                &mut inner,
+                Request::Authenticate(token.to_owned()),
+                "Authenticate",
+                io::ErrorKind::PermissionDenied,
+            )?;
         }
-        Ok(me)
+        Ok(inner)
+    }
+
+    /// Ask the daemon what it can do — **on a connection we are
+    /// willing to lose.**
+    ///
+    /// ## Why this probe shape and not another
+    ///
+    /// `Request::Hello` is a new enum variant, and a daemon built
+    /// before it existed cannot decode the frame. Two things follow,
+    /// and they were both measured rather than assumed:
+    ///
+    /// - Serde rejects on the variant tag, so the request is
+    ///   *undecodable*, not merely missing a field. A
+    ///   `#[serde(default)]` field on an existing variant would have
+    ///   been decodable — but there is no side-effect-free struct
+    ///   variant to hang one on (every one is either mutating or
+    ///   pane-scoped), so that shape would mean overloading an
+    ///   unrelated request with a probe flag, and it would leave the
+    ///   underlying class — *any* new variant kills the connection —
+    ///   unsolved forever.
+    /// - A daemon at or after the `read_frame` fix answers
+    ///   `Response::Err(Rejected(..))` and stays up. A daemon before
+    ///   it returns from its serve loop and the socket closes.
+    ///
+    /// Both outcomes mean the same thing — protocol 0, no
+    /// capabilities — so the client needs no version knowledge to
+    /// read them. The only extra work is re-dialling after the
+    /// second one, which the caller never sees.
+    ///
+    /// **The no-capability branch is the branch that runs today.**
+    /// The daemon on this machine predates the probe, so every
+    /// `Client::connect` exercises the lost-connection path. It is
+    /// the tested one by construction, not a fallback.
+    ///
+    /// Cost against such a daemon: one extra `connect(2)` and one
+    /// `warn!`-level line in the daemon's log per client. Both stop
+    /// the moment the daemon is restarted onto a build that knows
+    /// `Hello`.
+    ///
+    /// # Errors
+    /// Only when the connection is lost AND cannot be re-established
+    /// — the caller was promised a usable client, so that is the one
+    /// thing this cannot swallow.
+    fn probe_capabilities(
+        transport: &Transport,
+        inner: &mut ClientInner,
+        auth_token: Option<&str>,
+    ) -> io::Result<DaemonIdentity> {
+        let req = Request::Hello {
+            client_version: env!("CARGO_PKG_VERSION").to_owned(),
+        };
+        let outcome = match write_msg(&mut inner.writer, &req) {
+            Ok(()) => read_msg::<_, Response>(&mut inner.reader),
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(Response::Hello(hello)) => Ok(DaemonIdentity::from_hello(hello)),
+            // The daemon read the frame, could not decode it, and
+            // said so without hanging up. A well-framed reply leaves
+            // the stream aligned, so there is nothing to repair.
+            // Any other variant means a daemon that answered Hello
+            // with something unexpected — same verdict, same intact
+            // connection.
+            Ok(_) => Ok(DaemonIdentity::pre_capability()),
+            // The daemon hung up on the unknown variant (or the
+            // transport failed). Re-dial so the caller's client is
+            // usable, and record protocol 0.
+            Err(_) => {
+                *inner = Self::dial(transport, auth_token)?;
+                Ok(DaemonIdentity::pre_capability())
+            }
+        }
+    }
+
+    /// What the connected daemon told us about itself: its own
+    /// version (`None` when it predates the probe) and the
+    /// capabilities it implements.
+    ///
+    /// Cheap — the probe ran once at connect; this is a field read.
+    #[must_use]
+    pub fn daemon(&self) -> &DaemonIdentity {
+        &self.daemon
     }
 
     /// Send `Request::Authenticate(token)` and assert the daemon's
@@ -306,19 +461,7 @@ impl Client {
         reject_kind: io::ErrorKind,
     ) -> io::Result<()> {
         let mut inner = self.inner.lock();
-        tear_types::wire::write_msg(&mut inner.writer, &req)?;
-        let resp: tear_types::wire::Response = tear_types::wire::read_msg(&mut inner.reader)?;
-        match resp {
-            tear_types::wire::Response::Ok => Ok(()),
-            tear_types::wire::Response::Err(e) => Err(io::Error::new(
-                reject_kind,
-                format!("tear-daemon rejected {label}: {e:?}"),
-            )),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("tear-daemon returned unexpected response to {label}: {other:?}"),
-            )),
-        }
+        round_trip_ok_on(&mut inner, req, label, reject_kind)
     }
 
     /// Path the client is connected to. For UDS connections this is
@@ -507,7 +650,43 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Refuse **only** when this call actually needs `spawn-args`.
+    ///
+    /// The `is_empty` guard is the whole design: a caller spawning a
+    /// bare shell is unaffected by a daemon that cannot read `args`,
+    /// and must not be handed a "your daemon is old" banner it can
+    /// do nothing with. A caller that passed arguments gets a typed
+    /// refusal naming the field, instead of a pane that comes up
+    /// silently wrong.
+    ///
+    /// Tier: **runtime typed error**. Not compile-caught and not
+    /// parse-time-rejected — the daemon's build is a fact discovered
+    /// at connect time, so no type on this side can make the call
+    /// unrepresentable. Making it parse-rejected would mean the
+    /// args-bearing methods took a capability witness token, which
+    /// `MultiplexerControl` cannot express without breaking the
+    /// in-process backend that never needs one.
+    fn require_spawn_args(&self, args: &[String], call: &str) -> ControlResult<()> {
+        if args.is_empty() {
+            return Ok(());
+        }
+        self.daemon.require(
+            Capability::SpawnArgs,
+            &format!("{call} was given {} argument(s)", args.len()),
+        )
+    }
+}
+
 impl MultiplexerControl for Client {
+    /// Overrides the trait default, which assumes an in-process
+    /// backend. A `Client` talks to a **separate process** whose
+    /// build may be older than ours — the assumption the default
+    /// makes is exactly the one that fails here.
+    fn capabilities(&self) -> DaemonIdentity {
+        self.daemon.clone()
+    }
+
     fn list_sessions(&self) -> ControlResult<Vec<TearSession>> {
         match self.rpc(Request::ListSessions)? {
             Response::Sessions(v) => Ok(v),
@@ -555,6 +734,7 @@ impl MultiplexerControl for Client {
         source: tear_types::SessionSource,
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId> {
+        self.require_spawn_args(args, "new_session_with_source_and_size")?;
         match self.rpc(Request::NewSession {
             name: name.to_owned(),
             shell: shell.to_owned(),
@@ -591,6 +771,7 @@ impl MultiplexerControl for Client {
         shell: &str,
         args: &[String],
     ) -> ControlResult<WindowId> {
+        self.require_spawn_args(args, "new_window")?;
         match self.rpc(Request::NewWindow {
             session,
             name: name.to_owned(),
@@ -623,6 +804,7 @@ impl MultiplexerControl for Client {
         shell: &str,
         args: &[String],
     ) -> ControlResult<PaneId> {
+        self.require_spawn_args(args, "split_pane")?;
         match self.rpc(Request::SplitPane {
             origin,
             direction,
@@ -1842,6 +2024,10 @@ mod tests {
             }),
             socket_path: socket.clone(),
             transport: Transport::Unix(socket.clone()),
+            // Hand-built to exercise `authenticate` in isolation, so
+            // the probe never ran. Protocol 0 is the honest value —
+            // and the right default for a client assembled by hand.
+            daemon: DaemonIdentity::pre_capability(),
         };
         let err = match me.authenticate("wrong-secret") {
             Ok(()) => panic!("bad token must error"),

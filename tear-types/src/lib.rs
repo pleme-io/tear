@@ -39,6 +39,7 @@
 #![doc(html_root_url = "https://docs.rs/tear-types/0.1.0")]
 
 pub mod block;
+pub mod capability;
 pub mod cast;
 pub mod control;
 #[cfg(feature = "engate")]
@@ -60,6 +61,7 @@ pub mod theme;
 pub mod window;
 pub mod wire;
 
+pub use capability::{Capability, DaemonHello, DaemonIdentity};
 pub use control::{ControlError, ControlResult, MultiplexerControl};
 pub use direction::{Direction, SplitOrientation};
 pub use geometry::Rect;

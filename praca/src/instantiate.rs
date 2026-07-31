@@ -37,6 +37,17 @@
 //! worked around it by folding argv into the shell string, which is what
 //! forced them to think about quoting at all. They no longer need to:
 //! `args` reaches `execvp` as a vector, with no shell in between.
+//!
+//! **The drop can also come from the far end of a socket, and that one
+//! is now caught.** Threading `args` through this crate does nothing if
+//! the *daemon* is an older build that ignores the field. Replay against
+//! such a daemon fails fast with
+//! `InstantiateError::Control(ControlError::Unsupported { capability:
+//! "spawn-args", .. })` on the first slot that carries arguments, instead
+//! of rebuilding the whole session with every program stripped bare. A
+//! definition whose slots carry no args replays normally against the same
+//! daemon — the refusal is scoped to the slots that actually need the
+//! capability. See `tear_types::capability`.
 
 use std::collections::BTreeMap;
 use std::fmt;

@@ -2906,6 +2906,7 @@ dependencies = [
  "engate-attach",
  "engate-types",
  "parking_lot",
+ "serde",
  "serde_yaml_ng",
  "tear-config",
  "tear-core",
@@ -2959,6 +2960,7 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "blake3",
+ "ciborium",
  "kanshou",
  "notify",
  "praca",

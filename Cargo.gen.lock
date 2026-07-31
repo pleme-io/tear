@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "b0b824d453156234c134d9171a841b3a7d08d5177832580f8f1f2761aef7b769",
+  "cargo_lock_sha256": "d1c7481634bd8800db871356cecf00b8ea264a60fdbb3295fa8bb2c62dd3ea13",
   "manifest_sha256": {
     "Cargo.toml": "d3b1f6c5f6672d316c0787e4307e3af46195fdefc552d5986d1d12786e384642",
     "praca/Cargo.toml": "b4ab4c4045ac64a9cf3ae66c3d6e81690dc1518904423ce572a9e60810ce1f22",
-    "tear-client/Cargo.toml": "482adc061fed1fdbb2203ca2e1d310e1e6da1ff3faabf5bb733c0011c080db05",
+    "tear-client/Cargo.toml": "083d0b1c4cc16e873b192f3e4304ee9a262abd1317c67902dba4d907d35aaf90",
     "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
     "tear-core/Cargo.toml": "82d329ab9a5f2f76a898a42eca0ddd4332f2eccffc44a9f603f1aeea329026e8",
-    "tear-daemon/Cargo.toml": "9920eddfd4d87eef2bfe524d273b29cda906c303e0981d9811776517664e7cf5",
+    "tear-daemon/Cargo.toml": "9db7e285a2c248c712045e52f80d8117150b00be7c60f3b7aa9f9bc5421e2438",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
     "tear-types/Cargo.toml": "628bd3df681893ec37265e87f15fc304dd284268ae14eb19d549d9a3550ddb9a",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",

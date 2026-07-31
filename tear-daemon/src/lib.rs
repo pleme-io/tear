@@ -46,7 +46,7 @@ use std::thread;
 
 use tear_config::LiveConfig;
 use tear_core::InProcess;
-use tear_types::wire::{read_msg, write_msg, Request, Response, WireError};
+use tear_types::wire::{read_frame, write_msg, Framed, Request, Response, WireError};
 use tear_types::MultiplexerControl;
 use tracing::{debug, error, info, warn};
 
@@ -590,8 +590,48 @@ pub fn serve_connection_full<S: io::Read + io::Write>(
     // read on SendKeys to enforce Leader policy.
     let mut client_id: Option<u64> = None;
     loop {
-        let req: Request = match read_msg(&mut stream) {
-            Ok(r) => r,
+        // A payload we cannot decode is NOT a stream we cannot read.
+        // `read_frame` keeps them apart: an unknown variant (the
+        // shape a newer client's request takes) consumed its whole
+        // frame and left the stream aligned, so it gets a legible
+        // refusal and the connection stays up. Only a genuine
+        // transport failure ends the loop.
+        //
+        // This used to be `Err(e) => return Err(e)` over `read_msg`,
+        // which collapsed both cases — so the FIRST client to send a
+        // variant this daemon had never heard of got a bare
+        // connection close with no diagnostic. That made adding any
+        // Request variant a flag day. It no longer is, from this
+        // build forward; daemons older than this still hang up,
+        // which is why `tear-client`'s probe tolerates the loss.
+        let req: Request = match read_frame(&mut stream) {
+            Ok(Framed::Msg(r)) => r,
+            Ok(Framed::Undecodable { reason, len }) => {
+                warn!(
+                    %reason,
+                    frame_len = len,
+                    authed,
+                    "undecodable request frame — refusing it and keeping the connection"
+                );
+                // The frame is refused either way; only the *detail*
+                // is gated. This arm runs BEFORE the auth check below
+                // (it has to — we could not decode enough to know what
+                // was asked), and serde's reason enumerates every
+                // variant this build knows while the version names the
+                // build itself. Neither goes to an unauthenticated
+                // peer. The daemon's log keeps the full diagnostic
+                // regardless, which is where an operator looks.
+                let detail = if authed {
+                    format!(
+                        "this daemon (tear-daemon {}) cannot decode that request: {reason}",
+                        env!("CARGO_PKG_VERSION")
+                    )
+                } else {
+                    "unable to decode request; authenticate first".to_owned()
+                };
+                write_msg(&mut stream, &Response::Err(WireError::Rejected(detail)))?;
+                continue;
+            }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
         };
@@ -916,6 +956,13 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         // a test-only path; accept as Ok so tests can construct request
         // streams that include IdentifyClient frames.
         Request::IdentifyClient(_) => Response::Ok,
+        // The capability probe answers identically here and in
+        // `dispatch_with_config` — a consumer driving the bare
+        // dispatcher must not see a different daemon identity than
+        // one going through the socket.
+        Request::Hello { .. } => Response::Hello(tear_types::DaemonHello::for_this_build(env!(
+            "CARGO_PKG_VERSION"
+        ))),
     }
 }
 
@@ -930,6 +977,21 @@ pub fn dispatch_with_config(
     praca: Option<&PracaStore>,
 ) -> Response {
     match req {
+        // The capability probe. Answers with this DAEMON's own
+        // version — not the caller's — plus every capability this
+        // build implements. Handled in dispatch rather than in the
+        // serve loop so the embedded/in-process path and the test
+        // harness answer it identically.
+        Request::Hello { client_version } => {
+            debug!(
+                %client_version,
+                daemon_version = env!("CARGO_PKG_VERSION"),
+                "capability probe"
+            );
+            Response::Hello(tear_types::DaemonHello::for_this_build(env!(
+                "CARGO_PKG_VERSION"
+            )))
+        }
         Request::GetConfig => {
             let cfg = config.load();
             match serde_yaml_ng::to_string(&*cfg) {
@@ -1239,6 +1301,9 @@ fn map_unit(r: tear_types::ControlResult<()>) -> Response {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    // The serve loop reads via `read_frame` now; the tests still
+    // decode single frames the simple way.
+    use tear_types::wire::read_msg;
 
     #[test]
     fn dispatch_list_sessions_on_fresh_inproc_returns_empty() {
@@ -1828,5 +1893,264 @@ mod tests {
         });
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // ── Capability negotiation ───────────────────────────────────
+
+    /// Encode a request frame naming a variant this daemon's
+    /// `Request` enum does not have — the exact shape of a client
+    /// from a future vocabulary. Written structurally (externally
+    /// tagged, field-name-keyed map) because that is literally what
+    /// serde emits for a struct variant.
+    #[cfg(test)]
+    fn frame_for_an_unknown_variant(into: &mut Vec<u8>) {
+        use ciborium::value::Value;
+        let unknown = Value::Map(vec![(
+            Value::Text("ThisVariantDoesNotExistYet".into()),
+            Value::Map(vec![(Value::Text("k".into()), Value::Text("v".into()))]),
+        )]);
+        let mut payload = Vec::new();
+        ciborium::ser::into_writer(&unknown, &mut payload).unwrap();
+        into.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+        into.extend_from_slice(&payload);
+    }
+
+    /// **The class fix.** A request naming a variant this daemon has
+    /// never heard of gets a legible refusal and the connection
+    /// KEEPS SERVING — the very next request is answered normally.
+    ///
+    /// Before this, the read loop did `Err(e) => return Err(e)`, so
+    /// the same frame closed the socket and the second request was
+    /// never read. That made every future `Request` variant a flag
+    /// day against any daemon left running.
+    #[test]
+    fn an_unknown_request_variant_is_refused_and_the_connection_survives() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        frame_for_an_unknown_variant(&mut input);
+        // The positive control: if the loop hung up, this is never
+        // answered and the assertion below reads only one response.
+        write_msg(&mut input, &Request::ListSessions).unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let inproc = Arc::new(InProcess::new());
+        let live = Arc::new(LiveConfig::default());
+        let _ = serve_connection_with_auth(stream, inproc, live, None, None);
+
+        let resps = drain_responses(&rx);
+        assert_eq!(
+            resps.len(),
+            2,
+            "the connection must survive an undecodable frame; got: {resps:?}"
+        );
+        match &resps[0] {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(
+                    msg.contains("cannot decode that request"),
+                    "refusal must say what happened, got: {msg}"
+                );
+                assert!(
+                    msg.contains("unknown variant"),
+                    "refusal must carry serde's own reason, got: {msg}"
+                );
+                assert!(
+                    msg.contains(env!("CARGO_PKG_VERSION")),
+                    "refusal must name the daemon build that could not decode it, got: {msg}"
+                );
+            }
+            other => panic!("expected a Rejected refusal, got: {other:?}"),
+        }
+        assert!(
+            matches!(resps[1], Response::Sessions(_)),
+            "the next request must still be served; got: {:?}",
+            resps[1]
+        );
+    }
+
+    /// The refusal arm necessarily runs BEFORE the auth gate — we
+    /// could not decode enough of the frame to know what was asked —
+    /// so an UNAUTHENTICATED peer must not learn the daemon's version
+    /// or the full list of variants it knows. It still gets refused,
+    /// and the connection still survives; only the detail is withheld.
+    #[test]
+    fn an_unauthenticated_peer_is_refused_without_learning_the_daemons_shape() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        frame_for_an_unknown_variant(&mut input);
+        // Positive control: the connection must still be alive to
+        // answer the auth exchange that follows.
+        write_msg(&mut input, &Request::Authenticate("secret".into())).unwrap();
+        write_msg(&mut input, &Request::ListSessions).unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let _ = serve_connection_with_auth(
+            stream,
+            Arc::new(InProcess::new()),
+            Arc::new(LiveConfig::default()),
+            None,
+            Some("secret".into()),
+        );
+
+        let resps = drain_responses(&rx);
+        assert_eq!(resps.len(), 3, "connection must survive; got: {resps:?}");
+        match &resps[0] {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(
+                    !msg.contains(env!("CARGO_PKG_VERSION")),
+                    "pre-auth refusal must not disclose the daemon version: {msg}"
+                );
+                assert!(
+                    !msg.contains("unknown variant"),
+                    "pre-auth refusal must not enumerate known variants: {msg}"
+                );
+                assert!(msg.contains("authenticate first"), "{msg}");
+            }
+            other => panic!("expected a Rejected refusal, got: {other:?}"),
+        }
+        assert!(matches!(resps[1], Response::Ok), "auth must still work");
+        assert!(matches!(resps[2], Response::Sessions(_)));
+    }
+
+    /// The refusal is a REFUSAL, not an acceptance. A daemon that
+    /// answered `Ok` to something it could not decode would be back
+    /// to silent degradation with extra steps.
+    #[test]
+    fn an_unknown_request_variant_is_never_answered_ok() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        frame_for_an_unknown_variant(&mut input);
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let _ = serve_connection_with_auth(
+            stream,
+            Arc::new(InProcess::new()),
+            Arc::new(LiveConfig::default()),
+            None,
+            None,
+        );
+        let resps = drain_responses(&rx);
+        assert!(
+            !resps.iter().any(|r| matches!(r, Response::Ok)),
+            "an undecodable request must never read as success: {resps:?}"
+        );
+    }
+
+    /// The capability probe answers with the DAEMON's version, not
+    /// the caller's, and advertises `spawn-args` — the field whose
+    /// silent drop started all of this.
+    #[test]
+    fn hello_answers_with_this_daemons_version_and_capabilities() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        write_msg(
+            &mut input,
+            &Request::Hello {
+                // Deliberately absurd, so a daemon echoing the
+                // client's version back would be obvious.
+                client_version: "99.99.99".into(),
+            },
+        )
+        .unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let _ = serve_connection_with_auth(
+            stream,
+            Arc::new(InProcess::new()),
+            Arc::new(LiveConfig::default()),
+            None,
+            None,
+        );
+
+        let resps = drain_responses(&rx);
+        match resps.first() {
+            Some(Response::Hello(h)) => {
+                assert_eq!(h.daemon_version, env!("CARGO_PKG_VERSION"));
+                assert_ne!(h.daemon_version, "99.99.99", "echoed the client's version");
+                assert!(h.capabilities.contains(&"spawn-args".to_owned()));
+            }
+            other => panic!("expected Response::Hello, got: {other:?}"),
+        }
+    }
+
+    /// On an auth-required daemon the probe is gated like everything
+    /// else — a client must authenticate first. Pinned because the
+    /// client's connect order (dial → authenticate → probe) depends
+    /// on it.
+    #[test]
+    fn hello_before_authenticate_is_rejected_on_an_auth_required_daemon() {
+        use crate::testing::{drain_responses, DuplexStream};
+        use std::sync::mpsc::channel;
+
+        let mut input = Vec::new();
+        write_msg(
+            &mut input,
+            &Request::Hello {
+                client_version: "0.0.0".into(),
+            },
+        )
+        .unwrap();
+        write_msg(&mut input, &Request::Authenticate("secret".into())).unwrap();
+        write_msg(
+            &mut input,
+            &Request::Hello {
+                client_version: "0.0.0".into(),
+            },
+        )
+        .unwrap();
+
+        let (tx, rx) = channel::<u8>();
+        let stream = DuplexStream::new(input, tx);
+        let _ = serve_connection_with_auth(
+            stream,
+            Arc::new(InProcess::new()),
+            Arc::new(LiveConfig::default()),
+            None,
+            Some("secret".into()),
+        );
+
+        let resps = drain_responses(&rx);
+        assert_eq!(resps.len(), 3, "got: {resps:?}");
+        assert!(matches!(resps[0], Response::Err(WireError::Rejected(_))));
+        assert!(matches!(resps[1], Response::Ok));
+        assert!(matches!(resps[2], Response::Hello(_)));
+    }
+
+    /// `dispatch` and `dispatch_with_config` must agree about who
+    /// the daemon is — a consumer driving the bare dispatcher must
+    /// not see a different identity than one on the socket.
+    #[test]
+    fn both_dispatchers_report_the_same_daemon_identity() {
+        let inproc = InProcess::new();
+        let live = LiveConfig::default();
+        let a = dispatch(
+            &inproc,
+            Request::Hello {
+                client_version: String::new(),
+            },
+        );
+        let b = dispatch_with_config(
+            &inproc,
+            &live,
+            Request::Hello {
+                client_version: String::new(),
+            },
+            None,
+            None,
+        );
+        match (a, b) {
+            (Response::Hello(x), Response::Hello(y)) => assert_eq!(x, y),
+            (x, y) => panic!("expected two Hellos, got {x:?} / {y:?}"),
+        }
     }
 }

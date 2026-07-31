@@ -47,6 +47,25 @@ pub enum ControlError {
     Transport(String),
     #[error("backend rejected operation: {0}")]
     Rejected(String),
+    /// The backend on the other end of the wire does not implement a
+    /// named [`crate::capability::Capability`] this call needs.
+    ///
+    /// Raised **client-side, before the request goes out** — the
+    /// point is to refuse legibly instead of sending a frame the
+    /// daemon will decode successfully and then silently ignore
+    /// part of. `capability` is the wire name (`"spawn-args"`), so
+    /// a caller can match on it without string-scraping `detail`.
+    ///
+    /// Deliberately has **no [`crate::wire::WireError`] mirror**:
+    /// adding a `WireError` variant would be a wire change that
+    /// older clients could not decode, and this error is never
+    /// produced by a daemon. If one ever needs to, it degrades to
+    /// `Rejected` on the wire (see the `From` impl in `wire.rs`).
+    #[error("daemon lacks capability `{capability}`: {detail}")]
+    Unsupported {
+        capability: &'static str,
+        detail: String,
+    },
     #[error("backend internal: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -60,6 +79,29 @@ pub enum ControlError {
 /// panes). Backends that need to batch operations (e.g. tear-daemon
 /// over a slow link) wrap individual calls themselves.
 pub trait MultiplexerControl: Send + Sync {
+    // ── Identity ─────────────────────────────────────────────────
+
+    /// What this backend can actually do, and who it is.
+    ///
+    /// The default answer is **this build's own capability set**,
+    /// which is correct by construction for any backend that
+    /// executes in-process: there is no other peer whose age could
+    /// differ from ours. `tear-core`'s `InProcess` takes this
+    /// default.
+    ///
+    /// A backend that talks to a **separate process** MUST override
+    /// — its peer may be an older build, and assuming otherwise is
+    /// exactly the silent-degradation this exists to stop.
+    /// `tear-client`'s `Client` overrides with the result of the
+    /// `Request::Hello` probe.
+    ///
+    /// Consumers holding a `&dyn MultiplexerControl` (mado) can
+    /// therefore gate on a capability without knowing which backend
+    /// they hold.
+    fn capabilities(&self) -> crate::capability::DaemonIdentity {
+        crate::capability::DaemonIdentity::local(env!("CARGO_PKG_VERSION"))
+    }
+
     // ── Discovery ────────────────────────────────────────────────
 
     /// List every active session. Sorted by creation time (oldest
