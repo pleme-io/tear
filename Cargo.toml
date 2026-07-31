@@ -68,7 +68,11 @@ arc-swap = "1"
 mimalloc = { version = "0.1", default-features = false }
 blake3 = "1"
 once_cell = "1"
-notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+# MUST be macos_fsevent, never macos_kqueue — the latter is a poison feature
+# that switches every macOS consumer of notify to a backend holding one open FD
+# per watched path (measured: 26,517 FDs in one daemon). Rationale in full at
+# shikumi/Cargo.toml's notify declaration.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 # ── PTY backend (cross-platform; same crate mado uses transitively) ─
 portable-pty = "0.9"
