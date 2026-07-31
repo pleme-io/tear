@@ -38,6 +38,7 @@ use std::sync::mpsc;
 
 use crate::pane_grid::PaneGrid;
 use crate::pty::PtyHandle;
+use crate::reap::AllPanesExited;
 use crate::recording::PaneRecording;
 use crate::registry::Registry;
 
@@ -631,45 +632,34 @@ impl InProcess {
             };
             debug!(pane_id = %pane_id, ?code, "tear-core: pane child exited — marked Exited + disconnected subscribers");
             if let Some(sid) = fully_exited.filter(|_| !watched) {
-                // Re-verify under the write lock: a window/pane
-                // spawned into the session between the mark and
-                // here (or a concurrent explicit kill) aborts the
-                // reap.
-                let panes_to_detach: Vec<PaneId> = {
-                    let mut r = registry_for_exit.write();
-                    let still_fully = r.sessions.get(&sid).is_some_and(|s| {
-                        s.panes
-                            .values()
-                            .all(|p| matches!(p.state, tear_types::PaneState::Exited { .. }))
-                    });
-                    if still_fully {
-                        r.sessions
-                            .remove(&sid)
-                            .map(|s| s.panes.keys().copied().collect())
-                            .unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                if !panes_to_detach.is_empty() {
-                    // Same shape as `detach_panes`: artifacts leave
-                    // the maps under the locks, handles die outside
-                    // them.
-                    let detached: Vec<PtyHandle> = {
-                        let mut ptys = ptys_for_exit.lock();
-                        let mut grids = grids_for_exit.lock();
-                        let mut subs = subscribers_for_exit.lock();
-                        panes_to_detach
-                            .iter()
-                            .filter_map(|p| {
-                                grids.remove(p);
-                                subs.remove(p);
-                                ptys.remove(p)
-                            })
-                            .collect()
-                    };
-                    drop(detached);
-                    info!(session = %sid, "tear-core: reaped fully-exited unwatched session");
+                // The proof is re-taken under the write lock inside
+                // `reap_proven_dead`, so a window/pane spawned into the
+                // session between the mark and here (or a concurrent
+                // explicit kill) aborts the reap.
+                //
+                // BOUND TO A `let` ON PURPOSE — do not inline this into
+                // the `if let` scrutinee. Rust 2024's if-let rescoping
+                // drops scrutinee temporaries before the `else` arm but
+                // NOT before the success arm, so the read guard would
+                // still be alive inside the block and `reap_proven_dead`'s
+                // `registry.write()` would wait forever on a reader held
+                // by its own thread. Measured 2026-07-31: the daemon
+                // wedged on the first pane whose child exited, with
+                // `tear-pty-reader` parked in `wait_for_readers` and
+                // every later `list_sessions` parked behind it.
+                let proof = registry_for_exit
+                    .read()
+                    .sessions
+                    .get(&sid)
+                    .and_then(AllPanesExited::witness);
+                if let Some(proof) = proof {
+                    reap_proven_dead(
+                        &registry_for_exit,
+                        &ptys_for_exit,
+                        &grids_for_exit,
+                        &subscribers_for_exit,
+                        proof,
+                    );
                 }
             }
         });
@@ -738,6 +728,89 @@ impl InProcess {
         }
         detached
     }
+
+    /// Remove a session the caller has **proven** dead — every pane's
+    /// child process has exited.
+    ///
+    /// This is the *only* way for a daemon to end a session on its own
+    /// initiative, and [`AllPanesExited`] is the only ticket in. A rule
+    /// keyed on "nobody is attached", on an idle timer, or on the
+    /// session's [`tear_types::SessionSource`] cannot construct one —
+    /// see [`crate::reap`] for the incident that motivated the narrowing.
+    ///
+    /// Returns `true` if the session was removed. `false` means the proof
+    /// went stale between witnessing and now (a `new_window` landed, or
+    /// an explicit `kill_session` won the race) — the proof is re-taken
+    /// under the write lock, so a resurrected session is never reaped.
+    ///
+    /// **Call with no registry guard held.** Mint the proof from an owned
+    /// [`TearSession`] (`list_sessions()` / `get_session()` both clone) or
+    /// from a `read()` bound to its own `let` statement. Passing a proof
+    /// witnessed inside a still-live read guard deadlocks on the `write()`
+    /// below — `parking_lot`'s `RwLock` is not reentrant and this thread
+    /// would be waiting for itself.
+    pub fn reap_proven_dead_session(&self, proof: AllPanesExited) -> bool {
+        reap_proven_dead(
+            &self.registry,
+            &self.ptys,
+            &self.grids,
+            &self.subscribers,
+            proof,
+        )
+    }
+}
+
+/// Free-standing so both `spawn_pty_for`'s `on_exit` hook (which owns
+/// cloned `Arc`s, not a `&self`) and [`InProcess::reap_proven_dead_session`]
+/// share one implementation — the session-removal path exists once.
+///
+/// Same shape as [`InProcess::detach_panes`]: artifacts leave the maps
+/// under the locks, handles die outside them (that deadlock contract).
+fn reap_proven_dead(
+    registry: &RwLock<Registry>,
+    ptys: &Mutex<BTreeMap<PaneId, PtyHandle>>,
+    grids: &Mutex<BTreeMap<PaneId, Arc<Mutex<PaneGrid>>>>,
+    subscribers: &Mutex<BTreeMap<PaneId, PaneSubscribers>>,
+    proof: AllPanesExited,
+) -> bool {
+    let sid = proof.session();
+    let panes_to_detach: Vec<PaneId> = {
+        let mut r = registry.write();
+        // Re-witness under the write lock: the caller's proof was taken
+        // outside it and a racing `new_window` / `split_pane` /
+        // `kill_session` invalidates it.
+        if r.sessions
+            .get(&sid)
+            .and_then(AllPanesExited::witness)
+            .is_some()
+        {
+            r.sessions
+                .remove(&sid)
+                .map(|s| s.panes.keys().copied().collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    if panes_to_detach.is_empty() {
+        return false;
+    }
+    let detached: Vec<PtyHandle> = {
+        let mut ptys = ptys.lock();
+        let mut grids = grids.lock();
+        let mut subs = subscribers.lock();
+        panes_to_detach
+            .iter()
+            .filter_map(|p| {
+                grids.remove(p);
+                subs.remove(p);
+                ptys.remove(p)
+            })
+            .collect()
+    };
+    drop(detached);
+    info!(session = %sid, "tear-core: reaped fully-exited unwatched session");
+    true
 }
 
 impl MultiplexerControl for InProcess {

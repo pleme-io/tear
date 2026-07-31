@@ -332,79 +332,43 @@ pub fn start_with_config(
             .expect("spawn tear-kanshou thread");
     }
 
-    // Orphan-session pruner. Daemon-side safety net for crashes
-    // / force-quits / SIGTERM where the consumer (mado, mcp,
-    // etc.) couldn't call kill_session. Without pruning, each
-    // orphan keeps a live pty + reader thread + scrollback;
-    // every subsequent `new_session_with_source` then forks the
-    // bloated address space (linearly slower per orphan —
-    // measured ~700 ms per orphan on macOS at 10+ sessions).
+    // ── NO orphan pruner. Deliberately. ──────────────────────────
+    // There used to be a `tear-orphan-prune` thread here: it ticked
+    // every 2 s and killed any session whose panes had zero live
+    // byte-stream subscribers, after a grace keyed on provenance —
+    // 3 s for `SessionSource::Named`, 15 s for `Agent`, never for
+    // `Human`. It was deleted 2026-07-31 because it destroyed live
+    // sessions, which is the one thing a multiplexer must not do.
     //
-    // Policy: tick every 5 s. For each session:
-    //   * Human (`tear up`) → never auto-prune (operator
-    //     expectation: outlive any attached client)
-    //   * Named(_) (mado-spawned) → 10 s grace after the last
-    //     subscriber leaves
-    //   * Agent (MCP-spawned) → 30 s grace (agents may attach
-    //     briefly then detach repeatedly during a workflow)
-    {
-        let inproc_for_prune = inproc.clone();
-        thread::Builder::new()
-            .name("tear-orphan-prune".into())
-            .spawn(move || {
-                use tear_types::{MultiplexerControl, SessionSource};
-                let mut empty_since: std::collections::HashMap<
-                    tear_types::SessionId,
-                    std::time::Instant,
-                > = std::collections::HashMap::new();
-                let tick = std::time::Duration::from_secs(2);
-                let named_grace = std::time::Duration::from_secs(3);
-                let agent_grace = std::time::Duration::from_secs(15);
-                loop {
-                    std::thread::sleep(tick);
-                    let sessions = match inproc_for_prune.list_sessions() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    let now = std::time::Instant::now();
-                    let mut alive_ids = std::collections::HashSet::new();
-                    for s in &sessions {
-                        alive_ids.insert(s.id);
-                        let grace = match &s.source {
-                            SessionSource::Human => {
-                                empty_since.remove(&s.id);
-                                continue;
-                            }
-                            SessionSource::Named(_) => named_grace,
-                            SessionSource::Agent => agent_grace,
-                        };
-                        let any_subs = s.panes.keys().any(|pid| {
-                            inproc_for_prune
-                                .pane_subscriber_count(*pid)
-                                .map(|n| n > 0)
-                                .unwrap_or(false)
-                        });
-                        if any_subs {
-                            empty_since.remove(&s.id);
-                        } else {
-                            let started = empty_since.entry(s.id).or_insert(now);
-                            if now.duration_since(*started) >= grace {
-                                info!(
-                                    session = %s.id,
-                                    name = %s.name,
-                                    source = %s.source.label(),
-                                    grace_secs = grace.as_secs(),
-                                    "orphan pruner: killing session"
-                                );
-                                let _ = inproc_for_prune.kill_session(s.id);
-                                empty_since.remove(&s.id);
-                            }
-                        }
-                    }
-                    empty_since.retain(|k, _| alive_ids.contains(k));
-                }
-            })?;
-    }
+    // Measured on a scratch daemon (three sessions, all shells
+    // RUNNING, nobody attached):
+    //
+    //   t=+0s   S-human  S-named  S-agent
+    //   t=+4s   S-human           S-agent   ← named killed, 3 s grace
+    //   t=+16s  S-human                     ← agent killed, 15 s grace
+    //
+    // No RPC ever failed — the whole call path returned `Ok` and the
+    // session was simply gone a moment later. banken's bancada
+    // (`Named`) died ~3 s after opening, before an operator could
+    // attach; mado's `tear_new_session` MCP tool (`Agent`) died at
+    // ~15 s. "Detached" is the normal steady state of a multiplexer
+    // session, not evidence of an orphan.
+    //
+    // The stated motive — a crashed consumer leaving a live PTY +
+    // reader thread + scrollback behind — does not justify it either:
+    // when mado crashes its SHELLS ARE STILL ALIVE, and surviving a
+    // dead front-end so the operator can re-attach is the feature,
+    // not the leak. The genuine leak class (a session whose every
+    // child has EXITED and that nobody was watching) is already
+    // handled at its cause, on the pane's own exit path, by
+    // `tear-core`'s reap — keyed on child-process death, never on
+    // attachment. `InProcess::reap_proven_dead_session` +
+    // `tear_core::AllPanesExited` are the only door back in, and that
+    // ticket cannot be minted from a subscriber count.
+    //
+    // Sealed by `tear/tests/session_durability.rs` (it lives in the
+    // CLI crate because that is where the daemon harness and a real
+    // `tear-client` already meet).
 
     // Best-effort notify watcher. If spawn_watcher fails (e.g.
     // config dir doesn't exist on a brand-new fleet host) we log
