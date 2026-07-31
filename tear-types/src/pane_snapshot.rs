@@ -327,6 +327,23 @@ impl PaneSnapshot {
                 buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
             }
         }
+        // CLOSE THE PEN. This serializer walks cells and emits SGR only on
+        // *change*, so whatever the final cell required is still latched when
+        // the bytes run out. The consumer's parser then applies it to
+        // everything that follows.
+        //
+        // That is what turned a one-shot replay artifact into a permanent one.
+        // mado feeds `to_ansi` into its VT on attach and on every session
+        // switch (`engate_consumer::replay` -> `gui_tear_attach`), so a dirty
+        // final pen underlined/dimmed the entire live stream afterwards — the
+        // "everything is underlined in mado" report. It is guaranteed dirty
+        // whenever the pen is, because `blank_cell()` fills erased cells from
+        // `pen_attrs`/`pen_bg`, so even trailing blanks carry the attribute.
+        //
+        // Emitted BEFORE the cursor CUP so the reset cannot clobber the
+        // position, and before `?25l` so visibility survives it (SGR 0 does
+        // not touch DECTCEM, but ordering it this way removes the question).
+        buf.extend_from_slice(b"\x1b[0m");
         // Position cursor (CSI is 1-based).
         let _ = write!(
             buf,
@@ -376,6 +393,54 @@ mod to_ansi_tests {
         assert!(text.contains("\x1b[2J"));
         assert!(text.contains("\x1b[H"));
         assert!(text.contains("\x1b[1;1H"));
+    }
+
+    /// THE PEN MUST BE CLOSED — the last SGR in the stream is a reset.
+    ///
+    /// `empty_grid_emits_clear_and_home` above asserts `contains("\x1b[0m")`,
+    /// which the LEADING reset satisfies. That assertion passed for the whole
+    /// life of the bug while the tail leaked: `to_ansi` emits SGR only on
+    /// change, so whatever the final cell required stayed latched when the
+    /// bytes ran out, and mado's parser applied it to the entire live stream
+    /// that followed. Containment is the wrong predicate; POSITION is the
+    /// property. This pins the last SGR, not the presence of one.
+    #[test]
+    fn to_ansi_closes_the_pen_so_a_dirty_attribute_cannot_escape() {
+        let mut s = snap_with(1, 3, 'x');
+        // A final cell that REQUIRES an SGR — without a closing reset its
+        // attribute is what the consumer inherits.
+        s.cells[0][2] = Cell {
+            ch: 'x',
+            attrs: CellAttrs::UNDERLINE,
+            ..Cell::BLANK
+        };
+        let bytes = s.to_ansi();
+        let text = String::from_utf8_lossy(&bytes);
+
+        // Every SGR in emission order; the last one must be the reset.
+        let sgrs: Vec<&str> = text
+            .match_indices('\u{1b}')
+            .filter_map(|(i, _)| {
+                let rest = &text[i..];
+                rest.find('m').and_then(|end| {
+                    let seq = &rest[..=end];
+                    // SGR only: CSI ... m with no intervening CSI final byte.
+                    if seq.starts_with("\u{1b}[") && !seq[2..end].contains(['H', 'J', '?']) {
+                        Some(seq)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        assert!(!sgrs.is_empty(), "expected SGR sequences, got: {text:?}");
+        assert_eq!(
+            *sgrs.last().unwrap(),
+            "\u{1b}[0m",
+            "the last SGR must be a reset, or the pen escapes into the \
+             consumer's live stream; full emission: {sgrs:?}"
+        );
     }
 
     #[test]
