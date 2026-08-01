@@ -68,7 +68,7 @@ restart-durable live state (a tmux-resurrect-class feature).
 | split-ratio fidelity in `instantiate` (plan ratios honored) | **M2** | today the backend's balanced split; needs a ratio-bearing split op or post-spawn resize |
 | Per-pane `cwd`/`env`/`args` beyond the shell on instantiate | **M2** | needs a richer backend spawn op |
 | mado renders multi-pane from `compute_rects` | **M5** | the renderer + wire are ready; mado's `render_multi_pane` was deleted at Phase 4 and must be re-added |
-| no-overlap: one vte parser (retire mado's `terminal.rs` double-parse) | **M5** | the live double-parse is named tech debt |
+| no-overlap: one vte parser (retire mado's `terminal.rs` double-parse) | **M5** | the live double-parse is named tech debt; the seam is now decided + typed — [`SHUKEN.md`](./SHUKEN.md) |
 | `(defsession …)` tatara-lisp authoring leg | **M5+** | the `TataraDomain` derive is not in the tear crate-tree; don't pull the heavy dep prematurely |
 | restart-durable live sessions (PTYs + scrollback survive a daemon restart) | **Phase-6** | impossible without serialize-registry + respawn/reattach-PTY; only the *definition* survives today |
 
@@ -199,10 +199,13 @@ INTERPRETER TRIPLET:
   deserialization.
 - **M5 (no-overlap endpoint).** mado renders multi-pane from
   `compute_rects`; retire mado's `terminal.rs` double-parse so the session
-  model lives once. Resolve the graphics seam (kitty/sixel placement state
-  the cell snapshot can't carry): either grow the snapshot to own graphics
-  or restate no-overlap as "text non-overlapping; graphics intentionally
-  mado-local."
+  model lives once. **The graphics seam is RESOLVED (operator decision,
+  2026-07-31): grow the snapshot to own graphics.** The alternative —
+  restating no-overlap as "text non-overlapping; graphics intentionally
+  mado-local" — was considered and rejected as a partition that keeps two
+  parsers and renames the overlap a boundary. `PaneGrid` becomes the sole
+  VT authority and the seam is typed as *ownership*, not content: see
+  [`SHUKEN.md`](./SHUKEN.md).
 - **Phase-6.** Restart-durable live sessions: serialize the registry +
   grids, respawn/reattach PTYs. Only attempt once the model above is
   load-bearing.
