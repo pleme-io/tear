@@ -13,6 +13,14 @@
 > per naming law 1 (foundational substrate); the literal gloss should let a
 > reader guess the job — *who holds the right to mutate*. Veto freely.
 
+> **Gate 0 lives elsewhere — read it first.**
+> [`theory/MADO-TEAR-SEAM.md`](https://github.com/pleme-io/theory/blob/main/MADO-TEAR-SEAM.md)
+> is the seam's Gate 0 (written 2026-07-30, measured 2026-07-31: ~90 illegal
+> states in eight classes). **This doc records a DIRECTION; that doc records
+> the STATES.** Do not restate its list here. shuken answers its §IV — "what
+> would speaking the same language mean" — with *authority* rather than
+> content, and inherits its §VII preconditions.
+
 ---
 
 ## 1. The decision
@@ -105,6 +113,27 @@ a footnote.
 
 Rows marked *pending recon* are placeholders. **A row may not be written
 green here without a red run against a deliberately broken input.**
+
+## 5-A. ★ PRECONDITION — parser parity before the flip
+
+**On the wide-character axis, mado is the CORRECT parser and tear is the
+wrong one.** Flipping authority to `PaneGrid` as it stands today would make
+the symptom that started this work *worse*.
+
+- `tear-core/src/pane_grid.rs:236-244` — `advance_cursor_after_print` is
+  `self.cursor_col += 1`, unconditionally. tear has **no `unicode-width`
+  dependency at all**.
+- `mado/Cargo.toml:313` declares `unicode-width`; `mado/src/terminal.rs:390-391`
+  gives `Cell` a `width: u8` with `0 = continuation of a wide char`.
+- Combining characters: mado has `Cell.extra: Option<Box<Vec<char>>>`
+  (terminal.rs:387); tear's `Cell` (pane_snapshot.rs:151) has no slot, so
+  each combining codepoint takes its own cell and advances.
+
+`PaneGrid` must reach parity on both axes **before** it becomes
+authoritative. This is a precondition, not a follow-up — the full Gate 0 and
+the measurement behind it are in
+[`theory/MADO-TEAR-SEAM.md`](https://github.com/pleme-io/theory/blob/main/MADO-TEAR-SEAM.md)
+§III-A.
 
 ## 6. What the decision forces (in scope, not optional)
 
