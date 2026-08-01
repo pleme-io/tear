@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "becad0f5564b0b5e00f6c39eacc58ce5d0a104f7233add317747b43ddcbe6179",
+  "cargo_lock_sha256": "78f3aedcbff4a6bc996ae2c9c8500b313975dda34544d4e8aa3c2c0d72ab7608",
   "manifest_sha256": {
-    "Cargo.toml": "d7131b88e195382c5e91e80d7578e0d2e1e0ca5b12d4f421d606b98a2421a2d5",
+    "Cargo.toml": "8219cb7e085ef701b67e06b409266bf773b4474048dca8a3eeefdac28dcaf3fb",
     "praca/Cargo.toml": "b4ab4c4045ac64a9cf3ae66c3d6e81690dc1518904423ce572a9e60810ce1f22",
     "tear-client/Cargo.toml": "083d0b1c4cc16e873b192f3e4304ee9a262abd1317c67902dba4d907d35aaf90",
     "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
     "tear-core/Cargo.toml": "b55952e145bbd1f201be9dff8920a8ef26a825b273dfe542522f13349f23e961",
-    "tear-daemon/Cargo.toml": "9db7e285a2c248c712045e52f80d8117150b00be7c60f3b7aa9f9bc5421e2438",
+    "tear-daemon/Cargo.toml": "e6cba7319b3936bb82877df8d8a1eb5d5d4cc74b9b904d76f62131f8a63bad13",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
     "tear-types/Cargo.toml": "628bd3df681893ec37265e87f15fc304dd284268ae14eb19d549d9a3550ddb9a",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
@@ -4023,6 +4023,70 @@
           "mman",
           "net",
           "socket"
+        ]
+      },
+      "nix-0.30.1": {
+        "runtime_dependencies": [
+          {
+            "name": "bitflags",
+            "package_key": "bitflags-2.13.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "cfg_if",
+            "package_key": "cfg-if-1.0.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [
+              "extra_traits"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "memoffset",
+            "package_key": "memoffset-0.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [
+          {
+            "name": "cfg_aliases",
+            "package_key": "cfg_aliases-0.2.1",
+            "kind": "build",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          }
+        ],
+        "features": [
+          "default",
+          "memoffset",
+          "socket",
+          "term"
         ]
       },
       "nix-0.31.3": {
@@ -8420,6 +8484,19 @@
             "package_key": "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f",
             "kind": "normal",
             "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "nix",
+            "package_key": "nix-0.30.1",
+            "kind": "normal",
+            "features": [
+              "socket",
+              "term"
+            ],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -15685,6 +15762,10 @@
       "build_script": "build.rs"
     },
     "nix-0.29.0": {
+      "edition": "2021",
+      "build_script": "build.rs"
+    },
+    "nix-0.30.1": {
       "edition": "2021",
       "build_script": "build.rs"
     },
