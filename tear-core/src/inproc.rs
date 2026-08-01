@@ -1080,11 +1080,25 @@ impl MultiplexerControl for InProcess {
                 None => LeafRemoval::NotFound,
             };
             match outcome {
+                // NotFound means `locate_pane` said this pane was in BOTH
+                // `s.panes` and the window's tree, and then `remove_leaf`
+                // could not find it in the tree — i.e. the two had already
+                // diverged. That is structural corruption, and it used to
+                // share an arm with the normal close: the record was
+                // silently dropped and the caller got Ok(()), so a real bug
+                // was indistinguishable from a routine kill.
+                //
+                // Roll the record back in and refuse. NoSuchPane already
+                // exists and already round-trips over the wire, so this
+                // costs no new type and no wire churn.
+                LeafRemoval::NotFound => {
+                    drop(detached);
+                    return Err(ControlError::NoSuchPane(id));
+                }
                 // Parent split collapsed into the sibling — the flat pane
                 // record goes too, and active_pane retargets if it pointed
-                // at the dead pane. NotFound heals a pre-existing dangling
-                // record the same way.
-                LeafRemoval::Removed | LeafRemoval::NotFound => {
+                // at the dead pane.
+                LeafRemoval::Removed => {
                     s.panes.remove(&id);
                     if let Some(w) = s.windows.get_mut(&wid) {
                         if w.active_pane == id {
@@ -1377,6 +1391,58 @@ mod tests {
         let inproc = InProcess::new();
         let sessions = inproc.list_sessions().unwrap();
         assert!(sessions.is_empty());
+    }
+
+    /// A diverged tree is refused rather than silently healed.
+    ///
+    /// ★ READ THIS BEFORE TRUSTING IT — it does NOT prove what its first
+    /// draft claimed. `kill_pane`'s `LeafRemoval::NotFound` arm was split out
+    /// from the ordinary `Removed` close (they shared an arm, so structural
+    /// corruption was indistinguishable from a routine kill). This test was
+    /// written to earn that split, and MEASURED VACUOUS against it: it passes
+    /// identically with the old merged arm restored.
+    ///
+    /// The reason is `locate_pane` (registry.rs), which requires membership
+    /// in BOTH `s.panes` and the window's tree and runs at inproc.rs's read
+    /// lock *before* `remove_leaf` is ever called. So a diverged pane is
+    /// rejected there, and the refusal this asserts comes from that guard.
+    ///
+    /// Consequence, stated honestly: **`LeafRemoval::NotFound` is unreachable
+    /// from a single-threaded caller.** It is a guard on the TOCTOU window
+    /// between the read lock that resolves the pane and the write lock that
+    /// mutates the tree — real under concurrency, and not reachable by any
+    /// test that does not race those two locks. The arm split is kept as
+    /// defence in depth, and is graded accordingly: **only-mitigated, ceiling
+    /// = no single-threaded test can reach it; earning a green here needs a
+    /// concurrent test that interleaves the two lock acquisitions.**
+    ///
+    /// What this test DOES pin, and it is worth pinning: `locate_pane`'s
+    /// both-memberships requirement is load-bearing, and a refactor that
+    /// relaxed it to a single lookup would make this go red.
+    #[test]
+    fn kill_pane_refuses_when_tree_and_pane_map_have_diverged() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("divergence", "/bin/sh").unwrap();
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        // Break the invariant behind the API's back: evict the pane from the
+        // layout tree while leaving its record in `s.panes`, so `locate_pane`
+        // still resolves it but `remove_leaf` cannot find it.
+        {
+            let mut r = inproc.registry.write();
+            let s = r.sessions.get_mut(&sid).unwrap();
+            let wid = *s.windows.keys().next().unwrap();
+            let w = s.windows.get_mut(&wid).unwrap();
+            w.layout = tear_types::LayoutNode::leaf(tear_types::PaneId::from_seed("decoy"));
+        }
+
+        let err = inproc
+            .kill_pane(pane)
+            .expect_err("a diverged tree must be refused, not silently healed");
+        assert!(
+            matches!(err, ControlError::NoSuchPane(p) if p == pane),
+            "expected NoSuchPane for the diverged pane, got {err:?}"
+        );
     }
 
     /// Forcing function: the TEAR_* env-var names tear stamps onto every
