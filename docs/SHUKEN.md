@@ -83,10 +83,26 @@ convention and not a review rule. Same construction as banken's
 It does not, by itself, stop mado from constructing its own parser
 alongside — which is exactly how the present double-parse arose.
 
-The seal that closes that is dependency absence: **`vte` is removed from
-mado's manifest.** A transitive dependency is not nameable without being
-declared, so `vte::Parser` in mado becomes **`E0433` unresolved crate** —
-a compile error, at the strongest tier available, for the accidental case.
+Dependency absence closes half of it: **`vte` is removed from mado's
+manifest.** A transitive dependency is not nameable without being declared,
+so `vte::Parser` in mado becomes **`E0433` unresolved crate**.
+
+> **★ CORRECTED 2026-07-31 — this seal does NOT hold as originally written,
+> and the gap is one line wide.** mado declares **`tear-core`** directly
+> (`mado/Cargo.toml:179` — 57 call sites, required for `InProcess`);
+> `tear-core/src/lib.rs:33` re-exports `PaneGrid`; `pane_grid.rs:1016`'s
+> `feed` is `pub`. So this compiles in mado with `vte` gone:
+>
+> ```rust
+> let mut g = tear_core::PaneGrid::new(80, 24);
+> g.feed(bytes);            // a second authoritative grid, no `vte` named
+> ```
+>
+> Removing `vte` closes `vte::Parser`. It does **not** close a second grid.
+> **What would:** put `pane_grid` behind a `parser` Cargo feature that
+> `tear-daemon` enables and mado does not — then the authority is a
+> compile-time capability rather than a naming convention. Until that lands,
+> the row is `only-mitigated (C4)`, not `truly-unrep`.
 
 Grade this honestly (§5): re-adding a dependency is a deliberate,
 reviewable act, and a forcing-function test asserting `vte ∉ mado`'s
@@ -100,19 +116,34 @@ a footnote.
 
 <!-- tier-ledger -->
 
+> **★ AMENDED 2026-07-31, same day, against measurement. Two rows below were
+> over-graded when this doc was written — including the one §4 calls
+> load-bearing.** They are corrected in place rather than quietly restated,
+> because a ledger that silently re-grades itself is worth nothing.
+
 | bad state | how the vocabulary corners it | tier (TARGET) |
 |---|---|---|
-| a renderer advances VT state | `PaneView` exposes no byte-feeding verb — `E0599` | truly-unrep |
-| mado grows a second parser by accident | `vte` absent from mado's manifest — `E0433` unresolved crate | truly-unrep |
-| mado grows a second parser deliberately | forcing-function test asserting the manifest; **ceiling: requires a CI gate mado does not yet have** | only-mitigated (C4) |
-| two grids disagree on a pane's contents | there is only one grid; the second is deleted, not synchronized | truly-unrep |
-| a view outlives the grid it borrows | `PaneView<'a>` borrows — the borrow checker refuses | truly-unrep |
-| graphics silently dropped at the wire | the snapshot carries placements as a **non-Option** field | truly-unrep |
+| a renderer advances VT state through the view | `PaneView` exposes no `&mut self` and no byte-feeding verb — `E0599` | truly-unrep |
+| a client fabricates a view no grid produced | private fields, no public ctor; only `PaneGrid::view()` mints one — `E0451` | truly-unrep |
+| mado names `vte::Parser` | `vte` absent from mado's manifest — `E0433` unresolved crate | truly-unrep |
+| **mado builds a second authoritative grid** | ~~`vte` absent from the manifest~~ — **NOTHING, TODAY.** mado declares `tear-core` directly (`mado/Cargo.toml:179`, 57 call sites, needed for `InProcess`); `tear-core/src/lib.rs:33` re-exports `PaneGrid`; `pane_grid.rs:1016` `feed` is `pub`. So `tear_core::PaneGrid::new(80,24).feed(bytes)` compiles in mado **without naming `vte` at all**. Dropping `vte` closes `vte::Parser`; it does not close a second grid. **Ceiling: a second grid is one line away, guarded only by a manifest test that cannot see it, on a CI gate mado only just got.** Earns truly-unrep only when `pane_grid` sits behind a `parser` feature that `tear-daemon` enables and mado does not. | only-mitigated (C4) |
+| two grids disagree on a pane's contents | there is only one grid — **conditional on the row above**, and therefore graded with it | only-mitigated (C4) |
+| a *borrowed* view outlives its grid | `PaneView<'a>` borrows the grid's interior — borrowck | truly-unrep |
+| acting on a **stale wire** view | `epoch: GridEpoch` on `OwnedPaneView`. **Ceiling: nothing forces the comparison — it is a runtime check the client chooses to make. Does NOT apply to the borrowed carrier; do not let the borrowed row's green cover this one.** | only-mitigated (C3) |
+| the renderer reads a mode from its own dead parser | the seven accessors are **deleted** from `Terminal` *and* from `TerminalOps` (five have two names each), so every missed site is `E0599` — repointing while leaving the old method alive is not sufficient | truly-unrep |
+| a mode is substituted for another mode | ten distinct newtypes, not ten `bool`s — `sanitize_paste(text, BracketedPaste)` is `E0308` against any other mode. This is a **paste-injection** surface, not a cosmetic one | truly-unrep |
+| modes read from a different instant than the cells | `ModeSet` is a **field of `PaneView`**, never a separate request — no `ModeSet` exists without the view it came from | truly-unrep |
+| **graphics silently dropped at the wire** | ~~a **non-Option** field~~ — **over-graded.** A `#[serde(default)]` empty vec and an absent field are **the same bit pattern**; the type alone cannot tell them apart. Needs a `view-graphics` capability gating a `Subscription<WithGraphics>` typestate | parse-time-rejected |
+| a capability-gated field read on a daemon that never advertised it | `require()` called by convention per site. **Ceiling: depends on every call site remembering, and no test enumerates them.** Earns parse-time-rejected only when the capability becomes a typestate precondition of the subscription | only-mitigated (C4) |
+| **a program's DSR/DA/DECRQSS probe is never answered** | **NOT CORNERED — and this is a flip blocker nobody had listed.** mado answers CPR/DA/DECRQSS from its own parser via `take_response`; under shuken mado has no parser, and tear owns the PTY but has **no response state whatsoever**. Every app that probes the terminal (prompt libraries using CPR, DA-based capability detection) hangs waiting for a reply that no longer exists. **Ceiling: nothing exists; the failure mode is a hung child process.** | only-mitigated (C6) |
+| scroll position diverges between two windows on one pane | scroll stays **renderer-side** in a mado-owned viewport and is never a view field — see §5-B | truly-unrep (the field does not exist on the shared type) |
 | geometry the daemon believes ≠ geometry drawn | both derive from one `compute_rects` over one `LayoutNode` | truly-unrep |
-| a pane id with no live PTY | *pending recon* — expected **C2 ceiling** (kernel-process liveness, same class as SESSION-TYPESCAPE §7 #7) | only-mitigated (C2) |
+| a pane id with no live PTY | kernel-process liveness, same class as SESSION-TYPESCAPE §7 #7 | only-mitigated (C2) |
 
-Rows marked *pending recon* are placeholders. **A row may not be written
-green here without a red run against a deliberately broken input.**
+**A row may not be written green here without a red run against a
+deliberately broken input.** Two rows were green on this table for the length
+of one afternoon on nothing but plausibility; that is the exact failure this
+sentence exists to prevent, and it caught nobody — a later measurement did.
 
 ## 5-A. ★ PRECONDITION — parser parity before the flip
 
@@ -134,6 +165,38 @@ authoritative. This is a precondition, not a follow-up — the full Gate 0 and
 the measurement behind it are in
 [`theory/MADO-TEAR-SEAM.md`](https://github.com/pleme-io/theory/blob/main/MADO-TEAR-SEAM.md)
 §III-A.
+
+## 5-B. ★ The border is VIEW vs VIEWPORT — not "everything in `Terminal` moves"
+
+The largest structural finding of the design pass, and it is not in the
+original decision. Measured: `scroll_up` / `scroll_down` / `scroll_to_bottom`
+/ `scroll_offset` are **46 combined call sites**, they are **mutations**, and
+they are **not VT state**. Scroll position is what the operator's eyes are
+looking at. Move it into the authority and two mado windows attached to one
+pane fight over the scrollback position.
+
+> **The rule that generates the border:**
+> **everything the BYTE STREAM determines moves to the authority; everything
+> the OPERATOR'S EYES determine stays with the renderer.**
+
+- **Moves (view fields):** cells, cursor, styles, links, palette, graphics,
+  modes, title, cwd, prompt blocks, scrollback *content*, response bytes.
+- **Stays (a mado-owned viewport):** `scroll_offset`, selection anchors,
+  search state + matches, URL detection, font zoom, kinetic scroll. Each is a
+  **pure function of the view plus operator input** — `resolve_selection_span`,
+  `detect_urls`, `search_rows` all just read cells. **None needs a parser.**
+
+Two consequences worth having up front:
+
+1. **The move is ~2,150 lines smaller than §6.2 assumed** — and §6.2's own
+   number was inflated anyway: `terminal.rs` is 11,736 lines but `#[cfg(test)]`
+   opens at 6158, so only **~6,150 lines are production code**. The parser
+   surface to move is ~4,000, not 11,736.
+2. **mado has already discovered this type internally.** `render.rs:3298`'s
+   `fn snapshot(&self) -> (Snapshot, u64)` is *exactly* `PaneView`'s shape —
+   cloned cells, style snapshot, palette, cursor, image placements, no parser.
+   shuken makes that existing internal boundary the cross-process one, which
+   is why this is a re-homing rather than an invention.
 
 ## 6. What the decision forces (in scope, not optional)
 
