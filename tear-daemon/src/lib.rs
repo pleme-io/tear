@@ -86,6 +86,56 @@ pub struct DaemonHandle {
     _config_watcher: Option<notify::RecommendedWatcher>,
 }
 
+/// Decide a new session's [`SessionSource`] from what the connection IS,
+/// not only from what the request SAYS.
+///
+/// ## The bypass this closes
+///
+/// `SessionSource` drives `tear list --source agent` — the field an
+/// operator uses to triage what automation started — and it also selects
+/// the durability grace a detached session gets. Until now it was purely
+/// caller-declared: a client passed `SessionSource::Human` and the daemon
+/// recorded it. The thing being triaged chose its own label.
+///
+/// ## Precedence, and why it is this way round
+///
+/// An automation's own declaration WINS over a bare absence, because a
+/// `Named("pleme-ci-deploy")` is strictly more informative than `Agent`,
+/// and the automation is the only thing that knows its own name. What a
+/// caller can no longer do is claim to be *less* automated than its
+/// connection says: a connection that identified itself as an agent
+/// cannot register a session as `Human`.
+///
+/// So the rule is: **a declaration may refine, never downgrade.**
+///
+/// ## Tier
+///
+/// **only-mitigated**, and the ceiling is the same one shutai carries: the
+/// automation half of a shutai is itself a peer's claim (`Declared`), so a
+/// same-uid process that never calls `IdentifyClient` still registers as
+/// `Human`. This closes the *inconsistent* case — declaring one thing on
+/// the connection and another in the request — not the *silent* one.
+/// Closing that needs the peer credential to distinguish processes, which
+/// it cannot: same-uid processes are mutually trusting by construction.
+fn derive_session_source(
+    declared: Option<tear_types::SessionSource>,
+    shutai: Option<&Shutai>,
+) -> tear_types::SessionSource {
+    use tear_types::SessionSource;
+    let from_conn = shutai.map(Shutai::session_source);
+    match (declared, from_conn) {
+        // The connection says automation; the request claims Human. The
+        // connection wins — this is the downgrade the function exists to
+        // refuse.
+        (Some(SessionSource::Human) | None, Some(conn)) if conn != SessionSource::Human => conn,
+        // Anything else the caller said stands: a Named label refines an
+        // Agent, and a human connection has nothing to add.
+        (Some(d), _) => d,
+        (None, Some(conn)) => conn,
+        (None, None) => SessionSource::default(),
+    }
+}
+
 /// Mint a [`Shutai`] for a local connection from the peer credential the
 /// KERNEL reports — never from anything the peer sent.
 ///
@@ -868,7 +918,14 @@ pub fn serve_connection_shutai<S: io::Read + io::Write>(
         if matches!(req, Request::SubscribeConfigChange) {
             return serve_config_subscription(stream, config);
         }
-        let resp = dispatch_with_config(&inproc, &config, req, audit.as_ref(), praca.as_ref());
+        let resp = dispatch_with_shutai(
+            &inproc,
+            &config,
+            req,
+            audit.as_ref(),
+            praca.as_ref(),
+            Some(&shutai),
+        );
         write_msg(&mut stream, &resp)?;
     }
 }
@@ -1148,6 +1205,26 @@ pub fn dispatch_with_config(
     audit: Option<&AuditLog>,
     praca: Option<&PracaStore>,
 ) -> Response {
+    // No connection to derive an actor from — an embedder calling the
+    // simple entry point gets the pre-shutai behaviour.
+    dispatch_with_shutai(inproc, config, req, audit, praca, None)
+}
+
+/// Dispatch knowing who is asking.
+///
+/// A separate entry point rather than a changed signature, per ★★
+/// MODULARIZE, DON'T DELETE — five existing callers keep compiling.
+///
+/// The only thing `shutai` currently changes is [`SessionSource`]
+/// derivation, and that is the point of it: see the `NewSession` arm.
+pub fn dispatch_with_shutai(
+    inproc: &InProcess,
+    config: &LiveConfig,
+    req: Request,
+    audit: Option<&AuditLog>,
+    praca: Option<&PracaStore>,
+    shutai: Option<&Shutai>,
+) -> Response {
     match req {
         // The capability probe. Answers with this DAEMON's own
         // version — not the caller's — plus every capability this
@@ -1223,7 +1300,7 @@ pub fn dispatch_with_config(
             resp
         }
         Request::NewSession { name, shell, source, size_cells, args } => {
-            let src = source.unwrap_or_default();
+            let src = derive_session_source(source, shutai);
             let size = size_cells.unwrap_or((80, 24));
             let result =
                 inproc.new_session_with_source_and_size(&name, &shell, &args, src.clone(), size);
@@ -1476,6 +1553,66 @@ mod tests {
     // The serve loop reads via `read_frame` now; the tests still
     // decode single frames the simple way.
     use tear_types::wire::read_msg;
+
+    /// ── SessionSource derivation rows ───────────────────────────
+    ///
+    /// The field an operator uses to triage what automation started was
+    /// set by the thing being triaged. These pin the precedence rule: a
+    /// declaration may REFINE, never DOWNGRADE.
+    #[test]
+    fn an_agent_connection_cannot_register_a_session_as_human() {
+        use tear_types::SessionSource;
+        let agent = Shutai::from_peer_uid(501).declaring(Declared::Agent { label: None });
+
+        // The bypass, attempted directly: claim Human on an agent conn.
+        assert_eq!(
+            derive_session_source(Some(SessionSource::Human), Some(&agent)),
+            SessionSource::Agent,
+            "an automation must not be able to label itself Human — this is \
+             the bypass the derivation exists to close"
+        );
+        // And saying nothing at all yields the connection's own answer.
+        assert_eq!(
+            derive_session_source(None, Some(&agent)),
+            SessionSource::Agent
+        );
+    }
+
+    /// A declaration REFINES: an automation naming itself is strictly more
+    /// informative than the generic `Agent`, and it is the only thing that
+    /// knows its own name.
+    #[test]
+    fn a_named_automation_keeps_its_own_label() {
+        use tear_types::SessionSource;
+        let agent = Shutai::from_peer_uid(501).declaring(Declared::Agent { label: None });
+        assert_eq!(
+            derive_session_source(Some(SessionSource::Named("pleme-ci".into())), Some(&agent)),
+            SessionSource::Named("pleme-ci".into()),
+            "a specific label must survive — refinement is allowed"
+        );
+    }
+
+    /// A human connection adds nothing, and the pre-shutai path is
+    /// unchanged: no connection means the caller's word stands.
+    #[test]
+    fn a_human_connection_and_no_connection_both_preserve_the_request() {
+        use tear_types::SessionSource;
+        let human = Shutai::from_peer_uid(501).declaring(Declared::Human);
+        assert_eq!(
+            derive_session_source(Some(SessionSource::Human), Some(&human)),
+            SessionSource::Human
+        );
+        assert_eq!(
+            derive_session_source(Some(SessionSource::Agent), None),
+            SessionSource::Agent,
+            "with no connection to derive from, the request is all there is"
+        );
+        assert_eq!(
+            derive_session_source(None, None),
+            SessionSource::default(),
+            "and the default is unchanged for pre-shutai callers"
+        );
+    }
 
     /// A declaration NEVER rewrites what the kernel attested.
     ///
