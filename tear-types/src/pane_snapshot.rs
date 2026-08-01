@@ -144,15 +144,32 @@ impl CellAttrs {
 // ── Cell ───────────────────────────────────────────────────────────
 
 /// One cell in a snapshotted pane. Carries the rendered character
-/// + foreground / background colors + attrs. Width / hyperlink /
-/// combining-char fields stay mado-side until Phase 2.5 ports
-/// mado's full Cell wholesale.
+/// + foreground / background colors + attrs + display width.
+/// Hyperlink / combining-char fields stay mado-side until a later
+/// phase ports mado's full Cell wholesale.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cell {
     pub ch: char,
     pub fg: Color,
     pub bg: Color,
     pub attrs: CellAttrs,
+    /// Display columns this cell occupies: `1` normal, `2` the LEAD of a
+    /// double-width glyph, `0` the CONTINUATION cell owned by the lead to
+    /// its left.
+    ///
+    /// `#[serde(default = "width_one")]` and NOT a bare `#[serde(default)]`:
+    /// bare default is `0`, which means *continuation*, so an old daemon's
+    /// snapshot would decode as a grid of continuation cells and a renderer
+    /// that skips width-0 would draw a completely blank pane. This is the
+    /// highest-consequence default in the type.
+    #[serde(default = "width_one")]
+    pub width: u8,
+}
+
+/// serde default for [`Cell::width`] — see the field's doc for why this is
+/// not `Default::default()`.
+fn width_one() -> u8 {
+    1
 }
 
 impl Cell {
@@ -161,7 +178,15 @@ impl Cell {
         fg: Color::WHITE,
         bg: Color::BLACK,
         attrs: CellAttrs::NONE,
+        width: 1,
     };
+
+    /// True when this cell is the second half of a double-width glyph and
+    /// therefore owns no character of its own.
+    #[must_use]
+    pub const fn is_continuation(&self) -> bool {
+        self.width == 0
+    }
 }
 
 impl Default for Cell {
@@ -306,6 +331,23 @@ impl PaneSnapshot {
             // Move to start of this row (1-based CSI).
             let _ = write!(buf, "\x1b[{};1H", r + 1);
             for cell in row {
+                // A continuation cell is the second half of a double-width
+                // glyph and owns no character. Re-emitting its spacer would
+                // move the rest of the row one column right PER wide glyph on
+                // replay, so a snapshot round-trip would not be identity.
+                //
+                // This `continue` must stay AHEAD of the SGR delta blocks
+                // below: a skipped cell emits nothing, so letting it update
+                // `cur_fg`/`cur_bg`/`cur_attrs` would leave the pen tracking
+                // state that was never written.
+                //
+                // It is also what keeps the dirty-pen fix intact — no skipped
+                // cell can introduce an SGR after the closing `\x1b[0m`. Do
+                // NOT "optimise" this by emitting the continuation's SGR to
+                // keep the pen in sync; that re-opens that class.
+                if cell.is_continuation() {
+                    continue;
+                }
                 if cell.attrs != cur_attrs {
                     // Attrs only get cleared by full SGR reset — emit
                     // reset + re-establish colors + new attrs.
@@ -677,6 +719,18 @@ fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell]) {
     let mut cur_bg = Color::BLACK;
     let mut cur_attrs = CellAttrs::NONE;
     for cell in &row[..last] {
+        // Skip the second half of a double-width glyph — same reasoning as
+        // the visible-grid loop in `to_ansi`, and it must stay ahead of the
+        // SGR delta blocks for the same reason.
+        //
+        // Note the trim predicate above classifies a continuation as blank
+        // (space, default colours). That is the RIGHT outcome — `rposition`
+        // stops at the non-blank lead and the consumer's parser re-lays the
+        // pair from the lead alone — but it is load-bearing and one refactor
+        // away from wrong, so it is pinned by a test.
+        if cell.is_continuation() {
+            continue;
+        }
         if cell.attrs != cur_attrs {
             buf.extend_from_slice(b"\x1b[0m");
             cur_fg = Color::WHITE;

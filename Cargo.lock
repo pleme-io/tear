@@ -2951,6 +2951,7 @@ dependencies = [
  "tear-types",
  "thiserror 2.0.18",
  "tracing",
+ "unicode-width",
  "vte",
 ]
 

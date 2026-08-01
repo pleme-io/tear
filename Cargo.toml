@@ -80,6 +80,15 @@ portable-pty = "0.9"
 # ── VT100/xterm parser (same major mado uses; one parser fleet-wide) ─
 vte = "0.15"
 
+# ── Character display width ─────────────────────────────────────────
+# MUST track mado's pin (mado/Cargo.toml declares "0.2", resolves 0.2.2).
+# Width tables change between releases, so a version skew here is the
+# way to be parity-SHAPED but wrong: it presents as a handful of exotic
+# codepoints disagreeing, which reads like a bad test corpus rather than
+# a dependency problem. If mado's pin moves, move this one in the same
+# commit.
+unicode-width = "0.2"
+
 # ── RPC wire format (tear-daemon ↔ tear-client) ─────────────────────
 # ciborium (CBOR / RFC 8949) — self-describing binary serde format
 # that handles internally-tagged enums (LayoutNode uses

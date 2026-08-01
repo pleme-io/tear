@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 
 use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
+use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
 pub use tear_types::pane_snapshot::{Cell, PaneSnapshot};
@@ -163,6 +164,15 @@ impl GridState {
         }
     }
 
+    /// Read one cell on whichever screen is active.
+    fn active_cell_at(&self, row: usize, col: usize) -> Option<&Cell> {
+        if self.alt_active {
+            self.alternate.get(row).and_then(|r| r.get(col))
+        } else {
+            self.primary.get(row).and_then(|r| r.get(col))
+        }
+    }
+
     fn active_row_mut(&mut self, row: usize) -> Option<&mut Vec<Cell>> {
         if self.alt_active {
             self.alternate.get_mut(row)
@@ -187,17 +197,37 @@ impl GridState {
             fg: self.pen_fg,
             bg: self.pen_bg,
             attrs: CellAttrs::NONE,
+            width: 1,
         }
     }
 
-    fn current_cell_for_print(&self, ch: char) -> Cell {
+    /// The cell for a printed glyph. `w` is its display width: `1` normal,
+    /// `2` the lead of a double-width glyph.
+    fn current_cell_for_print(&self, ch: char, w: u8) -> Cell {
         Cell {
             ch,
             fg: self.pen_fg,
             bg: self.pen_bg,
             attrs: self.pen_attrs,
+            width: w,
         }
     }
+
+    /// The continuation half of a double-width glyph.
+    ///
+    /// It carries the LEAD's pen colours, not the default pen: a
+    /// default-styled spacer under a coloured lead renders as a visible seam
+    /// through the middle of the glyph.
+    fn continuation_cell(&self) -> Cell {
+        Cell {
+            ch: ' ',
+            fg: self.pen_fg,
+            bg: self.pen_bg,
+            attrs: self.pen_attrs,
+            width: 0,
+        }
+    }
+
 
     fn scroll_region_up(&mut self) {
         // Scroll within [scroll_top, scroll_bottom]. Bottom row
@@ -233,14 +263,104 @@ impl GridState {
         }
     }
 
-    fn advance_cursor_after_print(&mut self) {
-        if self.cursor_col + 1 >= self.cols {
-            // Defer wrap — leave cursor at last col, set flag.
-            // Next print will fire (cr + linefeed) before placing.
-            self.wrap_pending = true;
+    /// Advance past a glyph of display width `w`.
+    ///
+    /// `w` is the glyph's WIDTH, not `1`. That distinction is the whole
+    /// wide-character axis: advancing by one after a double-width glyph puts
+    /// every later cell on the row one column left of where the child process
+    /// believes it is.
+    fn advance_cursor_after_print(&mut self, w: usize) {
+        let adv = w.max(1);
+        if self.cursor_col + adv >= self.cols {
+            self.park_at_right_margin();
         } else {
-            self.cursor_col += 1;
+            self.cursor_col += adv;
         }
+    }
+
+    /// Park the cursor on the LAST column and arm the deferred wrap.
+    ///
+    /// The clamp is load-bearing and was previously invisible: with a
+    /// 1-column advance the flag could only be raised when the cursor was
+    /// already at `cols - 1`, so clamping was a no-op. At width 2 it is not —
+    /// a glyph landing flush against the margin would otherwise leave the
+    /// cursor on its own LEAD, one column left of the truth, which shows up
+    /// as every subsequent relative motion being off by one and `CSI 6n`
+    /// under-reporting the column.
+    fn park_at_right_margin(&mut self) {
+        self.cursor_col = self.cols.saturating_sub(1);
+        self.wrap_pending = true;
+    }
+
+    /// Blank any half-glyph this write is about to orphan.
+    ///
+    /// Fills with [`Cell::BLANK`] and NOT `blank_cell()`: the pen-background
+    /// blank would paint the current background into a cell the glyph never
+    /// owned, which diverges from mado on any coloured background.
+    fn clear_orphans_at(&mut self, row: usize, col: usize, w: usize) {
+        // Left edge — we are overwriting a continuation, so its lead (one to
+        // the left) loses its other half and must go.
+        if col > 0 && self.active_cell_at(row, col).is_some_and(Cell::is_continuation) {
+            if let Some(lead) = self.active_cell_mut(row, col - 1) {
+                *lead = Cell::BLANK;
+            }
+        }
+        // Right edge — the last column we occupy holds a wide LEAD, so its
+        // continuation to the right is about to be orphaned.
+        let last = col + w.saturating_sub(1);
+        if self.active_cell_at(row, last).is_some_and(|c| c.width == 2) && last + 1 < self.cols {
+            if let Some(cont) = self.active_cell_mut(row, last + 1) {
+                *cont = Cell::BLANK;
+            }
+        }
+    }
+
+    /// Place one glyph of display width `w` at the cursor and advance.
+    fn put_char(&mut self, c: char, w: usize) {
+        // Honour a deferred wrap from the previous print, then place.
+        if self.wrap_pending {
+            self.wrap_pending = false;
+            self.cursor_col = 0;
+            self.linefeed();
+        }
+        // A double-width glyph that cannot fit before the right margin wraps
+        // WHOLE. Splitting it across the seam would put half a glyph in each
+        // row, which no renderer can draw correctly.
+        if w == 2 && self.cursor_col + 1 >= self.cols {
+            self.cursor_col = 0;
+            self.linefeed();
+        }
+        let row = self.cursor_row;
+        let col = self.cursor_col;
+        let cell = self.current_cell_for_print(c, w as u8);
+
+        if self.insert_mode {
+            // IRM shifts by the glyph's WIDTH, not by one column.
+            let cols = self.cols;
+            let cont = self.continuation_cell();
+            if let Some(r) = self.active_row_mut(row) {
+                if col < r.len() {
+                    r.insert(col, cell);
+                    if w == 2 && col + 1 <= r.len() {
+                        r.insert(col + 1, cont);
+                    }
+                    r.truncate(cols);
+                }
+            }
+        } else {
+            self.clear_orphans_at(row, col, w);
+            if let Some(slot) = self.active_cell_mut(row, col) {
+                *slot = cell;
+            }
+            if w == 2 && col + 1 < self.cols {
+                let cont = self.continuation_cell();
+                if let Some(slot) = self.active_cell_mut(row, col + 1) {
+                    *slot = cont;
+                }
+            }
+        }
+        self.last_printed = Some(c);
+        self.advance_cursor_after_print(w);
     }
 
     fn linefeed(&mut self) {
@@ -575,30 +695,26 @@ impl Perform for GridState {
         // grid sees. Cheap when the extractor is Idle (single
         // Option-is-none check).
         self.blocks.on_print(c);
-        // Honour deferred wrap from the previous print, then place.
-        if self.wrap_pending {
-            self.wrap_pending = false;
-            self.cursor_col = 0;
-            self.linefeed();
+        let w = UnicodeWidthChar::width(c).unwrap_or(1);
+        if w == 0 {
+            // A zero-width codepoint (a combining mark, a ZWJ) belongs to the
+            // glyph before it and consumes NO column. Placing it in a cell of
+            // its own — which is what this parser used to do — displaces every
+            // later cell on the row, which is the same class of defect as the
+            // wide-glyph advance below.
+            //
+            // Dropping it keeps COLUMNS mado-identical. It does not keep
+            // CONTENT identical: mado merges the mark into the base cell's
+            // `Cell.extra: Option<Box<Vec<char>>>`, which tear's `Cell` has no
+            // slot for. Adding one costs `Copy` on `Cell` and is the named
+            // follow-up; see `pending-cell-extra` in docs/SHUKEN.md.
+            //
+            // Deliberately does NOT touch `last_printed` (so `CSI b` repeats
+            // the BASE glyph) and does NOT clear `wrap_pending` (a deferred
+            // wrap stays armed across a mark) — both match mado.
+            return;
         }
-        let cell = self.current_cell_for_print(c);
-        let row = self.cursor_row;
-        let col = self.cursor_col;
-        if self.insert_mode {
-            // IRM: shift cells in the current row right starting at
-            // cursor; drop the last cell to make room.
-            let cols = self.cols;
-            if let Some(r) = self.active_row_mut(row) {
-                if col < r.len() {
-                    r.insert(col, cell);
-                    r.truncate(cols);
-                }
-            }
-        } else if let Some(slot) = self.active_cell_mut(row, col) {
-            *slot = cell;
-        }
-        self.last_printed = Some(c);
-        self.advance_cursor_after_print();
+        self.put_char(c, w);
     }
 
     fn execute(&mut self, byte: u8) {
@@ -1095,6 +1211,120 @@ impl PaneGrid {
         self.state.cursor_col = self.state.cursor_col.min(cols.saturating_sub(1));
         self.state.scroll_top = 0;
         self.state.scroll_bottom = rows.saturating_sub(1);
+    }
+}
+
+/// Character-width parity with mado's parser.
+///
+/// These are the RED GATE for the wide-character axis. They assert what a
+/// correct VT parser does with double-width glyphs, which is what mado does
+/// (`unicode-width`, `Cell.width` with `0 = continuation`) and what tear did
+/// NOT: `advance_cursor_after_print` was `cursor_col += 1` unconditionally.
+///
+/// Why this shape and not a round-trip: a `feed → to_ansi → feed` round-trip
+/// through tear alone is IDENTITY even while broken, because tear was
+/// internally self-consistent at 1-advance. Self-consistency is exactly what
+/// makes the bug invisible from inside. So these assert against true display
+/// width — the oracle — not against tear's own agreement with itself.
+#[cfg(test)]
+mod width_parity {
+    use super::*;
+
+    /// The founding symptom, minimal: one CJK glyph must consume TWO columns.
+    /// Before the fix this reported `cursor_col == 1`.
+    #[test]
+    fn wide_glyph_advances_two_columns() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("你".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][0].ch, '你', "lead cell holds the glyph");
+        assert_eq!(s.cells[0][0].width, 2, "lead is marked double-width");
+        assert_eq!(s.cells[0][1].width, 0, "col 1 is a continuation cell");
+        assert_eq!(s.cursor_col, 2, "cursor advances by the glyph's WIDTH");
+    }
+
+    /// The divergence compounds: every later cell on the row is displaced.
+    /// This is the mechanism behind the column-shifted decoration that
+    /// survived 10+ fix attempts inside mado.
+    #[test]
+    fn later_cells_are_not_displaced_by_wide_glyphs() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("你好X".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][0].ch, '你');
+        assert_eq!(s.cells[0][2].ch, '好', "second glyph starts at col 2, not 1");
+        assert_eq!(s.cells[0][4].ch, 'X', "ASCII lands at col 4, not 2");
+        assert_eq!(s.cursor_col, 5);
+    }
+
+    /// A wide glyph that cannot fit before the margin wraps WHOLE — it is
+    /// never split across the seam.
+    #[test]
+    fn wide_glyph_that_does_not_fit_wraps_whole() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("A".repeat(19).as_bytes());
+        g.feed("你".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][19].ch, ' ', "last col of row 0 stays blank");
+        assert_eq!(s.cells[1][0].ch, '你', "glyph moved to the next row whole");
+        assert_eq!(s.cells[1][1].width, 0);
+    }
+
+    /// A wide glyph landing flush against the margin parks the cursor on the
+    /// LAST column, not on its own lead. Without this clamp every subsequent
+    /// relative motion is off by one and CSI 6n under-reports the column.
+    #[test]
+    fn wide_glyph_flush_to_margin_parks_at_last_column() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("A".repeat(18).as_bytes());
+        g.feed("你".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][18].ch, '你');
+        assert_eq!(s.cells[0][19].width, 0);
+        assert_eq!(s.cursor_col, 19, "parked at the last column, not at 18");
+    }
+
+    /// Overwriting half a wide pair must not leave the other half orphaned —
+    /// an orphan renders as half a glyph.
+    #[test]
+    fn overwriting_a_wide_pair_clears_its_orphan() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("你".as_bytes());
+        g.feed(b"\x1b[1;1H");
+        g.feed(b"X");
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][0].ch, 'X');
+        assert_eq!(s.cells[0][0].width, 1);
+        assert_eq!(
+            s.cells[0][1].ch, ' ',
+            "the orphaned continuation is cleared, not left as a half-glyph"
+        );
+        assert_eq!(s.cells[0][1].width, 1);
+    }
+
+    /// `to_ansi` must not emit continuation cells: re-feeding its output has
+    /// to reproduce the same grid. Emitting the spacer would push every later
+    /// glyph one column right per wide glyph on replay.
+    #[test]
+    fn to_ansi_round_trips_wide_glyphs_without_drift() {
+        let mut a = PaneGrid::new(20, 3);
+        a.feed("你好X".as_bytes());
+        let first = a.snapshot();
+
+        let mut b = PaneGrid::new(20, 3);
+        b.feed(&first.to_ansi());
+        let second = b.snapshot();
+
+        for col in 0..20 {
+            assert_eq!(
+                first.cells[0][col].ch, second.cells[0][col].ch,
+                "col {col} drifted across a to_ansi round-trip"
+            );
+            assert_eq!(
+                first.cells[0][col].width, second.cells[0][col].width,
+                "col {col} width drifted across a to_ansi round-trip"
+            );
+        }
     }
 }
 
