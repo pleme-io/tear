@@ -45,6 +45,12 @@ pub mod frecency;
 pub mod index;
 pub mod instance_registry;
 pub mod instantiate;
+/// Recording test double for the `MultiplexerControl` Environment seam.
+///
+/// `cfg(test)`-only: it is a testing affordance, not a shipped backend, and
+/// exposing it would invite a consumer to depend on a fake multiplexer.
+#[cfg(test)]
+pub mod mock_backend;
 pub mod picker;
 pub mod project;
 pub mod record;

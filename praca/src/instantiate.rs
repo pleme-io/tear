@@ -248,6 +248,114 @@ mod tests {
             .collect()
     }
 
+    /// ── MOCK-GREEN ROWS ──────────────────────────────────────────────
+    ///
+    /// The rows below drive `instantiate` against the recording double
+    /// instead of a real `InProcess`, so they run with **zero PTYs, zero
+    /// forks and zero dependency on `/bin/sh`** — and, more importantly,
+    /// they can assert the CALL SEQUENCE, which a real backend cannot show.
+    /// A tree with two panes proves the end state; only a recorder proves
+    /// the interpreter asked for them in the right order with the right
+    /// shells.
+    ///
+    /// Tier: mock-green proves the interpreter's `(definition) -> actions`
+    /// shape and nothing about the real backend. The `InProcess` rows below
+    /// stay exactly as they are for that.
+    mod mock_green {
+        use super::*;
+        use crate::mock_backend::{Call, MockBackend};
+
+        /// Two slots side by side, each with its own shell.
+        fn two_pane_def(pairs: &[(u32, &str)]) -> SessionDefinition {
+            SessionDefinition {
+                def_id: tear_types::DefinitionId::from_project(std::path::Path::new("/x")),
+                origin: SessionOrigin::Project,
+                name_seed: 0,
+                name_style: NameStyle::Emoji,
+                theme: None,
+                custom_name: None,
+                project_root: "/x".into(),
+                windows: vec![WindowPlan {
+                    name: "work".into(),
+                    layout: LayoutPlan::split(
+                        SplitOrientation::Vertical,
+                        LayoutPlan::leaf(PaneSlot(0)),
+                        LayoutPlan::leaf(PaneSlot(1)),
+                    ),
+                    active_slot: PaneSlot(0),
+                }],
+                pane_specs: specs(pairs),
+                visits: 1,
+                last_seen: 0,
+                tags: Vec::new(),
+            }
+        }
+
+        #[test]
+        fn a_single_pane_definition_asks_for_exactly_one_session_and_no_splits() {
+            let backend = MockBackend::new();
+            let def = SessionDefinition::single_pane("/p", "/bin/zsh", NameStyle::Emoji, 0);
+            let live = instantiate(&def, &backend).unwrap();
+
+            assert_eq!(live.definition, def.def_id);
+            // Assert on the SPAWNING calls. Focus calls (SelectPane /
+            // SelectWindow) are real and correct, but pinning them here
+            // would pin a refactor rather than a behaviour.
+            let spawns: Vec<Call> = backend
+                .calls()
+                .into_iter()
+                .filter(|c| matches!(c, Call::NewSession { .. } | Call::SplitPane { .. }))
+                .collect();
+            assert_eq!(spawns.len(), 1, "one pane must not split: {spawns:?}");
+            match &spawns[0] {
+                Call::NewSession { shell, .. } => assert_eq!(shell, "/bin/zsh"),
+                other => panic!("expected NewSession, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_two_pane_plan_splits_once_from_the_first_pane_with_the_slots_shell() {
+            let backend = MockBackend::new();
+            let def = two_pane_def(&[(0, "/bin/sh"), (1, "/bin/dash")]);
+
+            instantiate(&def, &backend).unwrap();
+            let calls: Vec<Call> = backend
+                .calls()
+                .into_iter()
+                .filter(|c| matches!(c, Call::NewSession { .. } | Call::SplitPane { .. }))
+                .collect();
+
+            assert_eq!(calls.len(), 2, "one session + one split: {calls:?}");
+            assert!(matches!(&calls[0], Call::NewSession { shell, .. } if shell == "/bin/sh"));
+            match &calls[1] {
+                Call::SplitPane { shell, .. } => assert_eq!(
+                    shell, "/bin/dash",
+                    "the second slot's OWN shell must reach the split — a plan \
+                     that silently spawns the first shell twice looks identical \
+                     in the resulting tree"
+                ),
+                other => panic!("expected SplitPane, got {other:?}"),
+            }
+        }
+
+        /// A failing backend must not leave a half-built session behind.
+        /// Reaching this against a real `InProcess` would mean making a
+        /// genuine fork fail on demand.
+        #[test]
+        fn a_failed_split_surfaces_rather_than_yielding_a_partial_session() {
+            let backend = MockBackend::new();
+            backend.fail_next_split(tear_types::ControlError::Rejected("no fds".into()));
+            let def = two_pane_def(&[(0, "/bin/sh"), (1, "/bin/sh")]);
+
+            let result = instantiate(&def, &backend);
+            assert!(
+                result.is_err(),
+                "a backend refusal must propagate, not yield a session that is \
+                 silently missing a pane"
+            );
+        }
+    }
+
     #[test]
     fn instantiate_single_pane_definition_spawns_one_pane_linked_to_its_def() {
         let backend = InProcess::new();
