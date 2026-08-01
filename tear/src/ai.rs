@@ -251,6 +251,9 @@ mod tests {
             started_at_unix_ms: 1_000,
             ended_at_unix_ms: Some(2_000),
             cwd: cwd.map(String::from),
+            // A fixture block has no attested connection behind
+            // it, so Unknown is the honest value — not Human.
+            yurai: tear_types::Yurai::Unknown,
         }
     }
 

@@ -73,6 +73,9 @@ pub struct BlockExtractor {
     /// each block at prompt start so the block carries its
     /// own `cwd` even if the shell cd's mid-output.
     current_cwd: Option<String>,
+    /// Provenance of the owning pane, stamped onto every block
+    /// this extractor mints. Write-once via [`Self::stamp_yurai`].
+    yurai: tear_types::Yurai,
 }
 
 impl Default for BlockExtractor {
@@ -91,7 +94,50 @@ impl BlockExtractor {
             phase: Phase::Idle,
             next_index: 0,
             current_cwd: None,
+            yurai: tear_types::Yurai::Unknown,
         }
+    }
+
+    /// Stamp the owning pane's provenance onto this extractor —
+    /// **write-once**, and that is the whole point.
+    ///
+    /// [`Yurai`] is documented as a pane's provenance *for its
+    /// whole life*, so a settable field would contradict the type
+    /// it carries: an agent-spawned pane could re-stamp itself
+    /// `Human` mid-session and every block after that point would
+    /// lie, retroactively laundering the history a `freio` press
+    /// is supposed to be able to trust.
+    ///
+    /// So the second call is refused rather than applied. Returns
+    /// `true` when this call took effect. A refusal is not an
+    /// error — re-stamping the SAME provenance is harmless and
+    /// idempotent — but a refusal that would have CHANGED the
+    /// value is a caller bug, and the return value is how a caller
+    /// can notice.
+    ///
+    /// Tier-honest: **only-mitigated**. `Yurai::Automation` is a
+    /// public variant, so in-process code can construct a
+    /// provenance without holding an attested connection; what is
+    /// closed here is *drift after the fact*, not *fabrication at
+    /// the source*. Fabrication is bounded by
+    /// [`tear_types::Yurai::from_shutai`] being the only
+    /// production path, which is convention plus its own tests —
+    /// not a compile error.
+    ///
+    /// [`Yurai`]: tear_types::Yurai
+    pub fn stamp_yurai(&mut self, y: tear_types::Yurai) -> bool {
+        if self.yurai == tear_types::Yurai::Unknown {
+            self.yurai = y;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The provenance every block from this extractor carries.
+    #[must_use]
+    pub fn yurai(&self) -> &tear_types::Yurai {
+        &self.yurai
     }
 
     /// Record the shell's current working directory. Called by
@@ -211,6 +257,11 @@ impl BlockExtractor {
             started_at_unix_ms: now,
             ended_at_unix_ms: None,
             cwd: self.current_cwd.clone(),
+            // Stamped at prompt START, not at completion: the
+            // question "who ran this" is settled when the block
+            // is minted, so a block that never finishes still
+            // carries its attribution.
+            yurai: self.yurai.clone(),
         });
         self.next_index += 1;
         self.phase = Phase::Prompt;
@@ -403,5 +454,84 @@ mod tests {
         assert_eq!(parse_exit_code("D;0"), Some(0));
         assert_eq!(parse_exit_code("D;127"), Some(127));
         assert_eq!(parse_exit_code("D ; 130"), Some(130));
+    }
+
+    // ── attribution (the naturalize(Superlogical) delta) ──────────
+    //
+    // Superlogical's product unit is the terminal block. Ours was
+    // too, and was ANONYMOUS: an agent-run command and an
+    // operator-run one produced identical rows. These pin the
+    // field that makes a block history worth trusting.
+
+    /// Drive one full A→B→C→D block through the extractor.
+    fn one_block(ex: &mut BlockExtractor) {
+        ex.on_osc_133("A");
+        ex.on_osc_133("B");
+        for c in "echo hi".chars() {
+            ex.on_print(c);
+        }
+        ex.on_osc_133("C");
+        ex.on_osc_133("D;0");
+    }
+
+    #[test]
+    fn an_unstamped_extractor_mints_unknown_never_human() {
+        let mut ex = BlockExtractor::new(8);
+        one_block(&mut ex);
+        assert_eq!(
+            ex.get(0).unwrap().yurai,
+            tear_types::Yurai::Unknown,
+            "an unattributed block must stay Unknown — defaulting to Human \
+             would launder every agent-run command in the history"
+        );
+    }
+
+    #[test]
+    fn a_stamped_extractor_marks_every_block_it_mints() {
+        let mut ex = BlockExtractor::new(8);
+        assert!(ex.stamp_yurai(tear_types::Yurai::Automation {
+            label: Some("claude-code".into())
+        }));
+        one_block(&mut ex);
+        one_block(&mut ex);
+        for i in 0..2 {
+            assert!(
+                ex.get(i).unwrap().yurai.is_automation(),
+                "block {i} lost its attribution"
+            );
+        }
+    }
+
+    /// The write-once rule, and why it is not merely tidiness: a
+    /// re-stampable field would let an agent-spawned pane relabel
+    /// itself `Human` mid-session, retroactively laundering every
+    /// block after that point.
+    #[test]
+    fn re_stamping_is_refused_so_provenance_cannot_drift() {
+        let mut ex = BlockExtractor::new(8);
+        assert!(ex.stamp_yurai(tear_types::Yurai::Automation { label: None }));
+        assert!(
+            !ex.stamp_yurai(tear_types::Yurai::Human),
+            "the second stamp must be REFUSED, not applied"
+        );
+        one_block(&mut ex);
+        assert!(
+            ex.get(0).unwrap().yurai.is_automation(),
+            "an agent pane must not be able to relabel itself human"
+        );
+    }
+
+    /// A block written before this field existed decodes as
+    /// `Unknown` — which is what its absence honestly means.
+    /// Same discipline as `Yurai`'s own pre-field decode test.
+    #[test]
+    fn a_pre_attribution_block_decodes_as_unknown() {
+        let legacy = r#"{
+            "index": 0, "prompt": "$ ", "command": "ls", "output": "a\n",
+            "exit_code": 0, "started_at_unix_ms": 1, "ended_at_unix_ms": 2
+        }"#;
+        let b: Block = serde_json::from_str(legacy).expect("legacy block must still decode");
+        assert_eq!(b.yurai, tear_types::Yurai::Unknown);
+        assert_eq!(b.cwd, None);
     }
 }

@@ -1641,6 +1641,27 @@ impl PaneGrid {
         self.state.title.as_deref()
     }
 
+    /// Stamp the owning pane's provenance so every block this grid
+    /// mints records WHO ran it. **Write-once**; returns `true` if
+    /// this call took effect.
+    ///
+    /// Provenance enters through the grid deliberately. Under
+    /// shuken (`docs/SHUKEN.md`) `PaneGrid` is the sole VT
+    /// authority — it is the one place that sees the byte stream
+    /// and mints blocks from it — so attribution belongs at the
+    /// same seam as the authority. A second, parallel path that
+    /// attributed blocks anywhere else would be exactly the
+    /// duplicated-state split shuken exists to forbid.
+    pub fn stamp_yurai(&mut self, y: tear_types::Yurai) -> bool {
+        self.state.blocks.stamp_yurai(y)
+    }
+
+    /// Provenance every block from this grid carries.
+    #[must_use]
+    pub fn yurai(&self) -> &tear_types::Yurai {
+        self.state.blocks.yurai()
+    }
+
     /// DECCKM (DEC mode 1) cursor-keys application mode.
     ///
     /// Consumers translating host keystrokes to PTY bytes (mado's
