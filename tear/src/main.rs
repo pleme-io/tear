@@ -1802,6 +1802,79 @@ fn cmd_daemon(
 mod main_helper_tests {
     use super::*;
 
+    /// ── ONE VERSION, INHERITED ──────────────────────────────────
+    ///
+    /// `env!("CARGO_PKG_VERSION")` resolves to the version of the crate it
+    /// is written in, and this workspace expands it in at least three:
+    /// `tear` (what `--version` prints), `tear-types` (what
+    /// `DaemonIdentity::local` advertises in the capability handshake), and
+    /// `tear-daemon`. They agree ONLY because every member inherits
+    /// `version.workspace = true`.
+    ///
+    /// Give one member its own `version = "..."` and the daemon starts
+    /// advertising a different version than the CLI reports — silently, and
+    /// specifically inside the handshake a client uses to decide what the
+    /// daemon can do. That is the worst possible place for a wrong number,
+    /// and nothing would have caught it.
+    ///
+    /// So the invariant is not "the versions happen to match", it is
+    /// **every member inherits the workspace version**. This asserts the
+    /// mechanism rather than the coincidence.
+    ///
+    /// Fleet pattern (redistributable): ONE `[workspace.package] version`,
+    /// every member `version.workspace = true`, every user-visible surface
+    /// (`--version`, menus, banners, handshakes, release artifacts) derived
+    /// from `CARGO_PKG_VERSION` and never written by hand, sealed by a scan
+    /// like this one.
+    #[test]
+    fn every_workspace_member_inherits_the_one_version() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("tear/ has a parent")
+            .to_path_buf();
+        let root_toml = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+
+        // The members list, as authored.
+        let members: Vec<String> = root_toml
+            .split("members = [")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|m| {
+                let m = m.trim().trim_matches(|c| c == '"' || c == '\'');
+                (!m.is_empty()).then(|| m.to_string())
+            })
+            .collect();
+        assert!(
+            members.len() >= 5,
+            "did not parse the members list; fix the scan, not the assert: {members:?}"
+        );
+
+        for m in &members {
+            let path = root.join(m).join("Cargo.toml");
+            let toml = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(_) => continue, // out-of-workspace member; not ours to police
+            };
+            // Match the LINE, not a substring. `toml.contains(
+            // "version.workspace = true")` looks correct and is vacuous:
+            // `rust-version.workspace = true` contains it, so the check
+            // passed on a manifest whose real version had been pinned.
+            // Measured — this scan was green against a member deliberately
+            // set to 9.9.9 until it compared whole lines.
+            let inherits = toml.lines().map(str::trim).any(|l| {
+                l == "version.workspace = true" || l == "version = { workspace = true }"
+            });
+            assert!(
+                inherits,
+                "{m}/Cargo.toml pins its own version instead of inheriting the \
+                 workspace one. Every crate that expands CARGO_PKG_VERSION would \
+                 then report a DIFFERENT number — including the daemon handshake."
+            );
+        }
+    }
+
     /// Forcing function: the TEAR_TIER (config-tier env) and
     /// TEAR_CLIENT_ID (Leader-policy identity) names this binary reads
     /// come from the typed cross-tool contract — a rename on the producer
