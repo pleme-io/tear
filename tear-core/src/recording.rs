@@ -32,6 +32,17 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+/// Wall-clock now, unix epoch ms. Saturates to 0 before the epoch rather
+/// than panicking — a clock that far wrong is not this module's problem to
+/// escalate.
+fn now_unix_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// One captured PTY chunk, relative to the recording's start.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneEvent {
@@ -53,6 +64,22 @@ pub struct PaneRecording {
 struct RecordingState {
     /// `None` when disabled.
     started_at: Option<Instant>,
+    /// Wall-clock start, unix epoch ms. `None` when disabled.
+    ///
+    /// `started_at` is an [`Instant`] — monotonic, with NO epoch — so it
+    /// can measure elapsed time and can never answer "when did this
+    /// begin?". This field is that answer, and it exists for two reasons:
+    ///
+    /// 1. The asciinema v2 header's `timestamp` is the RECORDING START.
+    ///    Without an anchor `to_cast_json` had to reach for
+    ///    `SystemTime::now()`, which stamps the EXPORT time — so a cast
+    ///    exported a day later claimed to have been recorded a day later.
+    /// 2. It is the join key to anything stamped in epoch time (a
+    ///    `Block.started_at_unix_ms`, say). `read_around` takes ms since
+    ///    `enable()`, so converting requires this anchor; passing an
+    ///    epoch timestamp straight in is off by ~1.7e12 and silently
+    ///    returns the buffer tail rather than erroring.
+    started_at_unix_ms: Option<u64>,
     /// Captured events. Ring-buffered against `max_events`.
     events: std::collections::VecDeque<PaneEvent>,
     /// Max retained events. Default 50_000.
@@ -75,6 +102,7 @@ impl PaneRecording {
         Self {
             enabled: Mutex::new(RecordingState {
                 started_at: None,
+                started_at_unix_ms: None,
                 events: std::collections::VecDeque::new(),
                 max_events,
                 cols: 80,
@@ -89,6 +117,7 @@ impl PaneRecording {
     pub fn enable(&self, cols: u16, rows: u16) {
         let mut g = self.enabled.lock().expect("recording state poisoned");
         g.started_at = Some(Instant::now());
+        g.started_at_unix_ms = Some(now_unix_ms());
         g.events.clear();
         g.cols = cols;
         g.rows = rows;
@@ -100,6 +129,29 @@ impl PaneRecording {
     pub fn disable(&self) {
         let mut g = self.enabled.lock().expect("recording state poisoned");
         g.started_at = None;
+        g.started_at_unix_ms = None;
+    }
+
+    /// Wall-clock start of the current recording, unix epoch ms.
+    ///
+    /// The join key for anything stamped in epoch time. [`Self::read_around`]
+    /// takes ms since `enable()`, so a caller holding an epoch timestamp
+    /// must convert through this anchor:
+    ///
+    /// ```text
+    /// rel_ms = epoch_ms.saturating_sub(anchor)
+    /// ```
+    ///
+    /// Passing an epoch timestamp straight to `read_around` is off by
+    /// ~1.7e12 ms and silently returns the buffer tail — it does not error,
+    /// which is why this accessor exists rather than leaving callers to
+    /// guess.
+    #[must_use]
+    pub fn epoch_anchor(&self) -> Option<u64> {
+        self.enabled
+            .lock()
+            .expect("recording state poisoned")
+            .started_at_unix_ms
     }
 
     /// Whether recording is currently capturing new events.
@@ -151,10 +203,17 @@ impl PaneRecording {
             "version": 2,
             "width": g.cols,
             "height": g.rows,
-            "timestamp": SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            // The RECORDING START, not the export time. See
+            // `RecordingState::started_at_unix_ms`. Falls back to now()
+            // only when nothing was ever recorded, where there is no
+            // start to report and the header value is meaningless anyway.
+            "timestamp": g.started_at_unix_ms.map_or_else(
+                || SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                |ms| ms / 1000,
+            ),
             "env": {
                 "TERM": "xterm-256color",
                 "SHELL": std::env::var("SHELL").unwrap_or_default(),
@@ -200,6 +259,53 @@ impl PaneRecording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ RED AGAINST THE CODE AS IT SHIPPED. The asciinema v2 header's
+    /// `timestamp` is the RECORDING START; `to_cast_json` stamped
+    /// `SystemTime::now()`, so a cast exported an hour later claimed to
+    /// have been recorded an hour later. `started_at` is an `Instant` —
+    /// monotonic, no epoch — so it structurally could not answer the
+    /// question, which is why the fix is a new field rather than a
+    /// different expression.
+    #[test]
+    fn the_cast_header_timestamp_is_the_recording_start_not_the_export_time() {
+        let r = PaneRecording::default();
+        r.enable(80, 24);
+        r.push(b"x");
+        let anchor = r.epoch_anchor().expect("enabled recording has an anchor");
+
+        // Stand in for "exported later" without sleeping: the header must
+        // agree with the anchor taken at enable(), not with a fresh now().
+        let json = r.to_cast_json();
+        let header: serde_json::Value =
+            serde_json::from_str(json.lines().next().unwrap()).unwrap();
+        let ts = header["timestamp"].as_u64().unwrap();
+
+        assert_eq!(
+            ts,
+            anchor / 1000,
+            "header timestamp must be the recording start ({}), not the \
+             export time — a cast that misreports when it was recorded is \
+             worse than one with no timestamp",
+            anchor / 1000
+        );
+    }
+
+    /// The anchor is the join key to epoch-stamped data, and it must be
+    /// absent when there is nothing to anchor.
+    #[test]
+    fn the_epoch_anchor_appears_on_enable_and_clears_on_disable() {
+        let r = PaneRecording::default();
+        assert!(r.epoch_anchor().is_none(), "nothing recorded, nothing to anchor");
+        r.enable(80, 24);
+        let a = r.epoch_anchor().expect("enabled");
+        assert!(a > 1_700_000_000_000, "anchor must be epoch MS, got {a}");
+        r.disable();
+        assert!(
+            r.epoch_anchor().is_none(),
+            "a stopped recording must not keep advertising a live anchor"
+        );
+    }
 
     #[test]
     fn disabled_recording_drops_pushes() {
