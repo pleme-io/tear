@@ -48,7 +48,7 @@ use std::thread;
 use tear_config::LiveConfig;
 use tear_core::InProcess;
 use tear_types::wire::{read_frame, write_msg, Framed, Request, Response, WireError};
-use tear_types::shutai::Shutai;
+use tear_types::shutai::{Declared, Shutai};
 use tear_types::MultiplexerControl;
 use tracing::{debug, error, info, warn};
 
@@ -627,13 +627,18 @@ fn accept_loop(
                 let _ = thread::Builder::new()
                     .name("tear-daemon-conn".into())
                     .spawn(move || {
-                        if let Err(e) = serve_connection_full(
+                        // The UDS path carries the kernel-attested uid.
+                        // The TCP loop above deliberately does NOT — there
+                        // is no peer credential on a socket the kernel did
+                        // not broker locally, and `remote()` says so.
+                        if let Err(e) = serve_connection_shutai(
                             stream,
                             inproc_for_conn,
                             config_for_conn,
                             audit_for_conn,
                             token_for_conn,
                             praca_for_conn,
+                            shutai,
                         ) {
                             if e.kind() != io::ErrorKind::UnexpectedEof {
                                 warn!(error = %e, "connection ended");
@@ -696,17 +701,54 @@ pub fn serve_connection_with_auth<S: io::Read + io::Write>(
 /// external embedders (tear-client, the test harness) keep their
 /// signatures.
 pub fn serve_connection_full<S: io::Read + io::Write>(
-    mut stream: S,
+    stream: S,
     inproc: Arc<InProcess>,
     config: Arc<LiveConfig>,
     audit: Option<AuditLog>,
     required_token: Option<String>,
     praca: Option<PracaStore>,
 ) -> io::Result<()> {
+    // No peer credential available on a bare `Read + Write` — an embedder
+    // hand-stitching a transport has no socket for the kernel to attest.
+    // `remote()` is the honest answer; see `shutai_for_local_peer`.
+    serve_connection_shutai(
+        stream,
+        inproc,
+        config,
+        audit,
+        required_token,
+        praca,
+        Shutai::remote(),
+    )
+}
+
+/// Serve a connection whose acting entity is already known.
+///
+/// A separate entry point rather than a changed signature, per ★★
+/// MODULARIZE, DON'T DELETE: every existing caller — including external
+/// embedders and `tear-client`'s test harness — keeps compiling, and the
+/// shutai-aware path is opted into rather than forced.
+///
+/// The daemon's own accept loop calls THIS one, so a real UDS connection
+/// carries a kernel-attested uid while a hand-stitched stream honestly
+/// reports `remote()`.
+pub fn serve_connection_shutai<S: io::Read + io::Write>(
+    mut stream: S,
+    inproc: Arc<InProcess>,
+    config: Arc<LiveConfig>,
+    audit: Option<AuditLog>,
+    required_token: Option<String>,
+    praca: Option<PracaStore>,
+    shutai: Shutai,
+) -> io::Result<()> {
     let mut authed = required_token.is_none();
     // #2 — per-connection client identity. Set by IdentifyClient;
     // read on SendKeys to enforce Leader policy.
     let mut client_id: Option<u64> = None;
+    // shutai for THIS connection. The attested half arrived from the
+    // kernel and is never rewritten; only the declared half can change,
+    // and only via a peer's own claim.
+    let mut shutai = shutai;
     loop {
         // A payload we cannot decode is NOT a stream we cannot read.
         // `read_frame` keeps them apart: an unknown variant (the
@@ -782,6 +824,18 @@ pub fn serve_connection_full<S: io::Read + io::Write>(
         // returns Ok. No-op for daemons whose panes are all Free/Locked.
         if let Request::IdentifyClient(id) = &req {
             client_id = Some(*id);
+            // A connection that identifies itself is, by every existing
+            // caller's convention, an automation — the Leader policy
+            // exists precisely so one identified client drives a pane
+            // while a human watches. Record that as a DECLARATION.
+            //
+            // Note what this does NOT do: it cannot touch the attested
+            // half, so a peer naming itself an agent never rewrites what
+            // the kernel said about its uid. The claim is recorded at its
+            // own tier and nowhere else.
+            shutai = shutai.clone().declaring(Declared::Agent {
+                label: Some(id.to_string()),
+            });
             write_msg(&mut stream, &Response::Ok)?;
             continue;
         }
@@ -1422,6 +1476,38 @@ mod tests {
     // The serve loop reads via `read_frame` now; the tests still
     // decode single frames the simple way.
     use tear_types::wire::read_msg;
+
+    /// A declaration NEVER rewrites what the kernel attested.
+    ///
+    /// This is the property the whole two-half split exists to guarantee,
+    /// asserted end-to-end rather than on the type in isolation: a peer
+    /// sends `IdentifyClient`, the connection records the claim, and the
+    /// attested uid is byte-identical before and after.
+    ///
+    /// If these were one flattened enum, "I am an agent" and "the kernel
+    /// says uid 501" would occupy the same field and the second could be
+    /// overwritten by the first. That is the bug this test would catch.
+    #[test]
+    fn a_declaration_cannot_overwrite_the_attested_half() {
+        let attested = Shutai::from_peer_uid(501);
+        let declared = attested.clone().declaring(Declared::Agent {
+            label: Some("42".into()),
+        });
+
+        assert_eq!(
+            declared.attested(),
+            attested.attested(),
+            "declaring changed the attested half — the halves are not \
+             actually separated"
+        );
+        assert!(declared.is_automation());
+        assert!(!attested.is_automation());
+        // And the derived provenance follows the declaration, not the uid.
+        assert_eq!(
+            declared.session_source(),
+            tear_types::SessionSource::Named("42".into())
+        );
+    }
 
     /// shutai's attested arm reads the REAL uid from the kernel.
     ///
