@@ -116,6 +116,8 @@ Tier vocabulary is closed (`selo::SealTier`): `truly-unrep` ·
 | capability / bad state | pleme-io realization | tier |
 |---|---|---|
 | a `Block` that cannot answer "who ran this" | the field is non-`Option`, so every construction site must state it — omitting it is `E0063` (observed, not asserted: it broke `tear/src/ai.rs` on introduction) | truly-unrep |
+| a pane spawned with its blocks UNATTRIBUTED | `yurai` is a parameter of `spawn_pty_for` — the one choke point every pane's grid is created at — so omitting it is a compile error rather than a forgotten follow-up call | truly-unrep |
+| the attribution wire existing but not DELIVERING | `an_agent_spawned_session_produces_attributed_blocks` asserts through `pane_blocks_list`, the surface an operator/MCP client actually reads. **Red-run verified**: replacing the stamp with `let _ = yurai;` reproduces the exact defect shipped in `fe50cf4` (`left: Unknown, right: Automation{"claude-code"}`) | only-mitigated (C1 — a test, not a type; it catches the unwired state rather than making it unconstructible) |
 | mado grows a second VT parser | shuken: `vte` is absent from mado's manifest → `E0433` | truly-unrep |
 | a `PaneView` consumer writes to the grid | shuken: no write verb exists on the type → `E0599` | truly-unrep |
 | a pre-attribution block decoding as "human" | `#[serde(default)]` + `Yurai::default() == Unknown`; pinned by `a_pre_attribution_block_decodes_as_unknown` | parse-time-rejected |
@@ -161,6 +163,29 @@ be a citizen *relative to*.
   `getpeereid`/`SO_PEERCRED`) and `Declared` (peer claim) as separate tiers
   precisely so this boundary stays visible — and `yurai` is a projection of the
   *declared* half.
+
+---
+
+## Two failures found while building this — both recorded, neither hidden
+
+**1. The attribution shipped DECLARED BUT UNWIRED** (`fe50cf4`). `stamp_yurai`
+landed with green unit tests and *nothing in production called it*, so every
+real block would have read `Unknown` forever while the suite stayed green. This
+is the same declared-but-uninvoked trap the nix repo's `CLAUDE.md` documents for
+`checks` entries, reproduced in Rust. The fix was not "remember to call it" —
+it was to make `yurai` a **parameter of `spawn_pty_for`**, so omitting it is a
+compile error. The lesson generalizes: *a guarantee reached only by a call
+someone must remember is not a guarantee.*
+
+**2. A test in the suite was FLAKY, and it cost a false regression signal.**
+`list_source_filter_shows_only_matching_sessions` asserted
+`!stdout.contains("a1")` against output whose every row begins with a random
+16-hex-digit session id. Observed: a single *correct* row,
+`4a059f81739ba133 h1 …`, failing on the `a1` inside `9b`**`a1`**`33`. Fixed by
+matching the name column as a whitespace-delimited field, pinned by a test that
+asserts both that the raw substring still collides *and* that the helper rejects
+it. A test that fails on a coin flip is worse than no test — it trains the
+reader to dismiss a red run, which is exactly when a real regression slips past.
 
 **Cross-reference:** [`SHUKEN.md`](./SHUKEN.md) (the authority seam this builds
 on), [`SESSION-TYPESCAPE.md`](./SESSION-TYPESCAPE.md) (the typed model),
