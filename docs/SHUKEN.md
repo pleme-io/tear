@@ -217,6 +217,41 @@ Two consequences worth having up front:
    shuken makes that existing internal boundary the cross-process one, which
    is why this is a re-homing rather than an invention.
 
+## 5-C. Status of the flip (2026-07-31, end of day)
+
+Axis D named three independent reasons the flip is not one pass. **Two are
+now cleared and one remains.**
+
+| Blocker | State |
+|---|---|
+| Gate-A parser parity is a precondition | **CLEARED.** Wide chars + combining marks (`tear@631c7e8`, `357e718`), the DSR/DA/CPR response path (`de5afbd`), and the mode set the parser used to drop (`2ef673b`). |
+| mado has no test CI, so the flip cannot be shown safe | **CLEARED.** `mado@8dcd48a` — 1,437 passing. |
+| Graphics needs a new wire endpoint + a daemon-side image store | **OPEN.** `PaneGrid` implements no `hook`/`put`/`unhook` (sixel) and no APC (kitty), so those are still mado-only. |
+
+Also landed toward it: the authority itself is sealed (`e343aff`,
+`pub(crate)` + a measured `E0624`), and containment exists
+(`garasu@1aa5504`).
+
+### The remaining sequence, in order
+
+1. **Move Gate-B into `PaneGrid`** — kitty graphics (APC + chunked
+   transmission + placement), sixel (DCS `hook`/`put`/`unhook`), the image
+   store with its scroll-off eviction, and OSC 8 hyperlinks + a link table.
+   Until this lands, a flipped mado shows **no images and no hyperlink
+   underlines** — visible, honest degradation, which is exactly why it may
+   lag the text flip rather than block it.
+2. **Decide the graphics payload** — handles into a daemon-side store, not
+   bytes by value. §6.1 has the reasoning and the numbers; the measured
+   `snapshot()` cost (0.16 µs/row, 16 ms at 100k rows — see
+   `pane_grid::perf_measurements`) is the argument against by-value.
+3. **Repoint mado's readers.** `render.rs` (22 sites) and `ux/engine.rs`
+   (84) — but per §5-B only the *view* half moves; scroll, selection,
+   search and URL detection stay renderer-side.
+4. **Delete, don't repoint, the seven mode accessors** on mado's `Terminal`
+   *and* their `TerminalOps` rows, so every missed call site is `E0599`
+   rather than one autocomplete away from the wrong answer.
+5. **Drop `vte` from mado's manifest** last, once nothing needs it.
+
 ## 6. What the decision forces (in scope, not optional)
 
 1. **The wire carries graphics.** A pane snapshot must convey image
