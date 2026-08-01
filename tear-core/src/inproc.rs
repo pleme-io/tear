@@ -370,12 +370,20 @@ impl InProcess {
     /// `args` is `shell`'s argv[1..], handed to [`PtyHandle::spawn`]
     /// as an argument vector. It reaches `execvp` directly — there is
     /// no shell in between, so no quoting or escaping applies.
+    /// `yurai` is threaded in rather than stamped by the caller
+    /// afterwards, deliberately: this is the ONE choke point every
+    /// pane's grid is created at, so taking provenance as a
+    /// parameter makes "spawn a pane whose blocks are unattributed"
+    /// unconstructible at the call site. A post-spawn stamp would be
+    /// a step someone can forget, and the failure would be silent —
+    /// blocks quietly reading `Unknown` forever.
     fn spawn_pty_for(
         &self,
         pane_id: PaneId,
         shell: &str,
         args: &[String],
         size: (u16, u16),
+        yurai: tear_types::Yurai,
     ) -> anyhow::Result<()> {
         // Typed cross-tool env-var names (the SAME source seki's prompt
         // reads) — hoisted to the top of the fn so it's an item, not a
@@ -504,6 +512,12 @@ impl InProcess {
         // the PTY — the reader thread starts immediately on spawn,
         // and we want the first bytes to find their grid.
         let grid = Arc::new(Mutex::new(PaneGrid::new(size.0 as usize, size.1 as usize)));
+        // Stamp provenance BEFORE the grid is registered, so the
+        // first byte the reader thread feeds already lands in an
+        // attributed extractor. Registering first would leave a
+        // window in which a fast-printing shell mints `Unknown`
+        // blocks for a pane whose provenance we already knew.
+        grid.lock().stamp_yurai(yurai);
         self.grids.lock().insert(pane_id, grid.clone());
 
         let grid_for_callback = grid.clone();
@@ -2295,7 +2309,7 @@ impl InProcess {
             )));
         };
         drop(r); // release write lock before spawning PTY
-        if let Err(e) = self.spawn_pty_for(pane_id, shell, args, size) {
+        if let Err(e) = self.spawn_pty_for(pane_id, shell, args, size, yurai.clone()) {
             // Roll back the session — registry is small, easier to
             // remove than to leave a sessionless typed entry.
             self.registry.write().sessions.remove(&sid);
@@ -2330,7 +2344,7 @@ impl InProcess {
             r.add_window(session, name, shell, args, cwd.as_deref(), &[], size, yurai.clone())
                 .ok_or(ControlError::NoSuchSession(session))?
         };
-        if let Err(e) = self.spawn_pty_for(pid, shell, args, size) {
+        if let Err(e) = self.spawn_pty_for(pid, shell, args, size, yurai.clone()) {
             return Err(ControlError::Internal(e));
         }
         info!(session = %session, window = %wid, name, "tear-core: new window");
@@ -2404,7 +2418,7 @@ impl InProcess {
             }
             new_pid
         };
-        self.spawn_pty_for(pid, shell, args, size)
+        self.spawn_pty_for(pid, shell, args, size, yurai.clone())
             .map_err(ControlError::Internal)?;
         self.apply_layout_geometry(sid, wid);
         info!(pane = %pid, "tear-core: split pane");

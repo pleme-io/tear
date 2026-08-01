@@ -847,6 +847,41 @@ fn up_with_invalid_source_is_rejected() {
     );
 }
 
+/// Does a `list` rendering actually name this session?
+///
+/// **Not `stdout.contains(name)`** — that was a genuine flaky test, and the
+/// failure mode is worth keeping written down. Each row starts with a random
+/// 16-hex-digit session id, so a two-character name like `a1` matches the ID
+/// of an unrelated row roughly whenever those two hex digits appear anywhere
+/// in it. Observed 2026-08-01: `list --source human` returned exactly one row,
+/// `4a059f81739ba133 h1 …`, and `!stdout.contains("a1")` failed on the `a1`
+/// inside `9b`**`a1`**`33` — a green filter reported as a broken one.
+///
+/// A test that fails on a coin-flip is worse than no test: it trains the reader
+/// to dismiss a red run, which is exactly when a real regression slips past. So
+/// match the NAME COLUMN as a whitespace-delimited field instead of scanning
+/// the whole blob.
+fn names_session(stdout: &str, name: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| line.split_whitespace().any(|field| field == name))
+}
+
+/// Pins the exact row that made the old assertion flake, so the fix is
+/// demonstrated rather than argued. `contains("a1")` is TRUE for this string
+/// and `names_session(.., "a1")` is FALSE — that gap is the whole repair.
+#[test]
+fn names_session_does_not_match_inside_a_session_id() {
+    let observed = "4a059f81739ba133 h1  windows=1 panes=1  state=Active  source=human";
+    assert!(
+        observed.contains("a1"),
+        "precondition: the raw substring DOES collide with the id — if this \
+         ever stops holding, the regression this guards is gone"
+    );
+    assert!(!names_session(observed, "a1"), "must not match inside the id");
+    assert!(names_session(observed, "h1"), "must still match the name column");
+}
+
 #[test]
 fn list_source_filter_shows_only_matching_sessions() {
     let h = DaemonHarness::new("source-filter");
@@ -855,20 +890,20 @@ fn list_source_filter_shows_only_matching_sessions() {
     let _ = h.run(&["up", "--name", "n1", "--source", "named:ci-runner"]);
 
     let (stdout_h, _, _) = h.run(&["list", "--source", "human"]);
-    assert!(stdout_h.contains("h1"), "human filter missed h1: {stdout_h}");
-    assert!(!stdout_h.contains("a1"), "human filter included a1: {stdout_h}");
-    assert!(!stdout_h.contains("n1"), "human filter included n1: {stdout_h}");
+    assert!(names_session(&stdout_h, "h1"), "human filter missed h1: {stdout_h}");
+    assert!(!names_session(&stdout_h, "a1"), "human filter included a1: {stdout_h}");
+    assert!(!names_session(&stdout_h, "n1"), "human filter included n1: {stdout_h}");
 
     let (stdout_a, _, _) = h.run(&["list", "--source", "agent"]);
-    assert!(stdout_a.contains("a1"), "agent filter missed a1: {stdout_a}");
-    assert!(!stdout_a.contains("h1"), "agent filter included h1: {stdout_a}");
+    assert!(names_session(&stdout_a, "a1"), "agent filter missed a1: {stdout_a}");
+    assert!(!names_session(&stdout_a, "h1"), "agent filter included h1: {stdout_a}");
 
     let (stdout_n, _, _) = h.run(&["list", "--source", "named"]);
-    assert!(stdout_n.contains("n1"), "named filter missed n1: {stdout_n}");
-    assert!(!stdout_n.contains("h1"), "named filter included h1: {stdout_n}");
+    assert!(names_session(&stdout_n, "n1"), "named filter missed n1: {stdout_n}");
+    assert!(!names_session(&stdout_n, "h1"), "named filter included h1: {stdout_n}");
 
     let (stdout_exact, _, _) = h.run(&["list", "--source", "named:ci-runner"]);
-    assert!(stdout_exact.contains("n1"), "exact named missed n1: {stdout_exact}");
+    assert!(names_session(&stdout_exact, "n1"), "exact named missed n1: {stdout_exact}");
 
     let (stdout_miss, _, _) = h.run(&["list", "--source", "named:does-not-exist"]);
     assert!(stdout_miss.contains("(no sessions"), "expected empty list: {stdout_miss}");
