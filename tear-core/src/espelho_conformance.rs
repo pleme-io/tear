@@ -2,6 +2,24 @@
 //! terminal-conformance contract (third fleet site, after mado's
 //! `Terminal` host rows and frost's guest harness).
 //!
+//! > **★ UPDATED 2026-07-31 — the relay finding below is still accurate for
+//! > the SHIPPED default, but it is no longer permanent.** The claim
+//! > "`feed()` has no write-back surface at all" was true when written and
+//! > is now false: `PaneGrid` has a `pending_response` lane and answers
+//! > DSR 5 / DSR 6 (CPR) / DA1 / DA2 when its `HostRole` is `Host`.
+//! >
+//! > The default is still `HostRole::Relay`, which answers **nothing**, so
+//! > every row in this file continues to describe live behaviour. What
+//! > changed is that the role is now a typed field rather than an absence —
+//! > because after the shuken flip mado has no parser, so the host duty
+//! > cannot keep living "one layer down". See `docs/SHUKEN.md` and the
+//! > `host_role_rows` module in `pane_grid.rs`.
+//! >
+//! > **The relay rows below become the WRONG contract the moment a pane is
+//! > set to `Host`** — at that point tear owes espelho the HOST rows, not
+//! > the relay ones. Flipping the default without adding those rows here is
+//! > the mistake this note exists to prevent.
+//!
 //! ## Which contract does tear satisfy? (shape discovery — honest)
 //!
 //! espelho names two roles: a HOST answers VT queries, a GUEST

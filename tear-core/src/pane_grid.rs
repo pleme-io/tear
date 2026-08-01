@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 
 use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
+use tear_types::host_role::{HostRole, TearCaps};
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
@@ -100,6 +101,18 @@ pub(crate) struct GridState {
     cursor_keys_mode: bool,
     /// Last printed char — REP (CSI b) repeats this.
     last_printed: Option<char>,
+    /// Who answers VT queries on this pane. `Relay` (the default) means
+    /// tear answers nothing and the attached terminal is the host — the
+    /// behaviour tear has always had.
+    role: HostRole,
+    /// Reply bytes owed to the child process, drained by the runtime and
+    /// written back to the PTY.
+    ///
+    /// Always empty while `role` is `Relay`, which is what makes the
+    /// response path a no-op until the shuken flip deliberately turns it
+    /// on. A reply is data the CHILD asked for, so it goes to the PTY's
+    /// input side, never into the grid.
+    pending_response: Vec<u8>,
     /// Window / tab title (OSC 0 / OSC 2).
     title: Option<String>,
     /// OSC 133 block extractor — captures prompt + command +
@@ -149,6 +162,8 @@ impl GridState {
             cursor_visible: true,
             cursor_keys_mode: false,
             last_printed: None,
+            role: HostRole::default(),
+            pending_response: Vec::new(),
             title: None,
             blocks: crate::blocks::BlockExtractor::default(),
         }
@@ -161,6 +176,18 @@ impl GridState {
             self.alternate.get_mut(row).and_then(|r| r.get_mut(col))
         } else {
             self.primary.get_mut(row).and_then(|r| r.get_mut(col))
+        }
+    }
+
+    /// Queue a reply to the child, if and only if this pane is the host.
+    ///
+    /// The role check lives HERE, at the single chokepoint, rather than at
+    /// each call site. Every query arm calls `answer` unconditionally, so a
+    /// newly-added query cannot forget the check and start replying while
+    /// tear is still a relay — which would mean two answers on the wire.
+    fn answer(&mut self, bytes: &[u8]) {
+        if self.role.answers_queries() {
+            self.pending_response.extend_from_slice(bytes);
         }
     }
 
@@ -777,9 +804,39 @@ impl Perform for GridState {
                     }
                 }
             }
+            // Secondary DA (`CSI > c`). It lives HERE and not in the
+            // standard match below precisely because of this namespace
+            // split: `CSI c` and `CSI > c` share a final byte and are
+            // different queries.
+            if prefix == b'>' && c == 'c' {
+                self.answer(TearCaps::SECONDARY_DA);
+            }
             return;
         }
         match c {
+            // ── VT queries — answered ONLY as HostRole::Host ──────────
+            // DSR (CSI n): 5 = "are you ok", 6 = cursor position (CPR).
+            'n' => match first {
+                5 => self.answer(TearCaps::STATUS_OK),
+                6 => {
+                    // CPR is 1-based, and it reports the cursor's CLAMPED
+                    // column — which is why park_at_right_margin matters:
+                    // a cursor parked on a wide glyph's lead instead of the
+                    // last column under-reports here.
+                    let row = self.cursor_row + 1;
+                    let col = self.cursor_col + 1;
+                    let mut r = Vec::new();
+                    r.extend_from_slice(b"\x1b[");
+                    r.extend_from_slice(row.to_string().as_bytes());
+                    r.push(b';');
+                    r.extend_from_slice(col.to_string().as_bytes());
+                    r.push(b'R');
+                    self.answer(&r);
+                }
+                _ => {}
+            },
+            // Primary DA (CSI c / CSI 0 c).
+            'c' => self.answer(TearCaps::PRIMARY_DA),
             'A' => self.cursor_move_relative(-n, 0),
             'B' => self.cursor_move_relative(n, 0),
             'C' => self.cursor_move_relative(0, n),
@@ -1167,6 +1224,29 @@ impl PaneGrid {
         self.parser.advance(&mut self.state, bytes);
     }
 
+    /// Set who answers VT queries for this pane.
+    ///
+    /// See [`HostRole`]. Setting [`HostRole::Host`] while a client with its
+    /// own parser is still attached means BOTH answer, and the second reply
+    /// lands on the PTY as if the operator had typed it.
+    pub(crate) fn set_host_role(&mut self, role: HostRole) {
+        self.state.role = role;
+    }
+
+    /// Take the reply bytes owed to the child process.
+    ///
+    /// The caller writes these to the PTY's INPUT side — a reply is data
+    /// the child asked for, not output to be rendered. Always empty while
+    /// the pane is a [`HostRole::Relay`].
+    #[must_use]
+    pub(crate) fn take_response(&mut self) -> Option<Vec<u8>> {
+        if self.state.pending_response.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.state.pending_response))
+        }
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> PaneSnapshot {
         let cells: Vec<Vec<Cell>> = self.state.active_rows().cloned().collect();
@@ -1359,6 +1439,108 @@ mod width_parity {
                 "col {col} width drifted across a to_ansi round-trip"
             );
         }
+    }
+}
+
+/// The Relay→Host transition (docs/SHUKEN.md; task: the DSR/DA flip blocker).
+///
+/// tear could not answer a VT query at all — `PaneGrid` had no response
+/// state, which the espelho conformance header records as tear being a
+/// RELAY whose host duty "lives one layer DOWN" in mado. After the shuken
+/// flip mado has no parser, so nothing would answer and every program that
+/// probes the terminal would hang.
+///
+/// These rows pin both halves: the machinery works as a Host, and it stays
+/// completely inert as a Relay.
+#[cfg(test)]
+mod host_role_rows {
+    use super::*;
+
+    /// ★ THE LOAD-BEARING ROW. Landing the response path must change
+    /// nothing today, because mado is still parsing — if tear answered now,
+    /// the child would get TWO replies and the second lands on the PTY as
+    /// if the operator had typed `^[[24;80R`.
+    #[test]
+    fn a_relay_answers_nothing_at_all() {
+        let mut g = PaneGrid::new(80, 24);
+        // Every query tear knows how to answer, at once.
+        g.feed(b"\x1b[6n\x1b[5n\x1b[c\x1b[>c");
+        assert!(
+            g.take_response().is_none(),
+            "a Relay must stay byte-for-byte silent — otherwise the shipped \
+             mado+tear pair produces two answers per query"
+        );
+    }
+
+    #[test]
+    fn a_host_answers_cursor_position_one_based() {
+        let mut g = PaneGrid::new(80, 24);
+        g.set_host_role(HostRole::Host);
+        g.feed(b"hi\r\n");
+        g.feed(b"\x1b[6n");
+        let r = g.take_response().expect("host must answer CPR");
+        // row 2, col 1 — 1-based, after one linefeed and a carriage return.
+        assert_eq!(r, b"\x1b[2;1R".to_vec());
+    }
+
+    /// CPR reports the CLAMPED column, which is what ties this to the
+    /// width work: a cursor parked on a wide glyph's lead rather than the
+    /// last column would under-report here.
+    #[test]
+    fn a_host_reports_the_clamped_column_after_a_margin_flush_wide_glyph() {
+        let mut g = PaneGrid::new(20, 3);
+        g.set_host_role(HostRole::Host);
+        g.feed("A".repeat(18).as_bytes());
+        g.feed("你".as_bytes());
+        g.feed(b"\x1b[6n");
+        let r = g.take_response().expect("host must answer CPR");
+        assert_eq!(r, b"\x1b[1;20R".to_vec(), "column is 1-based and clamped");
+    }
+
+    #[test]
+    fn a_host_answers_device_status_and_both_device_attributes() {
+        let mut g = PaneGrid::new(80, 24);
+        g.set_host_role(HostRole::Host);
+
+        g.feed(b"\x1b[5n");
+        assert_eq!(g.take_response().unwrap(), TearCaps::STATUS_OK.to_vec());
+
+        g.feed(b"\x1b[c");
+        assert_eq!(g.take_response().unwrap(), TearCaps::PRIMARY_DA.to_vec());
+
+        // `CSI > c` is a DIFFERENT query sharing a final byte with `CSI c`.
+        // Dispatching on the final byte alone would answer the wrong one.
+        g.feed(b"\x1b[>c");
+        assert_eq!(g.take_response().unwrap(), TearCaps::SECONDARY_DA.to_vec());
+    }
+
+    /// A reply is owed to the CHILD, not painted on the screen. If a query
+    /// smeared into the grid the operator would see `[24;80R` in their
+    /// output — the residue row espelho's conformance test also guards.
+    #[test]
+    fn a_query_leaves_no_residue_in_the_rendered_grid() {
+        for role in [HostRole::Relay, HostRole::Host] {
+            let mut g = PaneGrid::new(80, 24);
+            g.set_host_role(role);
+            g.feed(b"before|");
+            g.feed(b"\x1b[6n");
+            g.feed(b"|after");
+            let row0 = g.snapshot().to_text_rows().into_iter().next().unwrap();
+            assert_eq!(
+                row0.trim_end(),
+                "before||after",
+                "query bytes must never reach the grid ({role:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn taking_a_response_drains_it() {
+        let mut g = PaneGrid::new(80, 24);
+        g.set_host_role(HostRole::Host);
+        g.feed(b"\x1b[5n");
+        assert!(g.take_response().is_some());
+        assert!(g.take_response().is_none(), "a reply is delivered once");
     }
 }
 
