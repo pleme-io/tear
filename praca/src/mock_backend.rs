@@ -227,6 +227,7 @@ impl MultiplexerControl for MockBackend {
             created_at_unix: 0,
             description: String::new(),
             source,
+            freio: tear_types::Freio::Released,
         };
         session.windows.insert(wid, Self::window(wid, name, pid));
         session.panes.insert(pid, Self::pane(pid, shell, args));

@@ -113,6 +113,7 @@ mod tests {
             created_at_unix: 0,
             description: String::new(),
             source: SessionSource::Human,
+            freio: crate::freio::Freio::Released,
         }
     }
 

@@ -83,6 +83,7 @@ impl Registry {
             created_at_unix: now_unix(),
             description: String::new(),
             source: tear_types::SessionSource::default(),
+            freio: tear_types::Freio::Released,
         };
         self.sessions.insert(id, s);
         id

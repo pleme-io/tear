@@ -158,6 +158,7 @@ mod tests {
             created_at_unix: 0,
             description: String::new(),
             source,
+            freio: tear_types::Freio::Released,
         }
     }
 
