@@ -1386,6 +1386,25 @@ impl InProcess {
 mod tests {
     use super::*;
 
+    /// How long a test waits for a REAL child shell to produce output.
+    ///
+    /// This is a **timeout, not a performance assertion**: every waiter
+    /// below returns as soon as it sees what it wants, so a generous bound
+    /// costs nothing on the passing path and only decides how long a
+    /// genuinely-broken run takes to fail.
+    ///
+    /// It exists because the same wait was written with FOUR different
+    /// numbers (2s ×4, 5s, 10s ×3), and the 2-second ones were flaky:
+    /// measured 2026-07-31, `pty_env_includes_tear_session_pane_socket_vars`
+    /// failed in a full parallel workspace run — the shell's echo was
+    /// captured but the sentinel had not arrived — while passing 3/3 in
+    /// isolation. Under a full run many PTY-spawning tests compete for the
+    /// machine and a real `/bin/sh` misses a tight deadline.
+    ///
+    /// One name, one number. If a test genuinely needs a different bound it
+    /// should say why at its own site rather than quietly picking another.
+    const CHILD_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
     #[test]
     fn new_inproc_starts_empty() {
         let inproc = InProcess::new();
@@ -1479,7 +1498,7 @@ mod tests {
 
         inproc.send_keys(pane, b"printf 'PATH=[%s]\\n' \"$PATH\"\n").expect("send_keys");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut buf = Vec::<u8>::new();
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1518,7 +1537,7 @@ mod tests {
             .send_keys(pane, b"printf 'TERM=[%s]\\n' \"${TERM:-MISSING}\"\n")
             .expect("send_keys");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut buf = Vec::<u8>::new();
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1564,7 +1583,7 @@ mod tests {
             .expect("send_keys");
 
         // Collect output for up to 2 seconds.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut buf = Vec::<u8>::new();
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1616,7 +1635,7 @@ mod tests {
             )
             .expect("send_keys");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut buf = Vec::<u8>::new();
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1683,7 +1702,7 @@ mod tests {
         // The receiver must eventually disconnect — that Err is the
         // end-of-stream signal engate's run() / the daemon's
         // serve_subscription block on.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut disconnected = false;
         while std::time::Instant::now() < deadline {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1737,7 +1756,7 @@ mod tests {
         // No subscriber attaches. Exit the shell.
         inproc.send_keys(pane, b"exit\n").expect("send_keys");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         while std::time::Instant::now() < deadline {
             if inproc.list_sessions().unwrap().is_empty() {
                 break;
@@ -1775,7 +1794,7 @@ mod tests {
 
         // Wait for the end-of-stream disconnect (fires after the exit
         // handler ran its reap decision with `watched = true`).
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut disconnected = false;
         while std::time::Instant::now() < deadline {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1894,7 +1913,7 @@ mod tests {
 
         // The subscriber must observe end-of-stream (senders dropped by
         // detach_panes), never block forever on a dead pane.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut disconnected = false;
         while std::time::Instant::now() < deadline {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
