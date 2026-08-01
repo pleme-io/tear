@@ -34,8 +34,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use espelho::VtQuery;
-use tear_core::{InProcess, PaneGrid};
 use tear_types::MultiplexerControl;
+
+use crate::{InProcess, PaneGrid};
 
 /// The full query catalog. espelho's own `scan` table is private, so
 /// the variants are enumerated here — `catalog_is_exhaustive` below

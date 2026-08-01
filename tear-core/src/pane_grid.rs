@@ -1116,20 +1116,54 @@ impl GridState {
 }
 
 impl PaneGrid {
+    // ── THE AUTHORITY SEAL ──────────────────────────────────────────
+    //
+    // `new` / `with_scrollback` / `feed` are `pub(crate)`, and that
+    // visibility IS the seal described in `docs/SHUKEN.md`.
+    //
+    // The decision there is that `PaneGrid` is the SOLE authoritative VT
+    // parser for a pane. A doc cannot enforce that; a consumer that can
+    // construct its own grid and feed it bytes has a second authority, and
+    // the two can then disagree — which is the exact defect (mado's
+    // `terminal.rs` double-parse) the decision exists to remove.
+    //
+    // SHUKEN originally proposed sealing this by removing `vte` from mado's
+    // manifest. That is necessary and NOT sufficient: mado depends on
+    // `tear-core` directly for `InProcess`, so with `vte` gone
+    // `tear_core::PaneGrid::new(80, 24).feed(bytes)` still compiled — a
+    // second authoritative grid that never names `vte` at all.
+    //
+    // `pub(crate)` closes it at the strongest available tier: outside this
+    // crate the constructor is not merely discouraged, it is **E0603, a
+    // private item**. A Cargo feature was considered and rejected — mado
+    // NEEDS `InProcess` (which owns the PTYs and drives these grids
+    // internally), so a feature that excluded `pane_grid` from mado would
+    // break the very runtime the decision depends on, while a feature that
+    // included it would seal nothing.
+    //
+    // Reading stays public on purpose: `snapshot()` and the `PaneSnapshot`
+    // / `Cell` types below are how a client observes the authority. The
+    // asymmetry is the whole design — **anyone may read, only the authority
+    // may advance.**
     #[must_use]
-    pub fn new(cols: usize, rows: usize) -> Self {
+    pub(crate) fn new(cols: usize, rows: usize) -> Self {
         Self::with_scrollback(cols, rows, DEFAULT_SCROLLBACK_ROWS)
     }
 
     #[must_use]
-    pub fn with_scrollback(cols: usize, rows: usize, scrollback_cap: usize) -> Self {
+    pub(crate) fn with_scrollback(cols: usize, rows: usize, scrollback_cap: usize) -> Self {
         Self {
             parser: Parser::new(),
             state: GridState::new(cols, rows, scrollback_cap),
         }
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) {
+    /// Advance this pane's terminal state by `bytes`.
+    ///
+    /// `pub(crate)` — see the authority-seal note above. This is the only
+    /// write verb on a pane's grid, and it is reachable only from inside
+    /// `tear-core`, i.e. only through `InProcess`/the daemon.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.state, bytes);
     }
 

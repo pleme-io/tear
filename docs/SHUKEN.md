@@ -87,22 +87,41 @@ Dependency absence closes half of it: **`vte` is removed from mado's
 manifest.** A transitive dependency is not nameable without being declared,
 so `vte::Parser` in mado becomes **`E0433` unresolved crate**.
 
-> **★ CORRECTED 2026-07-31 — this seal does NOT hold as originally written,
-> and the gap is one line wide.** mado declares **`tear-core`** directly
-> (`mado/Cargo.toml:179` — 57 call sites, required for `InProcess`);
-> `tear-core/src/lib.rs:33` re-exports `PaneGrid`; `pane_grid.rs:1016`'s
-> `feed` is `pub`. So this compiles in mado with `vte` gone:
+> **★ CORRECTED, THEN SEALED — both on 2026-07-31.**
+>
+> **The gap:** dependency absence was never sufficient. mado declares
+> **`tear-core`** directly (`mado/Cargo.toml:179` — 57 call sites, required
+> for `InProcess`), so with `vte` gone this still compiled:
 >
 > ```rust
 > let mut g = tear_core::PaneGrid::new(80, 24);
 > g.feed(bytes);            // a second authoritative grid, no `vte` named
 > ```
 >
-> Removing `vte` closes `vte::Parser`. It does **not** close a second grid.
-> **What would:** put `pane_grid` behind a `parser` Cargo feature that
-> `tear-daemon` enables and mado does not — then the authority is a
-> compile-time capability rather than a naming convention. Until that lands,
-> the row is `only-mitigated (C4)`, not `truly-unrep`.
+> **The seal, and why it is NOT a Cargo feature.** A `parser` feature was the
+> first proposal and it is the wrong mechanism: mado *needs* `InProcess`,
+> which owns the PTYs and drives these grids internally — so a feature that
+> excluded `pane_grid` from mado would break the runtime this whole decision
+> depends on, and one that included it would seal nothing.
+>
+> What actually seals it is **visibility**: `PaneGrid::{new, with_scrollback,
+> feed}` are `pub(crate)`. Outside `tear-core` the constructor and the write
+> verb are private items. Measured from `tear-daemon` (an external crate that
+> links `tear-core` exactly as mado does):
+>
+> ```
+> error[E0624]: associated function `new` is private
+> error[E0624]: method `feed` is private
+> ```
+>
+> Reading stays public — `snapshot()`, `PaneSnapshot`, `Cell`. **The
+> asymmetry IS the design: anyone may read, only the authority may advance.**
+>
+> One consequence worth knowing: `tests/espelho_conformance.rs` moved to
+> `src/` and became a unit test. An integration test links the crate as an
+> external consumer, so the seal denies it exactly what it denies mado —
+> correctly. Being *inside* the crate is what lets it keep testing the sealed
+> surface.
 
 Grade this honestly (§5): re-adding a dependency is a deliberate,
 reviewable act, and a forcing-function test asserting `vte ∉ mado`'s
@@ -126,8 +145,8 @@ a footnote.
 | a renderer advances VT state through the view | `PaneView` exposes no `&mut self` and no byte-feeding verb — `E0599` | truly-unrep |
 | a client fabricates a view no grid produced | private fields, no public ctor; only `PaneGrid::view()` mints one — `E0451` | truly-unrep |
 | mado names `vte::Parser` | `vte` absent from mado's manifest — `E0433` unresolved crate | truly-unrep |
-| **mado builds a second authoritative grid** | ~~`vte` absent from the manifest~~ — **NOTHING, TODAY.** mado declares `tear-core` directly (`mado/Cargo.toml:179`, 57 call sites, needed for `InProcess`); `tear-core/src/lib.rs:33` re-exports `PaneGrid`; `pane_grid.rs:1016` `feed` is `pub`. So `tear_core::PaneGrid::new(80,24).feed(bytes)` compiles in mado **without naming `vte` at all**. Dropping `vte` closes `vte::Parser`; it does not close a second grid. **Ceiling: a second grid is one line away, guarded only by a manifest test that cannot see it, on a CI gate mado only just got.** Earns truly-unrep only when `pane_grid` sits behind a `parser` feature that `tear-daemon` enables and mado does not. | only-mitigated (C4) |
-| two grids disagree on a pane's contents | there is only one grid — **conditional on the row above**, and therefore graded with it | only-mitigated (C4) |
+| **mado builds a second authoritative grid** | **SEALED 2026-07-31.** `PaneGrid::{new, with_scrollback, feed}` are `pub(crate)` in `tear-core`, so the only way to advance a pane's state from outside the crate is through `InProcess`/the daemon. Reading (`snapshot()`, `PaneSnapshot`, `Cell`) stays public — **anyone may read, only the authority may advance.** | truly-unrep |
+| two grids disagree on a pane's contents | there is only one grid, and no consumer can construct a second — conditional on the row above, and now graded with it | truly-unrep |
 | a *borrowed* view outlives its grid | `PaneView<'a>` borrows the grid's interior — borrowck | truly-unrep |
 | acting on a **stale wire** view | `epoch: GridEpoch` on `OwnedPaneView`. **Ceiling: nothing forces the comparison — it is a runtime check the client chooses to make. Does NOT apply to the borrowed carrier; do not let the borrowed row's green cover this one.** | only-mitigated (C3) |
 | the renderer reads a mode from its own dead parser | the seven accessors are **deleted** from `Terminal` *and* from `TerminalOps` (five have two names each), so every missed site is `E0599` — repointing while leaving the old method alive is not sufficient | truly-unrep |

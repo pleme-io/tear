@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use tear_core::inproc::InProcess;
 use tear_types::{
-    Cell, CellAttrs, Color, MultiplexerControl, PaneId, PaneSnapshot, SessionId,
+    Cell, MultiplexerControl, PaneId, PaneSnapshot, SessionId,
     SessionSource,
     wire::{read_msg, write_msg, Response},
 };

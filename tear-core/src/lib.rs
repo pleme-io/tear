@@ -27,6 +27,18 @@ pub mod reap;
 pub mod recording;
 pub mod registry;
 
+/// Terminal-conformance rows against the `espelho` contract.
+///
+/// Lives in `src/` rather than `tests/` deliberately: it constructs and
+/// feeds a [`PaneGrid`] directly, and those verbs are `pub(crate)` so that
+/// no consumer outside this crate can mint a second authoritative grid (see
+/// the authority note on [`pane_grid::PaneGrid`]). An integration test links
+/// the crate as an external consumer and would therefore be denied the same
+/// access mado is — correctly. Being a unit test is what lets it keep
+/// testing the sealed surface.
+#[cfg(test)]
+mod espelho_conformance;
+
 pub use blocks::{Block, BlockExtractor};
 pub use inproc::InProcess;
 pub use reap::AllPanesExited;
