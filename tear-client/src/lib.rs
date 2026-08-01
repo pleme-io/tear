@@ -901,6 +901,43 @@ impl MultiplexerControl for Client {
 }
 
 impl Client {
+    /// Engage or release the operator's brake. `None` = every session.
+    ///
+    /// Returns `(states, braked, unbrakable)`. **Read the third one.** It
+    /// names the panes the brake could NOT reach, because their
+    /// provenance is unknown — an operator who pressed a panic button
+    /// must be told what it did not stop.
+    ///
+    /// Requires the capability FIRST, so an old daemon produces a typed
+    /// refusal rather than dropping the request as an unknown variant.
+    /// "Nothing happened" is unacceptable for a panic button.
+    pub fn set_freio(
+        &self,
+        session: Option<SessionId>,
+        engaged: bool,
+    ) -> ControlResult<(Vec<(SessionId, tear_types::Freio)>, Vec<PaneId>, Vec<PaneId>)> {
+        self.daemon().require(
+            tear_types::Capability::Freio,
+            "freio (the operator's brake) needs a daemon that reads SetFreio",
+        )?;
+        match self.rpc(Request::SetFreio { session, engaged })? {
+            Response::Freio { sessions, braked, unbrakable } => Ok((sessions, braked, unbrakable)),
+            other => Err(unexpected("Freio", other)),
+        }
+    }
+
+    /// Every session's brake state.
+    pub fn freio_state(&self) -> ControlResult<Vec<(SessionId, tear_types::Freio)>> {
+        self.daemon().require(
+            tear_types::Capability::Freio,
+            "freio status needs a daemon that reads GetFreio",
+        )?;
+        match self.rpc(Request::GetFreio)? {
+            Response::Freio { sessions, .. } => Ok(sessions),
+            other => Err(unexpected("Freio", other)),
+        }
+    }
+
     // ── #4 recording client API (inherent, not on the trait —
     // recording is a tear-core-side primitive) ──────────────
 

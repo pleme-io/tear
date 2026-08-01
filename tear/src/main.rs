@@ -113,6 +113,28 @@ enum Cmd {
     /// the matching `--leader-id` (e.g. an AI agent) may send keys.
     /// Useful for observer / demo sessions, agent-only panes, and
     /// the migration handoff window.
+    /// Brake every agent-driven pane — the operator's panic button.
+    ///
+    /// Stops panes an automation is driving and LEAVES YOUR OWN ALONE. A
+    /// pane whose provenance the daemon could not determine is NOT braked
+    /// and is reported by name: a brake that can lock you out of your own
+    /// terminal during the emergency you pressed it for is not a brake.
+    ///
+    /// Release is explicit and never automatic — the daemon has no way to
+    /// know when whatever you engaged it for stopped being true.
+    Freio {
+        /// Scope to one session. Default: every session.
+        #[arg(long)]
+        session: Option<String>,
+        /// Release the brake instead of engaging it.
+        #[arg(long)]
+        release: bool,
+        /// Show brake state without changing it.
+        #[arg(long)]
+        status: bool,
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
     PaneInput {
         pane: String,
         #[arg(value_enum)]
@@ -435,6 +457,9 @@ fn main() -> Result<()> {
         Cmd::List { yaml, socket, source } => cmd_list(yaml, socket, source),
         Cmd::Kill { id, name, socket } => cmd_kill(&id, name, socket),
         Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
+        Cmd::Freio { session, release, status, socket } => {
+            cmd_freio(session, release, status, socket)
+        }
         Cmd::PaneInput { pane, action, leader_id, socket } => {
             cmd_pane_input(&pane, action, leader_id, socket)
         }
@@ -764,6 +789,51 @@ fn resolve_session_id(
 
 /// `tear pane-input <pane> lock|unlock` — flip a pane's typed
 /// InputPolicy via the daemon.
+/// The operator's brake.
+fn cmd_freio(
+    session: Option<String>,
+    release: bool,
+    status: bool,
+    socket: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (client, _) = connect_to_daemon(socket)?;
+    let sid = session
+        .as_deref()
+        .map(|s| parse_session_id(s, "--session"))
+        .transpose()?;
+
+    if status {
+        for (id, f) in client.freio_state()? {
+            match f.engaged_at() {
+                Some(at) => println!("{id}  ENGAGED  since {at}"),
+                None => println!("{id}  released"),
+            }
+        }
+        return Ok(());
+    }
+
+    let (_states, braked, unbrakable) = client.set_freio(sid, !release)?;
+
+    if release {
+        println!("freio RELEASED — panes return to their own input policy.");
+        println!("(a pane you had locked stays locked; release clears the brake, not your settings)");
+        return Ok(());
+    }
+
+    println!("freio ENGAGED — {} agent-driven pane(s) braked.", braked.len());
+    if !unbrakable.is_empty() {
+        // The honest miss, stated where it matters. Never elided.
+        println!();
+        println!("  NOT braked: {} pane(s) of unknown provenance.", unbrakable.len());
+        for p in &unbrakable {
+            println!("    {p}");
+        }
+        println!("  These still accept input. Lock one by hand:");
+        println!("    tear pane-input <pane> lock");
+    }
+    Ok(())
+}
+
 fn cmd_pane_input(
     pane: &str,
     action: PaneInputAction,
