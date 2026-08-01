@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 
 use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
+use tear_types::graphics::{Graphic, GraphicProtocol, GRAPHIC_PAYLOAD_MAX};
 use tear_types::host_role::{HostRole, TearCaps};
 use tear_types::modes::{
     AltScreen, AutoWrap, BracketedPaste, CursorKeys, CursorVisible, FocusReporting, ModeSet,
@@ -51,6 +52,129 @@ pub const DEFAULT_SCROLLBACK_ROWS: usize = usize::MAX;
 pub struct PaneGrid {
     parser: Parser,
     pub(crate) state: GridState,
+    /// APC re-assembly, because vte cannot do it for us.
+    ///
+    /// vte 0.15's `Perform` has `hook`/`put`/`unhook` for DCS but **no APC
+    /// method at all**: on `ESC _` it enters `State::SosPmApcString` and
+    /// consumes every byte to the terminator with no callback. So the
+    /// kitty graphics protocol — which is APC-framed — was invisible to
+    /// this parser, and an image vanished with no error and no flag.
+    ///
+    /// The fix is to lift APC out of the stream BEFORE vte sees it. That
+    /// is what mado does too; this is the same interception, moved to the
+    /// authority.
+    apc: ApcScanner,
+}
+
+/// Splits `ESC _ … ESC \` (or `BEL`) out of a byte stream.
+///
+/// A payload can be megabytes and arrives over many PTY reads, so the scan
+/// is a resumable state machine rather than a search over one buffer — an
+/// APC split across `feed()` calls must reassemble, which is exactly the
+/// chunk-boundary case the espelho conformance rows already pin for
+/// ordinary escapes.
+#[derive(Debug, Default)]
+struct ApcScanner {
+    state: ApcState,
+    buf: Vec<u8>,
+    /// Set the moment `buf` hits the cap, so the fact survives the params
+    /// being stripped later.
+    cut: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum ApcState {
+    /// Not in an APC, and no `ESC` pending.
+    #[default]
+    Idle,
+    /// Saw `ESC`; the next byte decides whether this is an APC.
+    Escape,
+    /// Inside an APC payload.
+    Inside,
+    /// Inside an APC and saw `ESC`; `\` terminates (ST).
+    InsideEscape,
+}
+
+impl ApcScanner {
+    /// Feed `bytes`, returning the stream with APC sequences removed plus
+    /// any payloads that completed, each with whether it was CUT.
+    ///
+    /// The cut flag is CARRIED rather than re-derived downstream. It was
+    /// briefly re-derived by comparing the final payload length against the
+    /// cap, which is wrong for a reason worth keeping: the cap applies to
+    /// the whole APC body, and kitty's params (`Ga=T,f=100;`) are stripped
+    /// before storage — so a truncated payload came back a few bytes UNDER
+    /// the cap and reported itself intact. A fact known at the boundary
+    /// must not be reconstructed from a proxy after the shape changes.
+    ///
+    /// A lone `ESC` at the end of a chunk is HELD, not emitted — emitting
+    /// it would hand vte a truncated escape and the following chunk's
+    /// bytes would be misparsed as its parameters.
+    fn split(&mut self, bytes: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, bool)>) {
+        let mut passthrough = Vec::with_capacity(bytes.len());
+        let mut done = Vec::new();
+        for &b in bytes {
+            match self.state {
+                ApcState::Idle => {
+                    if b == 0x1b {
+                        self.state = ApcState::Escape;
+                    } else {
+                        passthrough.push(b);
+                    }
+                }
+                ApcState::Escape => {
+                    if b == b'_' {
+                        // An APC opens: the ESC we withheld belongs to it.
+                        self.state = ApcState::Inside;
+                        self.buf.clear();
+                        self.cut = false;
+                    } else {
+                        // Not an APC — replay the withheld ESC, then
+                        // re-handle this byte (it may itself be an ESC,
+                        // e.g. `ESC ESC`).
+                        passthrough.push(0x1b);
+                        if b == 0x1b {
+                            self.state = ApcState::Escape;
+                        } else {
+                            passthrough.push(b);
+                            self.state = ApcState::Idle;
+                        }
+                    }
+                }
+                ApcState::Inside => match b {
+                    0x1b => self.state = ApcState::InsideEscape,
+                    // BEL terminates too — xterm accepts it for APC/OSC.
+                    0x07 => {
+                        done.push((std::mem::take(&mut self.buf), self.cut));
+                        self.state = ApcState::Idle;
+                    }
+                    _ => {
+                        if self.buf.len() < GRAPHIC_PAYLOAD_MAX {
+                            self.buf.push(b);
+                        } else {
+                            self.cut = true;
+                        }
+                    }
+                },
+                ApcState::InsideEscape => {
+                    if b == b'\\' {
+                        done.push((std::mem::take(&mut self.buf), self.cut));
+                        self.state = ApcState::Idle;
+                    } else {
+                        // An ESC inside the payload that was not ST.
+                        if self.buf.len() < GRAPHIC_PAYLOAD_MAX {
+                            self.buf.push(0x1b);
+                            self.buf.push(b);
+                        } else {
+                            self.cut = true;
+                        }
+                        self.state = ApcState::Inside;
+                    }
+                }
+            }
+        }
+        (passthrough, done)
+    }
 }
 
 /// Mutable state — separated from the parser so vte's `Perform`
@@ -124,6 +248,13 @@ pub(crate) struct GridState {
     /// Combining-mark table — see [`PaneSnapshot::combining`]. Cells hold a
     /// 1-based index into this; `0` means no marks.
     combining: Vec<Vec<char>>,
+    /// Images transmitted into this pane, undecoded. See
+    /// [`tear_types::graphics`] for why the authority stores bytes rather
+    /// than pixels.
+    graphics: Vec<Graphic>,
+    /// Payload being accumulated by an in-flight DCS sixel sequence
+    /// (`hook` → `put`* → `unhook`). `None` when no DCS is open.
+    sixel_in_flight: Option<Vec<u8>>,
     /// Reply bytes owed to the child process, drained by the runtime and
     /// written back to the PTY.
     ///
@@ -190,6 +321,8 @@ impl GridState {
             mouse: MouseTracking::Off,
             mouse_sgr: false,
             combining: Vec::new(),
+            graphics: Vec::new(),
+            sixel_in_flight: None,
             pending_response: Vec::new(),
             title: None,
             blocks: crate::blocks::BlockExtractor::default(),
@@ -204,6 +337,64 @@ impl GridState {
         } else {
             self.primary.get_mut(row).and_then(|r| r.get_mut(col))
         }
+    }
+
+    /// Consume one complete APC payload (the bytes between `ESC _` and its
+    /// terminator, exclusive).
+    ///
+    /// Only the kitty graphics protocol is recognised — its payloads start
+    /// with `G`. Any other APC is dropped, which matches every terminal:
+    /// APC is a private-use channel and an unrecognised one carries no
+    /// meaning we could act on.
+    fn ingest_apc(&mut self, payload: &[u8], cut: bool) {
+        let Some((&b'G', rest)) = payload.split_first() else {
+            return;
+        };
+        // Kitty's framing is `G<key=value,...>;<base64 payload>`. The
+        // params are ASCII and the payload is not, so split on the FIRST
+        // `;` and never parse past it — a control key that happens to
+        // appear inside base64 must not be read as one.
+        let (params, data) = match rest.iter().position(|&b| b == b';') {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            // No `;` at all: a control-only command (query, delete). Real,
+            // and it carries no image.
+            None => (rest, &[][..]),
+        };
+        self.push_graphic(
+            GraphicProtocol::Kitty,
+            String::from_utf8_lossy(params).into_owned(),
+            data.to_vec(),
+            cut,
+        );
+    }
+
+    /// Record a transmitted image at the current cursor position.
+    ///
+    /// The single place a graphic enters the grid, so the payload bound and
+    /// the truncation flag cannot be applied inconsistently by protocol.
+    fn push_graphic(
+        &mut self,
+        protocol: GraphicProtocol,
+        params: String,
+        mut data: Vec<u8>,
+        cut_upstream: bool,
+    ) {
+        // `cut_upstream` is the boundary's own verdict; the length check is
+        // only for producers that hand over an unbounded buffer (the DCS
+        // path bounds as it accumulates, so both agree there). Never rely on
+        // the length alone — see `ApcScanner::split`.
+        let truncated = cut_upstream || data.len() > GRAPHIC_PAYLOAD_MAX;
+        if data.len() > GRAPHIC_PAYLOAD_MAX {
+            data.truncate(GRAPHIC_PAYLOAD_MAX);
+        }
+        self.graphics.push(Graphic {
+            protocol,
+            params,
+            data,
+            at_row: self.cursor_row,
+            at_col: self.cursor_col,
+            truncated,
+        });
     }
 
     /// Queue a reply to the child, if and only if this pane is the host.
@@ -833,6 +1024,38 @@ impl Perform for GridState {
         self.put_char(c, w);
     }
 
+    /// DCS opened. `q` is sixel; everything else is ignored as before.
+    ///
+    /// Accumulation starts here and the payload is bounded as it grows, not
+    /// at `unhook` — a hostile stream that never terminates would otherwise
+    /// grow the buffer without limit while the sequence stayed open.
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
+        if action == 'q' {
+            self.sixel_in_flight = Some(Vec::new());
+        }
+    }
+
+    fn put(&mut self, byte: u8) {
+        if let Some(buf) = self.sixel_in_flight.as_mut() {
+            // One past the cap is enough to know it was cut; keeping more
+            // would defeat the bound.
+            if buf.len() < GRAPHIC_PAYLOAD_MAX {
+                buf.push(byte);
+            }
+        }
+    }
+
+    fn unhook(&mut self) {
+        if let Some(data) = self.sixel_in_flight.take() {
+            if !data.is_empty() {
+                // The DCS path bounds as it accumulates, so a payload at
+                // the cap is exactly the cut case.
+                let cut = data.len() >= GRAPHIC_PAYLOAD_MAX;
+                self.push_graphic(GraphicProtocol::Sixel, String::new(), data, cut);
+            }
+        }
+    }
+
     fn execute(&mut self, byte: u8) {
         // Any control byte cancels a pending wrap — the cursor's
         // about to be moved or text deferred elsewhere.
@@ -1313,6 +1536,7 @@ impl PaneGrid {
         Self {
             parser: Parser::new(),
             state: GridState::new(cols, rows, scrollback_cap),
+            apc: ApcScanner::default(),
         }
     }
 
@@ -1322,7 +1546,13 @@ impl PaneGrid {
     /// write verb on a pane's grid, and it is reachable only from inside
     /// `tear-core`, i.e. only through `InProcess`/the daemon.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.state, bytes);
+        // Lift APC out first — vte would swallow it silently (see
+        // `ApcScanner`). Everything else reaches the parser untouched.
+        let (passthrough, apcs) = self.apc.split(bytes);
+        self.parser.advance(&mut self.state, &passthrough);
+        for (payload, cut) in apcs {
+            self.state.ingest_apc(&payload, cut);
+        }
     }
 
     /// Every terminal mode this pane is in, taken at ONE instant.
@@ -1400,6 +1630,7 @@ impl PaneGrid {
             scrollback,
             combining: self.state.combining.clone(),
             modes: self.modes(),
+            graphics: self.state.graphics.clone(),
         }
     }
 
@@ -1681,6 +1912,143 @@ mod width_parity {
 /// a client had no way to learn them from tear and mado read them from its
 /// own parser instead. That is correct only while mado still parses, and
 /// becomes a live bug the instant this grid is authoritative.
+/// Inline images reach the authority instead of vanishing.
+///
+/// The last flip blocker in `docs/SHUKEN.md`. `GridState` implemented no
+/// DCS `hook`/`put`/`unhook`, and vte has **no APC callback at all** — it
+/// enters `State::SosPmApcString` and consumes to the terminator — so every
+/// sixel and every kitty image was swallowed with no error and no flag. A
+/// renderer could not even learn that content had been dropped.
+#[cfg(test)]
+mod graphics_rows {
+    use super::*;
+
+    #[test]
+    fn a_sixel_payload_reaches_the_snapshot() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1bPq#0;2;0;0;0#0~~@@vv@@~~@@~~$\x1b\\");
+        let s = g.snapshot();
+        assert_eq!(s.graphics.len(), 1, "the sixel must not vanish");
+        assert_eq!(s.graphics[0].protocol, GraphicProtocol::Sixel);
+        assert!(!s.graphics[0].data.is_empty());
+        assert!(!s.graphics[0].truncated);
+    }
+
+    #[test]
+    fn a_kitty_payload_reaches_the_snapshot_with_its_params_split_off() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b_Ga=T,f=100,s=2,v=2;iVBORw0KGgo=\x1b\\");
+        let s = g.snapshot();
+        assert_eq!(s.graphics.len(), 1, "the kitty image must not vanish");
+        let img = &s.graphics[0];
+        assert_eq!(img.protocol, GraphicProtocol::Kitty);
+        assert_eq!(img.params, "a=T,f=100,s=2,v=2");
+        assert_eq!(img.data, b"iVBORw0KGgo=".to_vec());
+    }
+
+    /// ★ The case that breaks a naive scanner. A PTY read boundary can
+    /// fall anywhere, including between `ESC` and `_`, so re-assembly must
+    /// survive across `feed()` calls — the same chunk-boundary property the
+    /// espelho conformance rows pin for ordinary escapes.
+    #[test]
+    fn an_apc_split_across_feeds_reassembles() {
+        let whole = b"\x1b_Ga=T,f=100;PAYLOAD\x1b\\";
+        for cut in 1..whole.len() {
+            let mut g = PaneGrid::new(80, 24);
+            g.feed(&whole[..cut]);
+            g.feed(&whole[cut..]);
+            let s = g.snapshot();
+            assert_eq!(s.graphics.len(), 1, "lost the image when cut at {cut}");
+            assert_eq!(s.graphics[0].data, b"PAYLOAD".to_vec(), "cut at {cut}");
+            assert!(
+                s.to_text_rows().iter().all(|r| r.trim().is_empty()),
+                "APC bytes leaked into the grid when cut at {cut}"
+            );
+        }
+    }
+
+    /// A withheld `ESC` that turns out NOT to open an APC must be replayed
+    /// to the parser, or the sequence it belonged to is silently lost.
+    #[test]
+    fn a_non_apc_escape_still_reaches_the_parser() {
+        let mut g = PaneGrid::new(80, 24);
+        // Split mid-escape so the ESC is withheld across the boundary.
+        g.feed(b"AB\x1b");
+        g.feed(b"[1;1HX");
+        let s = g.snapshot();
+        assert_eq!(
+            s.cells[0][0].ch, 'X',
+            "the CUP that followed a withheld ESC must still be honoured"
+        );
+    }
+
+    #[test]
+    fn an_apc_terminated_by_bel_is_accepted() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b_Ga=T;DATA\x07");
+        assert_eq!(g.snapshot().graphics.len(), 1, "BEL terminates APC too");
+    }
+
+    /// A control-only kitty command (query, delete) carries no `;` and no
+    /// payload. It is real and must not be mistaken for a malformed image.
+    #[test]
+    fn a_kitty_control_command_without_a_payload_is_kept() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b_Ga=d,d=A\x1b\\");
+        let s = g.snapshot();
+        assert_eq!(s.graphics.len(), 1);
+        assert_eq!(s.graphics[0].params, "a=d,d=A");
+        assert!(s.graphics[0].data.is_empty());
+    }
+
+    /// A non-kitty APC is dropped — APC is a private-use channel and an
+    /// unrecognised one carries nothing we could act on.
+    #[test]
+    fn an_unrecognised_apc_is_dropped_without_reaching_the_grid() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b_Zsomething-else\x1b\\after");
+        let s = g.snapshot();
+        assert!(s.graphics.is_empty(), "not a kitty payload");
+        assert_eq!(s.cells[0][0].ch, 'a', "the text after it still lands");
+    }
+
+    /// A runaway payload is CUT and says so. Silently rendering a partial
+    /// image is worse than rendering none, and an unbounded one lets a
+    /// child drive the daemon out of memory.
+    #[test]
+    fn an_oversized_payload_is_bounded_and_flagged() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b_Ga=T;");
+        // Feed past the cap in chunks, as a real PTY would.
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..10 {
+            g.feed(&chunk);
+        }
+        g.feed(b"\x1b\\");
+        let s = g.snapshot();
+        assert_eq!(s.graphics.len(), 1);
+        assert!(s.graphics[0].truncated, "the cut must be visible");
+        assert!(
+            s.graphics[0].data.len() <= GRAPHIC_PAYLOAD_MAX + 1,
+            "payload not bounded: {}",
+            s.graphics[0].data.len()
+        );
+    }
+
+    /// Graphics must not smear into the rendered text — the residue row
+    /// espelho's conformance test guards for queries, applied to images.
+    #[test]
+    fn image_bytes_leave_no_residue_in_the_grid() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"before|");
+        g.feed(b"\x1b_Ga=T,f=100;iVBORw0KGgo=\x1b\\");
+        g.feed(b"\x1bPq#0;2;0;0;0#0~~$\x1b\\");
+        g.feed(b"|after");
+        let row0 = g.snapshot().to_text_rows().into_iter().next().unwrap();
+        assert_eq!(row0.trim_end(), "before||after");
+    }
+}
+
 #[cfg(test)]
 mod mode_rows {
     use super::*;

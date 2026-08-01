@@ -417,6 +417,7 @@ impl MultiplexerControl for MockBackend {
             scrollback: Vec::new(),
             combining: Vec::new(),
             modes: tear_types::ModeSet::default(),
+            graphics: Vec::new(),
         })
     }
 }

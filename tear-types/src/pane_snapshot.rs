@@ -311,6 +311,18 @@ pub struct PaneSnapshot {
     /// See `crate::modes` for why each mode is its own type.
     #[serde(default)]
     pub modes: crate::modes::ModeSet,
+    /// Images transmitted into this pane, **undecoded**, in arrival order.
+    ///
+    /// Carrying them is what makes the authority lossless: before this,
+    /// `GridState` implemented no DCS `hook`/`put`/`unhook` and vte
+    /// swallows APC in its `SosPmApcString` state, so every sixel and every
+    /// kitty image disappeared with no error and no flag — a renderer could
+    /// not even know content had been dropped.
+    ///
+    /// Bytes, not pixels: see [`crate::graphics`] for why decoding stays
+    /// with the renderer and the daemon needs no image crate.
+    #[serde(default)]
+    pub graphics: Vec<crate::graphics::Graphic>,
 }
 
 fn default_true() -> bool {
@@ -494,6 +506,7 @@ mod to_ansi_tests {
             scrollback: Vec::new(),
             combining: Vec::new(),
             modes: crate::modes::ModeSet::default(),
+            graphics: Vec::new(),
         }
     }
 
