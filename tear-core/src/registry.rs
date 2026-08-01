@@ -105,6 +105,12 @@ impl Registry {
         cwd: Option<&str>,
         env: &[(String, String)],
         size_cells: (u16, u16),
+        // Provenance for the pane this window is born with. Threaded
+        // explicitly rather than read from `spawn_env`, which is an
+        // RwLock shared across every connection and already races: a
+        // raced cwd is a wrong directory, a raced provenance is a pane
+        // the brake misses.
+        yurai: tear_types::Yurai,
     ) -> Option<(WindowId, PaneId)> {
         let s = self.sessions.get_mut(&session_id)?;
         let win_id = mint_window_id(session_id, name);
@@ -120,6 +126,7 @@ impl Registry {
             state: PaneState::Running,
             title: shell.into(),
             input_policy: tear_types::InputPolicy::default(),
+            yurai,
         };
         let win = TearWindow {
             id: win_id,
@@ -171,7 +178,7 @@ mod tests {
         let mut r = Registry::new();
         let sid = r.create_session("work");
         let (wid, pid) = r
-            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24))
+            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24), tear_types::Yurai::Unknown)
             .unwrap();
         let s = &r.sessions[&sid];
         assert!(s.windows.contains_key(&wid));
@@ -195,7 +202,7 @@ mod tests {
         let args = vec!["-u".to_string(), "NONE".to_string()];
         let env = vec![("EDITOR".to_string(), "nvim".to_string())];
         let (_wid, pid) = r
-            .add_window(sid, "main", "/bin/nvim", &args, Some("/code"), &env, (80, 24))
+            .add_window(sid, "main", "/bin/nvim", &args, Some("/code"), &env, (80, 24), tear_types::Yurai::Unknown)
             .unwrap();
         let pane = &r.sessions[&sid].panes[&pid];
         assert_eq!(pane.args, args, "seed pane must record its spawn args");
@@ -208,7 +215,7 @@ mod tests {
         let mut r = Registry::new();
         let sid = r.create_session("work");
         let (wid, pid) = r
-            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24))
+            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24), tear_types::Yurai::Unknown)
             .unwrap();
         assert_eq!(r.locate_pane(pid), Some((sid, wid)));
     }

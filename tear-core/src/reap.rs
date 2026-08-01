@@ -114,6 +114,9 @@ mod tests {
 
     fn pane(id: u64, state: PaneState) -> TearPane {
         TearPane {
+            // A test fixture has no spawning connection, and `Unknown` is
+            // the honest answer for one.
+            yurai: tear_types::Yurai::Unknown,
             id: PaneId(id),
             shell: "/bin/sh".into(),
             args: vec![],

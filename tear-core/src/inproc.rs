@@ -855,45 +855,25 @@ impl MultiplexerControl for InProcess {
         source: tear_types::SessionSource,
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId> {
-        let size = (size_cells.0.max(1), size_cells.1.max(1));
-        // The embedder's cwd projection is the same value
-        // `spawn_pty_for` will apply, so recording it here keeps the
-        // typed pane record and the real child in agreement.
-        let cwd = self.spawn_env.read().cwd.clone();
-        let mut r = self.registry.write();
-        let sid = r.create_session(name);
-        // Stamp provenance on the typed session entry. The
-        // registry.create_session built it with Source::default()
-        // (Human); overwrite when the caller asked for something
-        // else.
-        if let Some(s) = r.sessions.get_mut(&sid) {
-            s.source = source.clone();
-        }
-        let Some((_wid, pane_id)) =
-            r.add_window(sid, "main", shell, args, cwd.as_deref(), &[], size)
-        else {
-            return Err(ControlError::Internal(anyhow::anyhow!(
-                "registry.add_window returned None after fresh create_session"
-            )));
-        };
-        drop(r); // release write lock before spawning PTY
-        if let Err(e) = self.spawn_pty_for(pane_id, shell, args, size) {
-            // Roll back the session — registry is small, easier to
-            // remove than to leave a sessionless typed entry.
-            self.registry.write().sessions.remove(&sid);
-            return Err(ControlError::Internal(e));
-        }
-        info!(
-            session = %sid,
-            name,
-            shell,
-            source = %source.label(),
-            cols = size.0,
-            rows = size.1,
-            "tear-core: new session"
-        );
-        Ok(sid)
+        self.new_session_yurai(name, shell, args, source, size_cells, tear_types::Yurai::Unknown)
     }
+
+    fn new_window(&self, session: SessionId, name: &str, shell: &str, args: &[String])
+        -> ControlResult<WindowId>
+    {
+        self.new_window_yurai(session, name, shell, args, tear_types::Yurai::Unknown)
+    }
+
+    fn split_pane(
+        &self,
+        origin: PaneId,
+        direction: tear_types::Direction,
+        shell: &str,
+        args: &[String],
+    ) -> ControlResult<PaneId> {
+        self.split_pane_yurai(origin, direction, shell, args, tear_types::Yurai::Unknown)
+    }
+
 
     fn rename_session(&self, id: SessionId, new_name: &str) -> ControlResult<()> {
         let mut r = self.registry.write();
@@ -918,26 +898,6 @@ impl MultiplexerControl for InProcess {
         Ok(())
     }
 
-    fn new_window(
-        &self,
-        session: SessionId,
-        name: &str,
-        shell: &str,
-        args: &[String],
-    ) -> ControlResult<WindowId> {
-        let size = (80, 24);
-        let cwd = self.spawn_env.read().cwd.clone();
-        let (wid, pid) = {
-            let mut r = self.registry.write();
-            r.add_window(session, name, shell, args, cwd.as_deref(), &[], size)
-                .ok_or(ControlError::NoSuchSession(session))?
-        };
-        if let Err(e) = self.spawn_pty_for(pid, shell, args, size) {
-            return Err(ControlError::Internal(e));
-        }
-        info!(session = %session, window = %wid, name, "tear-core: new window");
-        Ok(wid)
-    }
 
     fn kill_window(&self, id: WindowId) -> ControlResult<()> {
         let panes_to_kill: Vec<PaneId> = {
@@ -992,69 +952,6 @@ impl MultiplexerControl for InProcess {
         Err(ControlError::NoSuchWindow(id))
     }
 
-    fn split_pane(
-        &self,
-        origin: PaneId,
-        direction: Direction,
-        shell: &str,
-        args: &[String],
-    ) -> ControlResult<PaneId> {
-        // Correct split: replace ONLY the origin leaf in the window's
-        // layout tree with a balanced split (origin, new). Every other
-        // pane keeps its slot — no whole-window re-wrap. Geometry is
-        // reflowed from the tree afterwards (apply_layout_geometry).
-        let (sid, wid) = self
-            .registry
-            .read()
-            .locate_pane(origin)
-            .ok_or(ControlError::NoSuchPane(origin))?;
-        // Placeholder spawn size; apply_layout_geometry SIGWINCHes the
-        // real per-pane geometry right after the PTY is up.
-        let size = (80, 12);
-        let cwd = self.spawn_env.read().cwd.clone();
-        let pid = {
-            let mut r = self.registry.write();
-            let Some(s) = r.sessions.get_mut(&sid) else {
-                return Err(ControlError::NoSuchSession(sid));
-            };
-            let new_pid = crate::registry::mint_pane_id(wid, shell);
-            s.panes.insert(
-                new_pid,
-                TearPane {
-                    id: new_pid,
-                    shell: shell.into(),
-                    args: args.to_vec(),
-                    cwd: cwd.clone(),
-                    env: vec![],
-                    size_cells: size,
-                    origin_cells: (0, 0),
-                    state: tear_types::PaneState::Running,
-                    title: shell.into(),
-                    input_policy: tear_types::InputPolicy::default(),
-                },
-            );
-            // Split the matched leaf only. If `origin` isn't in this
-            // window's tree (it should be — we just located it), roll
-            // back the pane we inserted so we never leave an orphan.
-            let split_ok = s.windows.get_mut(&wid).is_some_and(|w| {
-                let ok = w.layout.split_leaf(origin, new_pid, direction, 0.5);
-                if ok {
-                    w.active_pane = new_pid;
-                }
-                ok
-            });
-            if !split_ok {
-                s.panes.remove(&new_pid);
-                return Err(ControlError::NoSuchPane(origin));
-            }
-            new_pid
-        };
-        self.spawn_pty_for(pid, shell, args, size)
-            .map_err(ControlError::Internal)?;
-        self.apply_layout_geometry(sid, wid);
-        info!(pane = %pid, "tear-core: split pane");
-        Ok(pid)
-    }
 
     fn kill_pane(&self, id: PaneId) -> ControlResult<()> {
         // NOTE pre-fix this was `self.ptys.lock().remove(&id);` — the
@@ -2293,5 +2190,162 @@ mod tests {
             .apply_layout(WindowId::from_seed("ghost"), LayoutKind::Tiled)
             .unwrap_err();
         assert!(matches!(err, ControlError::NoSuchWindow(_)));
+    }
+}
+
+/// Provenance-aware spawn verbs.
+///
+/// Inherent rather than trait methods: `MultiplexerControl` is
+/// implemented by backends with no provenance model (the tmux backend),
+/// and widening the trait would force them to carry a concept they cannot
+/// honour. The trait verbs delegate here with `Yurai::Unknown`.
+impl InProcess {
+
+    /// Spawn a session, recording WHO asked. See [`tear_types::yurai`].
+    pub fn new_session_yurai(
+        &self,
+        name: &str,
+        shell: &str,
+        args: &[String],
+        source: tear_types::SessionSource,
+        size_cells: (u16, u16),
+        yurai: tear_types::Yurai,
+    ) -> ControlResult<SessionId> {
+        let size = (size_cells.0.max(1), size_cells.1.max(1));
+        // The embedder's cwd projection is the same value
+        // `spawn_pty_for` will apply, so recording it here keeps the
+        // typed pane record and the real child in agreement.
+        let cwd = self.spawn_env.read().cwd.clone();
+        let mut r = self.registry.write();
+        let sid = r.create_session(name);
+        // Stamp provenance on the typed session entry. The
+        // registry.create_session built it with Source::default()
+        // (Human); overwrite when the caller asked for something
+        // else.
+        if let Some(s) = r.sessions.get_mut(&sid) {
+            s.source = source.clone();
+        }
+        let Some((_wid, pane_id)) =
+            r.add_window(sid, "main", shell, args, cwd.as_deref(), &[], size, yurai.clone())
+        else {
+            return Err(ControlError::Internal(anyhow::anyhow!(
+                "registry.add_window returned None after fresh create_session"
+            )));
+        };
+        drop(r); // release write lock before spawning PTY
+        if let Err(e) = self.spawn_pty_for(pane_id, shell, args, size) {
+            // Roll back the session — registry is small, easier to
+            // remove than to leave a sessionless typed entry.
+            self.registry.write().sessions.remove(&sid);
+            return Err(ControlError::Internal(e));
+        }
+        info!(
+            session = %sid,
+            name,
+            shell,
+            source = %source.label(),
+            cols = size.0,
+            rows = size.1,
+            "tear-core: new session"
+        );
+        Ok(sid)
+    }
+
+
+    /// Open a window, recording WHO asked.
+    pub fn new_window_yurai(
+        &self,
+        session: SessionId,
+        name: &str,
+        shell: &str,
+        args: &[String],
+        yurai: tear_types::Yurai,
+    ) -> ControlResult<WindowId> {
+        let size = (80, 24);
+        let cwd = self.spawn_env.read().cwd.clone();
+        let (wid, pid) = {
+            let mut r = self.registry.write();
+            r.add_window(session, name, shell, args, cwd.as_deref(), &[], size, yurai.clone())
+                .ok_or(ControlError::NoSuchSession(session))?
+        };
+        if let Err(e) = self.spawn_pty_for(pid, shell, args, size) {
+            return Err(ControlError::Internal(e));
+        }
+        info!(session = %session, window = %wid, name, "tear-core: new window");
+        Ok(wid)
+    }
+
+
+    /// Split a pane, recording WHO asked.
+    ///
+    /// The new pane inherits the provenance of the CONNECTION that asked
+    /// for the split, not of the pane it split from: an operator splitting
+    /// an agent's pane gets their own pane, and the brake leaves it alone.
+    pub fn split_pane_yurai(
+        &self,
+        origin: PaneId,
+        direction: Direction,
+        shell: &str,
+        args: &[String],
+        yurai: tear_types::Yurai,
+    ) -> ControlResult<PaneId> {
+        // Correct split: replace ONLY the origin leaf in the window's
+        // layout tree with a balanced split (origin, new). Every other
+        // pane keeps its slot — no whole-window re-wrap. Geometry is
+        // reflowed from the tree afterwards (apply_layout_geometry).
+        let (sid, wid) = self
+            .registry
+            .read()
+            .locate_pane(origin)
+            .ok_or(ControlError::NoSuchPane(origin))?;
+        // Placeholder spawn size; apply_layout_geometry SIGWINCHes the
+        // real per-pane geometry right after the PTY is up.
+        let size = (80, 12);
+        let cwd = self.spawn_env.read().cwd.clone();
+        let pid = {
+            let mut r = self.registry.write();
+            let Some(s) = r.sessions.get_mut(&sid) else {
+                return Err(ControlError::NoSuchSession(sid));
+            };
+            let new_pid = crate::registry::mint_pane_id(wid, shell);
+            s.panes.insert(
+                new_pid,
+                TearPane {
+                    id: new_pid,
+                    shell: shell.into(),
+                    args: args.to_vec(),
+                    cwd: cwd.clone(),
+                    env: vec![],
+                    size_cells: size,
+                    origin_cells: (0, 0),
+                    state: tear_types::PaneState::Running,
+                    title: shell.into(),
+                    input_policy: tear_types::InputPolicy::default(),
+                    // A split inherits the provenance of whoever asked
+                    // for the split — not of the pane it split from.
+                    yurai: yurai.clone(),
+                },
+            );
+            // Split the matched leaf only. If `origin` isn't in this
+            // window's tree (it should be — we just located it), roll
+            // back the pane we inserted so we never leave an orphan.
+            let split_ok = s.windows.get_mut(&wid).is_some_and(|w| {
+                let ok = w.layout.split_leaf(origin, new_pid, direction, 0.5);
+                if ok {
+                    w.active_pane = new_pid;
+                }
+                ok
+            });
+            if !split_ok {
+                s.panes.remove(&new_pid);
+                return Err(ControlError::NoSuchPane(origin));
+            }
+            new_pid
+        };
+        self.spawn_pty_for(pid, shell, args, size)
+            .map_err(ControlError::Internal)?;
+        self.apply_layout_geometry(sid, wid);
+        info!(pane = %pid, "tear-core: split pane");
+        Ok(pid)
     }
 }

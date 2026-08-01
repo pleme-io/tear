@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::id::PaneId;
+use crate::yurai::Yurai;
 
 /// One pane: the typed metadata about a running terminal session +
 /// its renderable state. The actual PTY handle, terminal-state-machine
@@ -50,6 +51,23 @@ pub struct TearPane {
     /// client identity in a future iteration.
     #[serde(default)]
     pub input_policy: InputPolicy,
+    /// Provenance — what kind of actor spawned this pane.
+    ///
+    /// Stamped ONCE at spawn from the creating connection's
+    /// [`crate::shutai::Shutai`] and never rewritten. This is the field
+    /// `freio` filters on: the brake stops automation-driven panes and
+    /// leaves the operator's own alone.
+    ///
+    /// It is a lossy PROJECTION of a shutai, not a shutai, and the reason
+    /// is structural — a pane outlives the connection that made it, and
+    /// `Shutai` deliberately has no `Deserialize` while this struct
+    /// derives one, so holding a live identity here does not compile. See
+    /// [`crate::yurai`].
+    ///
+    /// `#[serde(default)]` → [`Yurai::Unknown`], which is exactly what a
+    /// record from a pre-yurai daemon honestly means.
+    #[serde(default)]
+    pub yurai: Yurai,
 }
 
 /// Input acceptance policy for a single pane. Per-pane (not
@@ -217,6 +235,7 @@ mod tests {
             state: PaneState::Running,
             title: "zsh".into(),
             input_policy: InputPolicy::default(),
+            yurai: Yurai::Unknown,
         };
         assert_eq!(p.state, PaneState::Running);
         assert_eq!(p.size_cells, (120, 40));

@@ -143,6 +143,8 @@ impl MockBackend {
             state: tear_types::pane::PaneState::Running,
             title: shell.into(),
             input_policy: InputPolicy::default(),
+            // The double has no connection to derive provenance from.
+            yurai: tear_types::Yurai::Unknown,
         }
     }
 

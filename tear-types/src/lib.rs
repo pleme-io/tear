@@ -45,6 +45,7 @@ pub mod control;
 #[cfg(feature = "engate")]
 pub mod engate_wrap;
 pub mod direction;
+pub mod freio;
 pub mod geometry;
 pub mod graphics;
 pub mod host_role;
@@ -64,15 +65,18 @@ pub mod statusbar;
 pub mod theme;
 pub mod window;
 pub mod wire;
+pub mod yurai;
 
 pub use capability::{Capability, DaemonHello, DaemonIdentity};
 pub use control::{ControlError, ControlResult, MultiplexerControl};
 pub use direction::{Direction, SplitOrientation};
 pub use geometry::Rect;
+pub use freio::{Admission, Freio, RefusalReason};
 pub use graphics::{Graphic, GraphicProtocol, GRAPHIC_PAYLOAD_MAX};
 pub use host_role::{HostRole, TearCaps};
 pub use modes::{ModeSet, MouseTracking};
 pub use shutai::{Attested, Declared, Shutai};
+pub use yurai::Yurai;
 pub use id::{DefinitionId, InstanceId, PaneId, SessionId, WindowId};
 pub use keybind::{Action, KeyBind, KeyChord, KeyTable, KeyTableName};
 pub use layout::{LayoutError, LayoutKind, LayoutNode, LeafRemoval, Size, MIN_RATIO};
