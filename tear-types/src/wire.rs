@@ -1087,4 +1087,51 @@ mod tests {
         let err = read_msg::<_, Request>(&mut cur).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
+
+    /// No `Request` variant may carry a `TearPane` — the guard `yurai.rs`
+    /// says exists.
+    ///
+    /// `Shutai` closed the payload-identity door by having no `Deserialize`,
+    /// so a peer cannot hand the daemon an identity. `Yurai` **must** derive
+    /// `Deserialize` — it rides outbound inside `TearPane` inside a
+    /// `Response` that clients decode — which structurally reopens that door
+    /// one tier lower. What holds it shut is only this: no inbound `Request`
+    /// carries a `TearPane`, so a peer's bytes have no route into the
+    /// daemon's pane records.
+    ///
+    /// `yurai.rs` names that ceiling exactly — *"adding any request that
+    /// carries a `TearPane` silently restores the payload path"* — and
+    /// states it is *"guarded by a source scan, not by the type."* **It was
+    /// not.** The only source scan in this crate was `shutai.rs`'s; this one
+    /// was claimed in prose and never written (found 2026-08-01 while
+    /// checking an adversarial review's hit against the actual tree). A
+    /// ceiling documented but unguarded is worse than one left undocumented,
+    /// because a reader budgets trust against the claim.
+    ///
+    /// Tier: **CI-caught**, and it cannot be otherwise — "this enum does not
+    /// mention that type" is not a property Rust can state about itself.
+    #[test]
+    fn no_request_variant_carries_a_tearpane() {
+        let src = include_str!("wire.rs");
+        let body = src
+            .split_once("pub enum Request {")
+            .expect("Request enum must exist")
+            .1
+            .split_once("\n}")
+            .expect("Request enum must terminate")
+            .0;
+        assert!(
+            body.len() > 200,
+            "scan found only {} bytes of Request — the parser has broken, and \
+             a broken parser here reports FALSE SAFETY",
+            body.len()
+        );
+        assert!(
+            !body.contains("TearPane"),
+            "a Request variant now carries a TearPane, which restores the \
+             peer-supplied-provenance path Shutai's missing Deserialize \
+             closed: a client could hand the daemon a pane whose `yurai` it \
+             chose. Carry a PaneId and let the daemon resolve it."
+        );
+    }
 }
