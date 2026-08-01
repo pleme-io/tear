@@ -154,6 +154,21 @@ impl PaneRecording {
             .started_at_unix_ms
     }
 
+    /// Backdate the epoch anchor. **Tests only.**
+    ///
+    /// Exists because the header-timestamp invariant cannot be tested
+    /// without it: `enable()` and export happen in the same wall-clock
+    /// second, so a correct implementation and one that stamps
+    /// `SystemTime::now()` produce identical output. Backdating is what
+    /// makes the two distinguishable without a `sleep`.
+    #[cfg(test)]
+    pub(crate) fn set_epoch_anchor_for_test(&self, unix_ms: u64) {
+        self.enabled
+            .lock()
+            .expect("recording state poisoned")
+            .started_at_unix_ms = Some(unix_ms);
+    }
+
     /// Whether recording is currently capturing new events.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
@@ -203,6 +218,10 @@ impl PaneRecording {
             "version": 2,
             "width": g.cols,
             "height": g.rows,
+            // The RECORDING START, not the export time. See
+            // `RecordingState::started_at_unix_ms`. Falls back to now()
+            // only when nothing was ever recorded, where there is no
+            // start to report and the header value is meaningless anyway.
             // The RECORDING START, not the export time. See
             // `RecordingState::started_at_unix_ms`. Falls back to now()
             // only when nothing was ever recorded, where there is no
@@ -274,8 +293,18 @@ mod tests {
         r.push(b"x");
         let anchor = r.epoch_anchor().expect("enabled recording has an anchor");
 
-        // Stand in for "exported later" without sleeping: the header must
-        // agree with the anchor taken at enable(), not with a fresh now().
+        // ★ The discrimination this test exists for. A first draft simply
+        // exported and compared against the anchor — and PASSED with the
+        // bug restored, because enable() and export land in the same
+        // wall-clock second, so `now()` and the anchor are equal. A test
+        // that cannot tell the two implementations apart proves nothing.
+        //
+        // So: backdate the anchor by an hour, standing in for "this cast
+        // was exported an hour after it was recorded" without sleeping.
+        // Only an implementation that READS the anchor can report it.
+        let backdated = anchor - 3_600_000;
+        r.set_epoch_anchor_for_test(backdated);
+
         let json = r.to_cast_json();
         let header: serde_json::Value =
             serde_json::from_str(json.lines().next().unwrap()).unwrap();
@@ -283,10 +312,11 @@ mod tests {
 
         assert_eq!(
             ts,
-            anchor / 1000,
-            "header timestamp must be the recording start ({}), not the \
-             export time — a cast that misreports when it was recorded is \
-             worse than one with no timestamp",
+            backdated / 1000,
+            "header timestamp must be the RECORDING START ({}), not the \
+             export time ({}) — a cast that misreports when it was \
+             recorded is worse than one carrying no timestamp at all",
+            backdated / 1000,
             anchor / 1000
         );
     }
