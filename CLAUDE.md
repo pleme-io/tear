@@ -1,5 +1,20 @@
 # tear — Claude Orientation
 
+pending-quadro: `tear/src/top.rs` depends on **ratatui directly** (3 use-sites;
+`tear/Cargo.toml` pins `ratatui = "0.30"`), which deviates from QUADRO's "widget
+logic lands in egaku, never in ratatui". Declared 2026-08-01 rather than fixed,
+with the trade-off stated so the next reader can re-decide instead of
+re-discovering: the compliant form is `moldura::ratatui` (moldura is a facade
+re-exporting ratatui/crossterm/egaku/egaku-term/shikumi, and its ratatui is the
+same 0.30), but adopting it pulls the whole TUI stack into the **multiplexer
+daemon** repo to serve one small `tear top` dashboard. That cost is plausibly
+worse than the deviation, so this is a real decision and not an oversight.
+
+**What makes it a defect today is that it was UNDECLARED**, not that it exists —
+an undeclared deviation is invisible to an audit, a declared one is a row.
+Revisit if `tear top` grows real widget logic, at which point the dependency
+earns its keep and the trade-off flips.
+
 > **★★★ CSE / Knowable Construction.** This repo operates under
 > **Constructive Substrate Engineering** — canonical specification at
 > [`pleme-io/theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md).
