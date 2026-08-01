@@ -291,7 +291,20 @@ fn a_current_daemon_answers_the_probe_and_accepts_args() {
         "the daemon reports its own version"
     );
     assert!(client.daemon().has(Capability::SpawnArgs));
-    assert_eq!(client.daemon().capability_names(), vec!["spawn-args"]);
+    assert!(client.daemon().has(Capability::PaneYurai));
+    assert!(client.daemon().has(Capability::Freio));
+    // The exact list a LIVE daemon advertises. Kept exact rather than
+    // relaxed to `has`: this assert is what makes adding a capability a
+    // conscious act, and it caught the freio/yurai addition at the
+    // integration level rather than in a unit test.
+    //
+    // SORTED, not in `Capability::ALL` order — `capability_names()`
+    // returns a sorted view, which is the right contract for a set and is
+    // what this assert pins.
+    assert_eq!(
+        client.daemon().capability_names(),
+        vec!["freio", "pane-yurai", "spawn-args"]
+    );
 
     // And the trait-level view agrees, so a consumer holding a
     // `&dyn MultiplexerControl` gates the same way.

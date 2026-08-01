@@ -894,19 +894,39 @@ pub fn serve_connection_shutai<S: io::Read + io::Write>(
         // at the pane's input_policy. If it's `Leader(want)` and the
         // connection's client_id doesn't match, reject locally.
         if let Request::SendKeys { id, .. } = &req {
-            if let Ok(pane) = inproc.get_pane(*id) {
-                if let Some(want) = pane.input_policy.leader_id() {
-                    if client_id != Some(want) {
-                        let resp = Response::Err(tear_types::wire::WireError::Rejected(
-                            format!(
-                                "leader policy: pane {id:?} requires client_id={want}, \
-                                 connection identified as {client_id:?}"
-                            ),
-                        ));
-                        write_msg(&mut stream, &resp)?;
-                        continue;
-                    }
+            // Resolved through `TearSession::admits`, NOT by reading
+            // `pane.input_policy` here. That distinction is the whole
+            // point: the brake lives on the session, so a gate that peeks
+            // at the pane alone cannot see it — an agent-driven pane would
+            // sail straight through a freio the operator had engaged.
+            let admission = inproc
+                .with_registry(|r| r.locate_pane(*id).and_then(|(sid, _)| {
+                    r.sessions.get(&sid).and_then(|s| s.admits(*id))
+                }));
+            match admission {
+                Some(tear_types::Admission::Refuse(tear_types::RefusalReason::Freio)) => {
+                    let resp = Response::Err(tear_types::wire::WireError::Rejected(format!(
+                        "freio engaged: pane {id:?} is agent-driven and braked. \
+                         The operator releases it with `tear freio --release`."
+                    )));
+                    write_msg(&mut stream, &resp)?;
+                    continue;
                 }
+                Some(tear_types::Admission::OnlyLeader { id: want }) if client_id != Some(want) => {
+                    let resp = Response::Err(tear_types::wire::WireError::Rejected(format!(
+                        "leader policy: pane {id:?} requires client_id={want}, \
+                         connection identified as {client_id:?}"
+                    )));
+                    write_msg(&mut stream, &resp)?;
+                    continue;
+                }
+                // `Refuse(Policy)` deliberately falls through: tear-core's
+                // own `Locked` check still runs and owns that refusal. Two
+                // gates answering one question is the shape being retired,
+                // not widened — this one takes the cases tear-core
+                // structurally cannot see (client identity, and now the
+                // session-level brake).
+                _ => {}
             }
         }
         // Subscribe promotes the connection to push mode.
@@ -1106,6 +1126,15 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         }
         Request::ApplyLayout { window, kind } => map_unit(inproc.apply_layout(window, kind)),
         Request::SendKeys { id, bytes } => map_unit(inproc.send_keys(id, &bytes)),
+        Request::SetFreio { session, engaged } => {
+            let (sessions, braked, unbrakable) = inproc.set_freio(session, engaged);
+            Response::Freio { sessions, braked, unbrakable }
+        }
+        Request::GetFreio => Response::Freio {
+            sessions: inproc.freio_state(),
+            braked: Vec::new(),
+            unbrakable: Vec::new(),
+        },
         Request::SetInputPolicy { id, policy } => {
             map_unit(inproc.set_input_policy(id, policy))
         }
@@ -1553,6 +1582,99 @@ mod tests {
     // The serve loop reads via `read_frame` now; the tests still
     // decode single frames the simple way.
     use tear_types::wire::read_msg;
+
+    /// ── freio, end to end through the daemon ────────────────────
+    ///
+    /// The type-level rows live in `tear-types`. These prove the brake is
+    /// REACHABLE: that a wire request reaches the registry and that the
+    /// SendKeys gate consults the session rather than peeking at the pane.
+    #[test]
+    fn set_freio_engages_and_reports_what_it_could_not_reach() {
+        let inproc = InProcess::new();
+        let sid = inproc
+            .new_session_yurai(
+                "braked",
+                "/bin/sh",
+                &[],
+                tear_types::SessionSource::Agent,
+                (80, 24),
+                tear_types::Yurai::Automation { label: Some("claude".into()) },
+            )
+            .unwrap();
+
+        let resp = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
+        let Response::Freio { sessions, braked, unbrakable } = resp else {
+            panic!("expected Response::Freio, got {resp:?}");
+        };
+        assert!(
+            sessions.iter().any(|(id, f)| *id == sid && f.is_engaged()),
+            "the session must record the brake"
+        );
+        assert_eq!(braked.len(), 1, "the agent pane is braked");
+        assert!(
+            unbrakable.is_empty(),
+            "every pane here has known provenance"
+        );
+
+        // And the gate agrees.
+        let pane = braked[0];
+        let admission = inproc.with_registry(|r| {
+            r.locate_pane(pane)
+                .and_then(|(s, _)| r.sessions.get(&s).and_then(|s| s.admits(pane)))
+        });
+        assert_eq!(
+            admission,
+            Some(tear_types::Admission::Refuse(tear_types::RefusalReason::Freio))
+        );
+    }
+
+    /// ★ The honest miss, reported through the wire rather than hidden.
+    #[test]
+    fn a_pane_of_unknown_provenance_is_reported_as_unreached() {
+        let inproc = InProcess::new();
+        // The plain trait verb — no provenance, which is exactly the
+        // tmux-backend / pre-yurai case.
+        inproc.new_session("legacy", "/bin/sh").unwrap();
+
+        let resp = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
+        let Response::Freio { braked, unbrakable, .. } = resp else {
+            panic!("expected Response::Freio");
+        };
+        assert!(braked.is_empty(), "nothing to brake — provenance unknown");
+        assert_eq!(
+            unbrakable.len(),
+            1,
+            "the operator MUST be told this pane kept accepting input;              silence here would let them believe everything stopped"
+        );
+    }
+
+    /// Release clears the brake rather than setting panes free.
+    #[test]
+    fn releasing_the_brake_restores_input() {
+        let inproc = InProcess::new();
+        inproc
+            .new_session_yurai(
+                "a",
+                "/bin/sh",
+                &[],
+                tear_types::SessionSource::Agent,
+                (80, 24),
+                tear_types::Yurai::Automation { label: None },
+            )
+            .unwrap();
+
+        let _ = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
+        let _ = dispatch(&inproc, Request::SetFreio { session: None, engaged: false });
+
+        let resp = dispatch(&inproc, Request::GetFreio);
+        let Response::Freio { sessions, .. } = resp else {
+            panic!("expected Response::Freio");
+        };
+        assert!(
+            sessions.iter().all(|(_, f)| !f.is_engaged()),
+            "release must clear every brake"
+        );
+    }
 
     /// ── SessionSource derivation rows ───────────────────────────
     ///

@@ -255,6 +255,24 @@ pub enum Request {
         id: PaneId,
         policy: crate::pane::InputPolicy,
     },
+    /// Engage or release the operator's brake — see [`crate::freio`].
+    ///
+    /// `None` for `session` means EVERY session: the one-gesture panic
+    /// ergonomics live here, in the verb, rather than in a daemon-global
+    /// flag that could drift out of sync with the per-session records it
+    /// is supposed to describe.
+    ///
+    /// **A `bool`, deliberately not a `Freio`.** `Freio::Engaged` carries
+    /// `at_unix`, and a peer must not be able to supply it — the daemon
+    /// stamps the time. The same discipline that made `SessionSource`
+    /// derived rather than declared: if this variant carried a `Freio`,
+    /// a backdated brake would have a wire syntax.
+    SetFreio {
+        session: Option<SessionId>,
+        engaged: bool,
+    },
+    /// Read the brake state of every session.
+    GetFreio,
     /// Promote this connection to a config-change subscription.
     /// The daemon responds with `Response::Ok` then emits one
     /// `Response::ConfigChanged(yaml)` frame every time the live
@@ -369,6 +387,22 @@ pub enum Response {
     /// currently-attached byte-stream subscribers for that pane.
     /// Includes the requester if it has an outstanding subscribe.
     SubscriberCount(u32),
+    /// Reply to `Request::SetFreio` / `Request::GetFreio`.
+    Freio {
+        /// Every session's brake state after the call.
+        sessions: Vec<(SessionId, crate::freio::Freio)>,
+        /// Panes this call actually braked.
+        braked: Vec<PaneId>,
+        /// ★ Panes the brake could NOT reach, because their provenance is
+        /// unknown (a tmux-backend pane, a pane from a pre-yurai daemon).
+        ///
+        /// **Never elided and never empty-by-convention.** An operator who
+        /// pressed a panic button must be told what it did not stop;
+        /// silence here would let them believe everything halted. This is
+        /// the honest cost of not braking `Unknown` panes — see
+        /// [`crate::session::TearSession::admits`].
+        unbrakable: Vec<PaneId>,
+    },
     /// Pushed by the daemon on every live-config replace, to
     /// every connection that issued `Request::SubscribeConfigChange`.
     /// Payload is the new config as YAML — same shape as

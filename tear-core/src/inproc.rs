@@ -2193,6 +2193,68 @@ mod tests {
     }
 }
 
+impl InProcess {
+    /// Engage or release the operator's brake — see [`tear_types::freio`].
+    ///
+    /// `session: None` means every session; that is the one-gesture panic
+    /// path. Returns, in order: every session's state after the call, the
+    /// panes actually braked, and — critically — the panes the brake could
+    /// NOT reach because their provenance is unknown.
+    ///
+    /// That third list is not diagnostics. An operator who pressed a panic
+    /// button must be told what it did not stop, or they will believe
+    /// everything halted.
+    ///
+    /// `at_unix` is stamped HERE, from the daemon's clock. No caller
+    /// supplies it, so a backdated brake has no code path.
+    pub fn set_freio(
+        &self,
+        session: Option<SessionId>,
+        engaged: bool,
+    ) -> (Vec<(SessionId, tear_types::Freio)>, Vec<PaneId>, Vec<PaneId>) {
+        let at_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let next = if engaged {
+            tear_types::Freio::Engaged { at_unix }
+        } else {
+            tear_types::Freio::Released
+        };
+
+        let mut r = self.registry.write();
+        let mut braked = Vec::new();
+        let mut unbrakable = Vec::new();
+        for (sid, s) in r.sessions.iter_mut() {
+            if session.is_some_and(|want| want != *sid) {
+                continue;
+            }
+            s.freio = next;
+            if engaged {
+                for (pid, p) in &s.panes {
+                    if p.yurai.is_automation() {
+                        braked.push(*pid);
+                    } else if matches!(p.yurai, tear_types::Yurai::Unknown) {
+                        unbrakable.push(*pid);
+                    }
+                }
+            }
+        }
+        let states = r.sessions.iter().map(|(id, s)| (*id, s.freio)).collect();
+        (states, braked, unbrakable)
+    }
+
+    /// Every session's brake state.
+    #[must_use]
+    pub fn freio_state(&self) -> Vec<(SessionId, tear_types::Freio)> {
+        self.registry
+            .read()
+            .sessions
+            .iter()
+            .map(|(id, s)| (*id, s.freio))
+            .collect()
+    }
+}
+
 /// Provenance-aware spawn verbs.
 ///
 /// Inherent rather than trait methods: `MultiplexerControl` is

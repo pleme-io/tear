@@ -63,19 +63,45 @@ pub enum Capability {
     /// That silent drop is the failure this whole module exists to
     /// convert into a legible refusal.
     SpawnArgs,
+    /// The daemon stamps `TearPane::yurai` at spawn from the connection's
+    /// shutai, so a pane records WHAT KIND of actor created it.
+    ///
+    /// Gates provenance READS (`tear list` showing which panes an agent
+    /// drives) and is useful with or without a brake. A daemon without it
+    /// reports every pane as `Yurai::Unknown` — which is honest, and is
+    /// also exactly why `freio` cannot brake `Unknown`.
+    PaneYurai,
+    /// The daemon reads `Request::SetFreio` / `Request::GetFreio`.
+    ///
+    /// Independent of `PaneYurai` in one direction only: freio WITHOUT
+    /// yurai is meaningless (nothing to filter on), yurai without freio is
+    /// useful on its own. They ship in that order and a client can tell.
+    ///
+    /// This capability is the reason a panic button cannot fail silently:
+    /// an old daemon would drop `SetFreio` as an unknown variant and
+    /// answer a legible `Rejected`, but the CLI must `require()` it FIRST
+    /// so the operator sees a typed refusal rather than a wire error on
+    /// the one command where "nothing happened" is unacceptable.
+    Freio,
 }
 
 impl Capability {
     /// Every capability name this build's *vocabulary* knows. Not the
     /// same thing as what a given daemon advertises — see
     /// [`Capability::advertised`].
-    pub const ALL: &'static [Capability] = &[Capability::SpawnArgs];
+    pub const ALL: &'static [Capability] = &[
+        Capability::SpawnArgs,
+        Capability::PaneYurai,
+        Capability::Freio,
+    ];
 
     /// The on-wire name. Kebab-case, names the field or behaviour.
     #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
             Capability::SpawnArgs => "spawn-args",
+            Capability::PaneYurai => "pane-yurai",
+            Capability::Freio => "freio",
         }
     }
 
@@ -99,7 +125,7 @@ impl Capability {
     #[must_use]
     pub fn advertised(self) -> bool {
         match self {
-            Capability::SpawnArgs => true,
+            Capability::SpawnArgs | Capability::PaneYurai | Capability::Freio => true,
         }
     }
 }
@@ -275,16 +301,32 @@ mod tests {
                 Capability::SpawnArgs => {
                     assert!(Capability::ALL.contains(&Capability::SpawnArgs));
                 }
+                Capability::PaneYurai => {
+                    assert!(Capability::ALL.contains(&Capability::PaneYurai));
+                }
+                Capability::Freio => {
+                    assert!(Capability::ALL.contains(&Capability::Freio));
+                }
             }
         }
-        assert_eq!(Capability::ALL.len(), 1, "update this count with the vocabulary");
+        assert_eq!(Capability::ALL.len(), 3, "update this count with the vocabulary");
     }
 
     #[test]
-    fn this_builds_hello_advertises_spawn_args() {
+    fn this_builds_hello_advertises_every_implemented_capability() {
         let hello = DaemonHello::for_this_build("9.9.9");
         assert_eq!(hello.daemon_version, "9.9.9");
-        assert_eq!(hello.capabilities, vec!["spawn-args".to_owned()]);
+        // The exact vec, in ALL order. Deliberately not a `contains` —
+        // this assert IS the forcing function that makes adding a
+        // capability a conscious act rather than a silent one.
+        assert_eq!(
+            hello.capabilities,
+            vec![
+                "spawn-args".to_owned(),
+                "pane-yurai".to_owned(),
+                "freio".to_owned(),
+            ]
+        );
     }
 
     #[test]
