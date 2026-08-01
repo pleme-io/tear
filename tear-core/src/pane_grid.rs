@@ -1703,6 +1703,103 @@ mod host_role_rows {
     }
 }
 
+/// Measurements, not assertions.
+///
+/// `#[ignore]` on purpose: these print timings and would be flaky as
+/// gates. They exist so a perf claim about this file can be RE-MEASURED
+/// rather than argued, per the fleet rule that perf decisions come from
+/// profiled wall-clock and not from reading the code.
+///
+/// Run with:
+/// ```text
+/// cargo test --release -p tear-core --lib perf_measurements -- --ignored --nocapture
+/// ```
+///
+/// ## Measured 2026-07-31 (aarch64-darwin, release)
+///
+/// | scrollback rows | `snapshot()` |
+/// |---|---|
+/// | 977 | 127 µs |
+/// | 9,977 | 2.15 ms |
+/// | 99,977 | **16.2 ms** |
+///
+/// Linear at roughly **0.16 µs/row**, which is the honest consequence of
+/// `DEFAULT_SCROLLBACK_ROWS = usize::MAX`: the snapshot cost of a
+/// long-lived pane is unbounded because its history is.
+///
+/// **Not currently a defect, and the reason matters.** `snapshot()` is not
+/// on the per-frame render path — bytes reach a renderer through the
+/// subscriber stream, and snapshots are taken on session switch, on
+/// initial subscribe, and for MCP reads. At 100k rows a switch pays ~16 ms
+/// once, which is perceptible but not a stall.
+///
+/// **The lever, if it ever is hot:** bound what a snapshot CARRIES rather
+/// than what the grid keeps — the visible grid plus N scrollback rows —
+/// or let `PaneSnapshot` borrow instead of own. Do not shrink the
+/// scrollback itself; "never lose anything" is a product decision, not an
+/// accident.
+///
+/// This measurement is also what settled `Cell`'s representation: with
+/// clones this large, keeping `Cell: Copy` makes them a memcpy instead of
+/// a per-cell branch. See `Cell::combining`.
+#[cfg(test)]
+mod perf_measurements {
+    use super::*;
+    use std::time::Instant;
+
+    /// `snapshot()` clones the entire scrollback, and the default cap is
+    /// `usize::MAX`. This is the cost that decided `Cell` stays `Copy`;
+    /// it deserves a number rather than an intuition.
+    #[test]
+    #[ignore = "measurement, not an assertion"]
+    fn snapshot_cost_by_scrollback_depth() {
+        for rows in [1_000usize, 10_000, 100_000] {
+            let mut g = PaneGrid::new(80, 24);
+            for i in 0..rows {
+                g.feed(format!("line {i} with some ordinary ascii payload\r\n").as_bytes());
+            }
+            // Warm, then measure a small batch.
+            let _ = g.snapshot();
+            let t = Instant::now();
+            const N: u32 = 10;
+            for _ in 0..N {
+                let s = g.snapshot();
+                std::hint::black_box(&s);
+            }
+            let per = t.elapsed() / N;
+            let sb = g.snapshot().scrollback.len();
+            println!("scrollback {sb:>7} rows -> snapshot {per:?} each");
+        }
+    }
+
+    /// Does the combining table cost anything when nothing uses it? It is
+    /// cloned wholesale into every snapshot.
+    #[test]
+    #[ignore = "measurement, not an assertion"]
+    fn snapshot_cost_with_and_without_combining_marks() {
+        let mut plain = PaneGrid::new(80, 24);
+        let mut marked = PaneGrid::new(80, 24);
+        for _ in 0..5_000 {
+            plain.feed(b"plain ascii line here\r\n");
+            marked.feed("ma\u{301}rked li\u{308}ne he\u{301}re\r\n".as_bytes());
+        }
+        for (name, g) in [("plain", &plain), ("marked", &marked)] {
+            let _ = g.snapshot();
+            let t = Instant::now();
+            const N: u32 = 10;
+            for _ in 0..N {
+                std::hint::black_box(g.snapshot());
+            }
+            let s = g.snapshot();
+            println!(
+                "{name:>7}: snapshot {:?} each, combining table {} entries",
+                t.elapsed() / N,
+                s.combining.len()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
