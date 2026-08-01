@@ -29,9 +29,9 @@ The two repos are coupled by design. The compounding shape:
 | Allocator | `#[global_allocator] mimalloc` | `#[global_allocator] mimalloc` | Same crate. |
 | Lock primitive | `parking_lot::RwLock<Terminal>` | `parking_lot::RwLock<Registry>` | Same crate. |
 | PTY library | (transitive) `portable-pty` | `portable-pty` directly via `tear-core::pty::PtyHandle` | Same crate. |
-| Pane domain | `mado::pane::*` (legacy; tier-3 rebases onto tear) | `tear-types::{TearPane, TearWindow, TearSession, LayoutNode}` | `tear-types` — pure typed surface, no I/O. |
-| Pane state machine | `mado::tab::*` (legacy) | `tear_core::InProcess` (canonical) | At M5 mado rebases its tab/pane modules onto `InProcess`. |
-| Multiplexer trait | `kaname` MCP tools call → `tear_client::Client` | `tear_types::MultiplexerControl` (the universal trait) | The trait is the wire format between mado-as-driver and tear-as-multiplexer. |
+| Pane domain | **none — deleted at Phase 4** | `tear-types::{TearPane, TearWindow, TearSession, LayoutNode}` | `tear-types` — pure typed surface, no I/O. |
+| Pane state machine | **none — deleted at Phase 4** | `tear_core::InProcess` (canonical) | mado links `tear-core` and runs `InProcess` **in-process** by default (no daemon, no socket). |
+| Multiplexer trait | mado's **rmcp** MCP server (18 `tear_*` tools) → `tear_client::Client` | `tear_types::MultiplexerControl` (the universal trait) | The trait is the wire format between mado-as-driver and tear-as-multiplexer. |
 
 **Result:** mado and tear are not "two separate apps that happen to
 work together" — they're two views over a single typed substrate.
@@ -45,16 +45,30 @@ Adding a new pane operation lands in one place (`tear-types::MultiplexerControl`
 | `tear-types` | Pure typed domain — `SessionId`/`WindowId`/`PaneId` (BLAKE3-derived), `TearSession`/`TearWindow`/`TearPane`/`LayoutNode`/`KeyTable`/`StatusBar`/`TearTheme`, the `MultiplexerControl` trait. No I/O. | **shipped** |
 | `tear-config` | Shikumi-style live config — `~/.config/tear/tear.yaml` parser, `LiveConfig` w/ `ArcSwap<TearConfig>`, hot-reload via `notify`. Same pattern mado uses. | **shipped** |
 | `tear-core` | Runtime: `InProcess` impl of `MultiplexerControl`, `Registry` typed state, `PtyHandle` (via `portable-pty`). | **shipped** (M0 minimum-viable; M2 wires real layout + per-pane vte parsing) |
-| `tear-daemon` | Long-running server. Owns sessions across client disconnects. UDS RPC. Wraps `tear-core::InProcess`. | scaffold (M2) |
-| `tear-client` | Typed RPC client. Consumed by the `tear` bin, by mado at Tier 2, by remote operators over SSH. Implements `MultiplexerControl` so remote ≡ local from the consumer's perspective. | scaffold (M2) |
+| `tear-daemon` | Long-running server. Owns sessions across client disconnects. Length-prefixed CBOR over UDS (or `--tcp`). Wraps `tear-core::InProcess`. | **shipped + LIVE** (3,192 LOC; runs as a user launchd/systemd unit from a Nix store path) |
+| `tear-client` | Typed RPC client. Consumed by the `tear` bin, by mado, by remote operators over SSH. Implements `MultiplexerControl` so remote ≡ local from the consumer's perspective. | **shipped** (2,476 LOC) |
 | `tear-tmux-backend` | Renders a typed `TearConfig` → `tmux.conf`. The M0 path AND the permanent escape hatch for remote hosts that have tmux but not tear. | **shipped** |
-| `tear` (bin) | Multi-call CLI: `up`/`list`/`render`/`config-check`/`config-path`. GH releases via `rust-workspace-release-flake.nix`. | **shipped** |
+| `praca` | Session orchestration: project-root→emoji-name hashing, frecency, project↔session bindings, cd-driven attach, the definition↔instance algebra. Time is injected — never reads a clock. | **shipped** (3,915 LOC) |
+| `tear-ws-bridge` | Re-frames the same CBOR wire over WebSocket. | **shipped** (395 LOC) |
+| `mado-web` | wasm32 browser client. **Skeleton** — streams raw bytes into a `<pre>`; no cell grid, no glyph atlas, no input path. Out-of-workspace, own `Cargo.lock`. | skeleton |
+| `tear` (bin) | Multi-call CLI, ~24 subcommands: `up`/`list`/`kill`/`rename`/`attach`/`top`/`mcp`/`daemon`/`blocks`/`block`/`history`/`replay`/`audit`/`ai`/`snapshot`/`migrate`/`pane-input`/`pane-info`/`pane-record`/`render`/`status`/`config-*`. GH releases via `rust-workspace-release-flake.nix`. | **shipped** |
+
+> **★ `attach` does NOT render.** It connects, prints the session list, and
+> exits — and it silently discards its target argument (`let _ = target;`).
+> **There is no interactive attach client and none is planned as a tear
+> artifact.** Rendering is mado's job, or real tmux's via
+> `tear render --backend tmux`. Do not read "shipped" above as "usable as a
+> tmux replacement inside another terminal" — it is not.
 
 ## Build & run
 
 ```bash
 cargo check --workspace          # whole tree
-cargo test  --workspace          # 20+ tests across crates
+cargo test  --workspace          # 524 #[test]/#[tokio::test] attributes
+                                 # NOTE: no automated green receipt — ci.yml is
+                                 # disabled_manually AND repo Actions are off in
+                                 # org.yaml. Its history is 76 runs / 76 failures
+                                 # / 0 successes. Run it locally; do not assume.
 nix run .#tear -- --help         # via substrate's workspace builder
 
 # Live shikumi config — same pattern as mado
@@ -101,10 +115,19 @@ authoring either learn one mental model.
 
 - **M0** ✅ — `tear-types` + `tear-config` + `tear-core` + `tear-tmux-backend` + `tear` CLI all shipped. Workspace compiles + tests green. Replace blackmatter-shell's dormant tmux module by sourcing `tear render --backend tmux`.
 - **M1** — Status-bar refresh loop on a tokio task; expose `TearTheme` resolution against ishou-tokens runtime.
-- **M2** — `tear-daemon` + `tear-client` UDS RPC. `tear list` / `tear attach` route through the daemon. Persistence across client detach.
-- **M3** — tmux `.tmux.conf` parser + format-string evaluator → existing tmux configs drop in.
-- **M4** — mado integration: `kaname` MCP tools route through `tear-client`. mado can spawn / split / kill panes in a tear-daemon-owned session over UDS.
-- **M5** — mado `pane.rs` / `tab.rs` rewritten on top of `tear_core::InProcess`. The substrate has one source of truth for pane semantics: tear is the single owner of the typed pane state machine.
+- **M2** ✅ — `tear-daemon` + `tear-client` CBOR-over-UDS RPC shipped and live; sessions persist across client detach (`Durability::ProcessBound` — a session outlives its client, but **not** a daemon restart).
+- **M3** — tmux `.tmux.conf` parser + format-string evaluator → existing tmux configs drop in. **Zero code today**; the tmux relationship is one-way (tear config → tmux.conf), never the reverse.
+- **M4** ✅ — mado integration: mado's rmcp server exposes 18 `tear_*` tools; mado can spawn / split / kill panes. Default runtime is **embedded `InProcess`**, not the daemon.
+- **M5** — the no-overlap endpoint, and the live work: **(a)** mado renders multi-pane from `compute_rects` — the model is correct and nothing draws it, because `render_multi_pane` was deleted at Phase 4 and there is no clipping primitive in the GPU stack to restore it onto; **(b)** retire mado's `terminal.rs` double-parse so the session model lives once. **The direction is decided** — see [`docs/SHUKEN.md`](./docs/SHUKEN.md): `PaneGrid` becomes the sole VT authority and the seam is typed as *ownership*, not content. **Precondition:** `PaneGrid` must first reach mado's correctness on wide chars + combining characters — today it has no `unicode-width` dependency and advances the cursor by 1 unconditionally, so flipping authority as-is would regress column placement.
+
+> **Corrected 2026-07-31.** This file had gone ~2.5 months stale (last
+> substantive touch 2026-05-14) and described `tear-daemon`/`tear-client` as
+> "scaffold (M2)" while both were shipped and the daemon was running. It also
+> predated `praca`, `tear-ws-bridge`, the MCP server, blocks, recording, audit,
+> capability negotiation, `tear top`, `tear ai`, and the `pleme-tear` crates.io
+> rename. **Treat `docs/SESSION-TYPESCAPE.md` + `docs/SESSION-FEATURESET.md`
+> (dated 2026-06-23, and carrying real tier ledgers) as authoritative over this
+> file** wherever they disagree.
 
 ## Constraints
 
