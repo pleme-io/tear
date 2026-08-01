@@ -38,6 +38,7 @@ pub mod testing;
 
 use std::io;
 use std::net::{SocketAddr, TcpListener};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,9 +174,44 @@ pub fn start_tcp_with_config(
     inproc: Arc<InProcess>,
     live_config: Arc<LiveConfig>,
 ) -> io::Result<DaemonHandle> {
+    // ── TCP refuses to bind open ────────────────────────────────
+    //
+    // A UDS is closed by its file mode; a TCP listener has no such
+    // property, so the same `authed = required_token.is_none()`
+    // default means an unauthenticated peer can spawn arbitrary
+    // processes with arbitrary argv over the network.
+    //
+    // The doc comment above used to carry the whole mitigation —
+    // "tunnel through SSH or run behind a TLS proxy". That is a
+    // convention where a type belongs: nothing stopped
+    // `tear daemon --tcp 0.0.0.0:7000` from doing exactly the thing
+    // the sentence warns against, and the operator who most needs
+    // the warning is the one who did not read it.
+    //
+    // So it is a REFUSAL now. Binding a non-loopback address with
+    // no token configured returns an error instead of a listener.
+    // Loopback stays permitted: it is reachable only by local uids,
+    // which is the same trust boundary the UDS has.
+    let requires_token = !addr.ip().is_loopback();
+    if requires_token && live_config.load().auth_token_env.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to bind {addr}: a non-loopback tear-daemon needs \
+                 `auth_token_env` set, or every peer that can reach the port \
+                 can spawn processes on this host. Bind a loopback address \
+                 and tunnel it (ssh -L), or configure a token."
+            ),
+        ));
+    }
+
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
-    info!(addr = %bound, "tear-daemon listening (tcp)");
+    info!(
+        addr = %bound,
+        token_required = requires_token,
+        "tear-daemon listening (tcp)"
+    );
 
     let watcher = match live_config.spawn_watcher() {
         Ok(w) => Some(w),
@@ -284,7 +320,30 @@ pub fn start_with_config(
         std::fs::create_dir_all(parent)?;
     }
     let listener = UnixListener::bind(&socket_path)?;
-    info!(path = %socket_path.display(), "tear-daemon listening");
+
+    // ── Socket sovereignty ──────────────────────────────────────
+    //
+    // Connecting to a Unix socket requires the WRITE bit, so 0600
+    // means only this uid can reach the daemon — which matters
+    // because on the default configuration every connection is
+    // authorized from frame 1 (`authed = required_token.is_none()`
+    // below) and `NewSession`/`SplitPane` spawn arbitrary processes
+    // with arbitrary argv. Reachability IS the access control.
+    //
+    // This was previously left to the ambient umask. A umask of 022
+    // happens to yield 0755, which denies the write bit and is
+    // therefore closed — but by accident of the environment rather
+    // than by anything the code asked for. A umask of 0 yields 0777
+    // and the same daemon is open to every local user. An invariant
+    // that holds because of a shell setting is not an invariant.
+    //
+    // Note this makes the same-uid property structural WITHOUT a
+    // peer-credential check: the kernel enforces it at connect(2).
+    // `getpeereid` earns its keep for ATTRIBUTION (which principal
+    // is acting — see theory/TEGATA.md's shutai), not for access.
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+
+    info!(path = %socket_path.display(), mode = "0600", "tear-daemon listening");
 
     // Stamp the bound socket path on the InProcess backend so
     // every PTY child it spawns can inherit `TEAR_SOCKET=<path>`
@@ -1304,6 +1363,97 @@ mod tests {
     // The serve loop reads via `read_frame` now; the tests still
     // decode single frames the simple way.
     use tear_types::wire::read_msg;
+
+    /// ── Socket sovereignty rows ─────────────────────────────────
+    ///
+    /// On the default configuration `authed = required_token.is_none()`
+    /// is TRUE from frame 1, and `NewSession`/`SplitPane` spawn arbitrary
+    /// processes with arbitrary argv. There is nothing to gate — spawning
+    /// processes is what a terminal daemon is for. So the control is
+    /// REACHABILITY: who can open the socket at all.
+    #[test]
+    fn the_socket_is_0600_so_only_this_uid_can_reach_the_daemon() {
+        let dir = std::env::temp_dir().join(format!(
+            "tear-sock-perm-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("t.sock");
+
+        let inproc = Arc::new(InProcess::new());
+        let handle = start(sock.clone(), inproc).expect("daemon starts");
+
+        let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "socket mode is {mode:o}, not 0600 — connect(2) needs the WRITE \
+             bit, so anything granting it to group/other lets another local \
+             uid spawn processes on this host"
+        );
+
+        handle.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mode must come from the CODE, not from whatever umask the
+    /// operator's shell happened to have. This is the row that would have
+    /// gone red before the fix: a umask of 022 yields 0755, which denies
+    /// the write bit and therefore *looks* fine while being an accident of
+    /// the environment.
+    #[test]
+    fn the_mode_is_not_inherited_from_a_permissive_umask() {
+        let dir = std::env::temp_dir().join(format!(
+            "tear-sock-umask-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let sock = dir.join("t.sock");
+
+        let inproc = Arc::new(InProcess::new());
+        let handle = start(sock.clone(), inproc).expect("daemon starts");
+
+        let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o077, 0, "group/other bits present: {mode:o}");
+
+        handle.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A UDS is closed by its file mode; a TCP listener has no such
+    /// property. Binding one to a routable address with no token means an
+    /// unauthenticated peer can spawn processes over the network — so it
+    /// is refused rather than documented.
+    #[test]
+    fn tcp_refuses_a_non_loopback_bind_without_a_token() {
+        let inproc = Arc::new(InProcess::new());
+        let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        // `DaemonHandle` is not Debug, so match rather than expect_err.
+        let err = match start_tcp(addr, inproc) {
+            Err(e) => e,
+            Ok(_) => panic!(
+                "binding a routable address with no auth_token_env must be refused"
+            ),
+        };
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            err.to_string().contains("auth_token_env"),
+            "the refusal must name the fix: {err}"
+        );
+    }
+
+    /// Loopback stays permitted — it is reachable only by local uids,
+    /// which is the same trust boundary the UDS has. Refusing it would
+    /// break `ssh -L` tunnelling, which is the sanctioned path.
+    #[test]
+    fn tcp_still_binds_loopback_without_a_token() {
+        let inproc = Arc::new(InProcess::new());
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let handle = start_tcp(addr, inproc).expect("loopback needs no token");
+        handle.stop();
+    }
 
     #[test]
     fn dispatch_list_sessions_on_fresh_inproc_returns_empty() {
