@@ -2011,6 +2011,79 @@ mod tests {
         assert_eq!(one.index, 0);
     }
 
+    /// END-TO-END attribution: a session an AGENT spawned produces blocks
+    /// that say so, all the way out through the same `pane_blocks_list`
+    /// an operator or an MCP client reads.
+    ///
+    /// This is the test that matters. `blocks.rs` already proves the
+    /// extractor stamps what it is told; this proves the daemon actually
+    /// TELLS it — the wiring, not the mechanism. Without this, a
+    /// `stamp_yurai` nobody calls would keep every unit test green while
+    /// every real block read `Unknown`, which is precisely the
+    /// declared-but-unwired failure this repo has been bitten by before.
+    #[test]
+    fn an_agent_spawned_session_produces_attributed_blocks() {
+        let inproc = InProcess::new();
+        let sid = inproc
+            .new_session_yurai(
+                "attributed",
+                "/bin/sh",
+                &[],
+                tear_types::SessionSource::Agent,
+                (80, 24),
+                tear_types::Yurai::Automation {
+                    label: Some("claude-code".into()),
+                },
+            )
+            .unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+
+        let grid_arc = {
+            let map = inproc.grids.lock();
+            map.get(&pane_id).cloned().unwrap()
+        };
+        {
+            let mut grid = grid_arc.lock();
+            grid.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07rm -rf /tmp/x\x1b]133;C\x07\x1b]133;D;0\x07");
+        }
+
+        let blocks = inproc.pane_blocks_list(pane_id, 0, 10).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].yurai,
+            tear_types::Yurai::Automation {
+                label: Some("claude-code".into())
+            },
+            "an agent-spawned pane's blocks must carry the agent's label — \
+             without it this command is indistinguishable from the operator's"
+        );
+    }
+
+    /// The companion honesty case: a session spawned with no declared
+    /// provenance stays `Unknown`, never silently upgraded to `Human`.
+    #[test]
+    fn an_undeclared_session_produces_unknown_blocks_not_human() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("undeclared", "/bin/sh").unwrap();
+        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let grid_arc = {
+            let map = inproc.grids.lock();
+            map.get(&pane_id).cloned().unwrap()
+        };
+        {
+            let mut grid = grid_arc.lock();
+            grid.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\x1b]133;C\x07\x1b]133;D;0\x07");
+        }
+        let blocks = inproc.pane_blocks_list(pane_id, 0, 10).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].yurai,
+            tear_types::Yurai::Unknown,
+            "unknown must stay unknown — a silent upgrade to Human would \
+             launder exactly the commands worth attributing"
+        );
+    }
+
     #[test]
     fn pane_block_at_on_missing_index_returns_rejected() {
         let inproc = InProcess::new();
