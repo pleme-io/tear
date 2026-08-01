@@ -164,6 +164,24 @@ pub struct Cell {
     /// highest-consequence default in the type.
     #[serde(default = "width_one")]
     pub width: u8,
+    /// Combining marks attached to this cell, as a 1-based index into
+    /// [`PaneSnapshot::combining`]. `0` means none — the overwhelmingly
+    /// common case, and why this is an index rather than an inline box.
+    ///
+    /// ## Why interned and not `Option<Box<Vec<char>>>`
+    ///
+    /// mado stores marks inline on the cell, and copying that shape here
+    /// would cost `Cell` its `Copy`. That matters because
+    /// `PaneGrid::snapshot` clones the **entire scrollback**, whose default
+    /// cap is `usize::MAX` rows: with `Copy` those clones are a memcpy,
+    /// while a boxed field turns every one into a per-cell branch plus drop
+    /// glue over potentially millions of cells.
+    ///
+    /// Interning keeps the hot path a memcpy and moves the rare data to the
+    /// side, at the cost of one extra `u16` per cell (`Cell` is 16 bytes,
+    /// still under mado's 24-byte budget).
+    #[serde(default)]
+    pub combining: u16,
 }
 
 /// serde default for [`Cell::width`] — see the field's doc for why this is
@@ -179,6 +197,7 @@ impl Cell {
         bg: Color::BLACK,
         attrs: CellAttrs::NONE,
         width: 1,
+        combining: 0,
     };
 
     /// True when this cell is the second half of a double-width glyph and
@@ -186,6 +205,22 @@ impl Cell {
     #[must_use]
     pub const fn is_continuation(&self) -> bool {
         self.width == 0
+    }
+
+    /// The combining marks attached to this cell, resolved against a
+    /// snapshot's [`PaneSnapshot::combining`] table.
+    ///
+    /// Empty for the common case. An index that outruns the table also
+    /// yields empty rather than panicking — a truncated or mismatched
+    /// table is a wire-level defect that must not take the renderer down.
+    #[must_use]
+    pub fn marks<'a>(&self, table: &'a [Vec<char>]) -> &'a [char] {
+        if self.combining == 0 {
+            return &[];
+        }
+        table
+            .get(self.combining as usize - 1)
+            .map_or(&[], Vec::as_slice)
     }
 }
 
@@ -248,6 +283,21 @@ pub struct PaneSnapshot {
     /// it deserialize cleanly to no scrollback.
     #[serde(default)]
     pub scrollback: Vec<Vec<Cell>>,
+    /// Combining-mark table. [`Cell::combining`] indexes this 1-based
+    /// (`0` = no marks), so entry `n` is at index `n - 1`.
+    ///
+    /// Resolve through [`Cell::marks`] rather than indexing directly — it
+    /// handles the empty case and a short table without panicking.
+    ///
+    /// **Growth is bounded by history, not by time**: entries accumulate as
+    /// marks are printed and are carried whole in the snapshot. For an
+    /// unbounded scrollback (tear's default) that is the same order as the
+    /// text itself. For a *bounded* scrollback, entries belonging to
+    /// evicted rows are not reclaimed — a named follow-up
+    /// (`pending-combining-gc`), and the reason mado's style/link tables
+    /// carry a gc that remaps live ids.
+    #[serde(default)]
+    pub combining: Vec<Vec<char>>,
 }
 
 fn default_true() -> bool {
@@ -312,7 +362,7 @@ impl PaneSnapshot {
         if !self.alt_screen_active && !self.scrollback.is_empty() {
             buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
             for row in &self.scrollback {
-                write_scrollback_row(&mut buf, row);
+                write_scrollback_row(&mut buf, row, &self.combining);
                 buf.extend_from_slice(b"\x1b[0m\r\n");
             }
             // Push the last `rows` scrollback lines off-screen (into the
@@ -367,6 +417,12 @@ impl PaneSnapshot {
                 }
                 let mut tmp = [0u8; 4];
                 buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
+                // Combining marks follow their base glyph and add no
+                // columns, so they need no cursor arithmetic — but omitting
+                // them would silently strip every accent on replay.
+                for m in cell.marks(&self.combining) {
+                    buf.extend_from_slice(m.encode_utf8(&mut tmp).as_bytes());
+                }
             }
         }
         // CLOSE THE PEN. This serializer walks cells and emits SGR only on
@@ -423,6 +479,7 @@ mod to_ansi_tests {
             title: None,
             cursor_keys_mode: false,
             scrollback: Vec::new(),
+            combining: Vec::new(),
         }
     }
 
@@ -710,7 +767,7 @@ mod to_ansi_tests {
 /// blank cells (a space in the default colours) are trimmed so a
 /// full-width row can't auto-wrap into a spurious extra blank line and
 /// so mostly-empty history rows stay compact.
-fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell]) {
+fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell], combining: &[Vec<char>]) {
     let last = row
         .iter()
         .rposition(|c| c.ch != ' ' || c.fg != Color::WHITE || c.bg != Color::BLACK)
@@ -748,6 +805,9 @@ fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell]) {
         }
         let mut tmp = [0u8; 4];
         buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
+        for m in cell.marks(combining) {
+            buf.extend_from_slice(m.encode_utf8(&mut tmp).as_bytes());
+        }
     }
 }
 

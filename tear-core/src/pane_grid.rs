@@ -105,6 +105,9 @@ pub(crate) struct GridState {
     /// tear answers nothing and the attached terminal is the host — the
     /// behaviour tear has always had.
     role: HostRole,
+    /// Combining-mark table — see [`PaneSnapshot::combining`]. Cells hold a
+    /// 1-based index into this; `0` means no marks.
+    combining: Vec<Vec<char>>,
     /// Reply bytes owed to the child process, drained by the runtime and
     /// written back to the PTY.
     ///
@@ -163,6 +166,7 @@ impl GridState {
             cursor_keys_mode: false,
             last_printed: None,
             role: HostRole::default(),
+            combining: Vec::new(),
             pending_response: Vec::new(),
             title: None,
             blocks: crate::blocks::BlockExtractor::default(),
@@ -225,6 +229,7 @@ impl GridState {
             bg: self.pen_bg,
             attrs: CellAttrs::NONE,
             width: 1,
+            combining: 0,
         }
     }
 
@@ -237,6 +242,9 @@ impl GridState {
             bg: self.pen_bg,
             attrs: self.pen_attrs,
             width: w,
+            // A freshly printed glyph carries no marks; a following
+            // zero-width codepoint attaches them.
+            combining: 0,
         }
     }
 
@@ -252,6 +260,7 @@ impl GridState {
             bg: self.pen_bg,
             attrs: self.pen_attrs,
             width: 0,
+            combining: 0,
         }
     }
 
@@ -339,6 +348,73 @@ impl GridState {
             if let Some(cont) = self.active_cell_mut(row, last + 1) {
                 *cont = Cell::BLANK;
             }
+        }
+    }
+
+    /// Attach a zero-width codepoint to the glyph that precedes the cursor.
+    ///
+    /// Three behaviours copied deliberately from mado, each of which a
+    /// "reasonable" implementation gets wrong:
+    ///
+    /// 1. **Does not set `last_printed`**, so `CSI b` (REP) repeats the
+    ///    BASE glyph rather than the mark.
+    /// 2. **Does not clear `wrap_pending`**, so a deferred wrap stays armed
+    ///    across a mark.
+    /// 3. **Walks back to the LEAD column.** When `wrap_pending` is set the
+    ///    search starts at `cols - 1`, and that cell may be the
+    ///    CONTINUATION of a margin-flush wide glyph whose lead is one to
+    ///    its left. Taking `cols - 1` verbatim attaches the mark to a
+    ///    width-0 cell, where it renders nowhere — the regression mado
+    ///    fixed on 2026-07-30. tear is born with the fix.
+    ///
+    /// A mark with no base cell (the first codepoint of a line) is dropped,
+    /// matching mado.
+    fn combine_into_previous(&mut self, c: char) {
+        let start = if self.wrap_pending {
+            self.cols.saturating_sub(1)
+        } else if self.cursor_col > 0 {
+            self.cursor_col - 1
+        } else {
+            return;
+        };
+        let row = self.cursor_row;
+        let col = self.lead_col_at(row, start);
+        if col >= self.cols || row >= self.rows {
+            return;
+        }
+        // Resolve the cell's existing table slot before taking the &mut, so
+        // the table borrow and the cell borrow never overlap.
+        let existing = self
+            .active_cell_at(row, col)
+            .map_or(0, |cell| cell.combining);
+        if existing == 0 {
+            // u16 is the index width; refuse to mint past it rather than
+            // wrapping into another cell's marks.
+            let Ok(next) = u16::try_from(self.combining.len() + 1) else {
+                return;
+            };
+            self.combining.push(vec![c]);
+            if let Some(cell) = self.active_cell_mut(row, col) {
+                cell.combining = next;
+            } else {
+                // The cell vanished between the read and the write — drop
+                // the entry rather than leaving it orphaned.
+                self.combining.pop();
+            }
+        } else if let Some(marks) = self.combining.get_mut(existing as usize - 1) {
+            marks.push(c);
+        }
+    }
+
+    /// Walk left to the lead column of whatever glyph owns `col`.
+    ///
+    /// If `col` holds a continuation cell the glyph's lead is at `col - 1`;
+    /// otherwise `col` is already the lead.
+    fn lead_col_at(&self, row: usize, col: usize) -> usize {
+        if col > 0 && self.active_cell_at(row, col).is_some_and(Cell::is_continuation) {
+            col - 1
+        } else {
+            col
         }
     }
 
@@ -724,21 +800,11 @@ impl Perform for GridState {
         self.blocks.on_print(c);
         let w = UnicodeWidthChar::width(c).unwrap_or(1);
         if w == 0 {
-            // A zero-width codepoint (a combining mark, a ZWJ) belongs to the
-            // glyph before it and consumes NO column. Placing it in a cell of
-            // its own — which is what this parser used to do — displaces every
-            // later cell on the row, which is the same class of defect as the
-            // wide-glyph advance below.
-            //
-            // Dropping it keeps COLUMNS mado-identical. It does not keep
-            // CONTENT identical: mado merges the mark into the base cell's
-            // `Cell.extra: Option<Box<Vec<char>>>`, which tear's `Cell` has no
-            // slot for. Adding one costs `Copy` on `Cell` and is the named
-            // follow-up; see `pending-cell-extra` in docs/SHUKEN.md.
-            //
-            // Deliberately does NOT touch `last_printed` (so `CSI b` repeats
-            // the BASE glyph) and does NOT clear `wrap_pending` (a deferred
-            // wrap stays armed across a mark) — both match mado.
+            // A zero-width codepoint (a combining mark, a ZWJ) belongs to
+            // the glyph before it and consumes NO column. Placing it in a
+            // cell of its own — which this parser used to do — displaces
+            // every later cell on the row.
+            self.combine_into_previous(c);
             return;
         }
         self.put_char(c, w);
@@ -1270,6 +1336,7 @@ impl PaneGrid {
             title: self.state.title.clone(),
             cursor_keys_mode: self.state.cursor_keys_mode,
             scrollback,
+            combining: self.state.combining.clone(),
         }
     }
 
@@ -1414,6 +1481,98 @@ mod width_parity {
             "the orphaned continuation is cleared, not left as a half-glyph"
         );
         assert_eq!(s.cells[0][1].width, 1);
+    }
+
+    /// A combining mark attaches to the preceding glyph and consumes no
+    /// column. Placing it in its own cell (what this parser did before)
+    /// displaces every later cell on the row.
+    #[test]
+    fn a_combining_mark_attaches_to_the_base_cell() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("e\u{301}X".as_bytes()); // e + COMBINING ACUTE + X
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][0].ch, 'e');
+        assert_eq!(
+            s.cells[0][0].marks(&s.combining),
+            &['\u{301}'],
+            "the mark belongs to the base cell"
+        );
+        assert_eq!(s.cells[0][1].ch, 'X', "X is at col 1, not col 2");
+        assert_eq!(s.cursor_col, 2, "a mark consumes no column");
+    }
+
+    /// Several marks stack onto one base cell.
+    #[test]
+    fn stacked_marks_accumulate_on_one_cell() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("a\u{301}\u{308}".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][0].marks(&s.combining), &['\u{301}', '\u{308}']);
+        assert_eq!(s.cursor_col, 1);
+    }
+
+    /// ★ The case mado had to fix as a REGRESSION (2026-07-30), so tear is
+    /// born with it. When a wrap is pending the search starts at the last
+    /// column — which for a margin-flush wide glyph is its CONTINUATION.
+    /// Attaching there puts the mark on a width-0 cell where it renders
+    /// nowhere; it must walk back to the lead.
+    #[test]
+    fn a_mark_after_a_margin_flush_wide_glyph_lands_on_the_lead() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("A".repeat(18).as_bytes());
+        g.feed("你\u{301}".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][18].ch, '你', "lead at col 18");
+        assert_eq!(
+            s.cells[0][18].marks(&s.combining),
+            &['\u{301}'],
+            "the mark must attach to the LEAD, not the continuation"
+        );
+        assert!(
+            s.cells[0][19].marks(&s.combining).is_empty(),
+            "the continuation owns no marks"
+        );
+    }
+
+    /// A mark with no preceding glyph is dropped rather than creating a
+    /// cell — matching mado.
+    #[test]
+    fn a_mark_at_column_zero_is_dropped() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("\u{301}".as_bytes());
+        let s = g.snapshot();
+        assert_eq!(s.cursor_col, 0, "no column consumed");
+        assert!(s.combining.is_empty(), "no table entry minted");
+        assert_eq!(s.cells[0][0].ch, ' ');
+    }
+
+    /// REP (`CSI b`) repeats the BASE glyph, not the mark — which is why
+    /// `combine_into_previous` must not touch `last_printed`.
+    #[test]
+    fn rep_after_a_mark_repeats_the_base_glyph() {
+        let mut g = PaneGrid::new(20, 3);
+        g.feed("e\u{301}".as_bytes());
+        g.feed(b"\x1b[2b");
+        let s = g.snapshot();
+        assert_eq!(s.cells[0][1].ch, 'e', "REP repeats the base, not the mark");
+        assert_eq!(s.cells[0][2].ch, 'e');
+    }
+
+    /// Marks must survive a replay, or a session switch silently strips
+    /// every accent on screen.
+    #[test]
+    fn marks_survive_a_to_ansi_round_trip() {
+        let mut a = PaneGrid::new(20, 3);
+        a.feed("e\u{301}X".as_bytes());
+        let first = a.snapshot();
+
+        let mut b = PaneGrid::new(20, 3);
+        b.feed(&first.to_ansi());
+        let second = b.snapshot();
+
+        assert_eq!(second.cells[0][0].ch, 'e');
+        assert_eq!(second.cells[0][0].marks(&second.combining), &['\u{301}']);
+        assert_eq!(second.cells[0][1].ch, 'X');
     }
 
     /// `to_ansi` must not emit continuation cells: re-feeding its output has
