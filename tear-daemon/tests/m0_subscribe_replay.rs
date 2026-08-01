@@ -166,6 +166,7 @@ fn to_ansi_emits_known_byte_sequence_for_known_grid() {
         cursor_keys_mode: false,
         scrollback: Vec::new(),
         combining: Vec::new(),
+        modes: tear_types::ModeSet::default(),
     };
     let bytes = snap.to_ansi();
     let s = String::from_utf8_lossy(&bytes).into_owned();

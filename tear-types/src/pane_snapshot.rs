@@ -298,6 +298,19 @@ pub struct PaneSnapshot {
     /// carry a gc that remaps live ids.
     #[serde(default)]
     pub combining: Vec<Vec<char>>,
+    /// Every terminal mode this pane was in **at the instant these cells
+    /// were taken**.
+    ///
+    /// Carried here rather than fetched separately, and that is the point:
+    /// a client that could ask for modes independently could render frame
+    /// N's cells while encoding a keystroke under frame N+1's modes —
+    /// bracketed paste toggling in the gap between the grid you drew and
+    /// the key you sent. Because a `ModeSet` is only obtainable from the
+    /// snapshot it came from, that skew has no representation.
+    ///
+    /// See `crate::modes` for why each mode is its own type.
+    #[serde(default)]
+    pub modes: crate::modes::ModeSet,
 }
 
 fn default_true() -> bool {
@@ -480,6 +493,7 @@ mod to_ansi_tests {
             cursor_keys_mode: false,
             scrollback: Vec::new(),
             combining: Vec::new(),
+            modes: crate::modes::ModeSet::default(),
         }
     }
 

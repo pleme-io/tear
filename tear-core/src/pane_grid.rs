@@ -20,6 +20,10 @@ use std::collections::VecDeque;
 
 use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
 use tear_types::host_role::{HostRole, TearCaps};
+use tear_types::modes::{
+    AltScreen, AutoWrap, BracketedPaste, CursorKeys, CursorVisible, FocusReporting, ModeSet,
+    MouseSgr, MouseTracking, SyncOutput,
+};
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
@@ -105,6 +109,18 @@ pub(crate) struct GridState {
     /// tear answers nothing and the attached terminal is the host — the
     /// behaviour tear has always had.
     role: HostRole,
+    /// DEC 7 (DECAWM) — autowrap. On by default, per xterm.
+    autowrap: bool,
+    /// DEC 1004 — focus in/out reporting.
+    focus_reporting: bool,
+    /// DEC 2004 — bracketed paste. Gates paste sanitisation downstream.
+    bracketed_paste: bool,
+    /// DEC 2026 — synchronized output.
+    sync_output: bool,
+    /// DEC 1000/1002/1003 — mouse tracking level (mutually exclusive).
+    mouse: MouseTracking,
+    /// DEC 1006 — SGR extended mouse encoding.
+    mouse_sgr: bool,
     /// Combining-mark table — see [`PaneSnapshot::combining`]. Cells hold a
     /// 1-based index into this; `0` means no marks.
     combining: Vec<Vec<char>>,
@@ -166,6 +182,13 @@ impl GridState {
             cursor_keys_mode: false,
             last_printed: None,
             role: HostRole::default(),
+            // Autowrap is ON by default (xterm); everything else is off.
+            autowrap: true,
+            focus_reporting: false,
+            bracketed_paste: false,
+            sync_output: false,
+            mouse: MouseTracking::Off,
+            mouse_sgr: false,
             combining: Vec::new(),
             pending_response: Vec::new(),
             title: None,
@@ -1231,9 +1254,21 @@ impl GridState {
                     self.restore_cursor();
                 }
             }
-            1 => self.cursor_keys_mode = set, // DECCKM
-            25 => self.cursor_visible = set,  // DECTCEM
-            _ => {} // Autowrap, bracketed-paste, mouse modes etc. land later.
+            1 => self.cursor_keys_mode = set,     // DECCKM
+            25 => self.cursor_visible = set,      // DECTCEM
+            7 => self.autowrap = set,             // DECAWM
+            1004 => self.focus_reporting = set,   // focus in/out reporting
+            2004 => self.bracketed_paste = set,   // bracketed paste
+            2026 => self.sync_output = set,       // synchronized output
+            // Mouse tracking levels are mutually exclusive: the LAST one
+            // set wins, and resetting any of them turns tracking off. A
+            // set of independent bools would let two levels be true at
+            // once, which no terminal can mean.
+            1000 => self.mouse = if set { MouseTracking::Click } else { MouseTracking::Off },
+            1002 => self.mouse = if set { MouseTracking::Drag } else { MouseTracking::Off },
+            1003 => self.mouse = if set { MouseTracking::Motion } else { MouseTracking::Off },
+            1006 => self.mouse_sgr = set, // SGR extended mouse encoding
+            _ => {}
         }
     }
 }
@@ -1290,6 +1325,33 @@ impl PaneGrid {
         self.parser.advance(&mut self.state, bytes);
     }
 
+    /// Every terminal mode this pane is in, taken at ONE instant.
+    ///
+    /// This is how a client reads a mode under `docs/SHUKEN.md` — from the
+    /// authority, never from a parser of its own. Today mado reads
+    /// `bracketed_paste` from its OWN `Terminal`, which is correct only
+    /// because mado still parses every byte; it becomes a live bug the
+    /// instant this grid is authoritative, and it is a paste-sanitisation
+    /// decision, not a cosmetic one.
+    ///
+    /// Returned as a whole `ModeSet` rather than one getter per mode so a
+    /// client cannot mix modes from two different instants.
+    #[must_use]
+    pub fn modes(&self) -> ModeSet {
+        let s = &self.state;
+        ModeSet {
+            bracketed_paste: BracketedPaste::new(s.bracketed_paste),
+            cursor_keys: CursorKeys::new(s.cursor_keys_mode),
+            focus_reporting: FocusReporting::new(s.focus_reporting),
+            sync_output: SyncOutput::new(s.sync_output),
+            mouse: s.mouse,
+            mouse_sgr: MouseSgr::new(s.mouse_sgr),
+            cursor_visible: CursorVisible::new(s.cursor_visible),
+            autowrap: AutoWrap::new(s.autowrap),
+            alt_screen: AltScreen::new(s.alt_active),
+        }
+    }
+
     /// Set who answers VT queries for this pane.
     ///
     /// See [`HostRole`]. Setting [`HostRole::Host`] while a client with its
@@ -1337,6 +1399,7 @@ impl PaneGrid {
             cursor_keys_mode: self.state.cursor_keys_mode,
             scrollback,
             combining: self.state.combining.clone(),
+            modes: self.modes(),
         }
     }
 
@@ -1611,6 +1674,81 @@ mod width_parity {
 ///
 /// These rows pin both halves: the machinery works as a Host, and it stays
 /// completely inert as a Relay.
+/// The modes a client must read from the authority.
+///
+/// Before this, `apply_dec_mode`'s `_ => {}` silently dropped bracketed
+/// paste, sync output, focus reporting, autowrap and every mouse mode — so
+/// a client had no way to learn them from tear and mado read them from its
+/// own parser instead. That is correct only while mado still parses, and
+/// becomes a live bug the instant this grid is authoritative.
+#[cfg(test)]
+mod mode_rows {
+    use super::*;
+
+    #[test]
+    fn a_fresh_pane_reports_xterm_defaults() {
+        let g = PaneGrid::new(80, 24);
+        let m = g.modes();
+        assert!(m.autowrap.enabled(), "DECAWM is ON by default per xterm");
+        assert!(m.cursor_visible.enabled());
+        assert!(!m.bracketed_paste.enabled());
+        assert!(!m.sync_output.enabled());
+        assert!(!m.mouse.is_on());
+    }
+
+    /// The one that gates paste sanitisation.
+    #[test]
+    fn bracketed_paste_is_tracked() {
+        let mut g = PaneGrid::new(80, 24);
+        assert!(!g.modes().bracketed_paste.enabled());
+        g.feed(b"\x1b[?2004h");
+        assert!(g.modes().bracketed_paste.enabled(), "DEC 2004 set");
+        g.feed(b"\x1b[?2004l");
+        assert!(!g.modes().bracketed_paste.enabled(), "DEC 2004 reset");
+    }
+
+    #[test]
+    fn the_remaining_flag_modes_are_tracked() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b[?1004h\x1b[?2026h\x1b[?1006h\x1b[?7l\x1b[?1h\x1b[?25l");
+        let m = g.modes();
+        assert!(m.focus_reporting.enabled(), "DEC 1004");
+        assert!(m.sync_output.enabled(), "DEC 2026");
+        assert!(m.mouse_sgr.enabled(), "DEC 1006");
+        assert!(!m.autowrap.enabled(), "DEC 7 reset");
+        assert!(m.cursor_keys.enabled(), "DEC 1 (DECCKM)");
+        assert!(!m.cursor_visible.enabled(), "DEC 25 reset");
+    }
+
+    /// Mouse levels are exclusive — the LAST one set wins. Three
+    /// independent bools would let two be true at once, which no terminal
+    /// can mean; the enum makes that unconstructible.
+    #[test]
+    fn mouse_tracking_levels_replace_rather_than_accumulate() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b[?1000h");
+        assert_eq!(g.modes().mouse, MouseTracking::Click);
+        g.feed(b"\x1b[?1003h");
+        assert_eq!(
+            g.modes().mouse,
+            MouseTracking::Motion,
+            "the later level replaces the earlier one"
+        );
+        g.feed(b"\x1b[?1003l");
+        assert_eq!(g.modes().mouse, MouseTracking::Off);
+    }
+
+    #[test]
+    fn alt_screen_is_reported_as_a_mode() {
+        let mut g = PaneGrid::new(80, 24);
+        assert!(!g.modes().alt_screen.enabled());
+        g.feed(b"\x1b[?1049h");
+        assert!(g.modes().alt_screen.enabled());
+        g.feed(b"\x1b[?1049l");
+        assert!(!g.modes().alt_screen.enabled());
+    }
+}
+
 #[cfg(test)]
 mod host_role_rows {
     use super::*;
