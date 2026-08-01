@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     direction::SplitOrientation,
     id::PaneId,
-    layout::LayoutNode,
+    layout::{LayoutNode, SplitRatio},
     pane::InputPolicy,
 };
 
@@ -99,7 +99,11 @@ pub enum LayoutPlan {
     /// `ratio` is side `a`'s fraction, same convention as [`LayoutNode`].
     Split {
         orientation: SplitOrientation,
-        ratio: f32,
+        /// Same refinement as [`LayoutNode`]'s — and it matters MORE here,
+        /// because a plan is **persisted** (praça writes definitions to
+        /// `praca.json`), so an out-of-range or `NaN` ratio would survive a
+        /// restart and be re-instantiated every time.
+        ratio: SplitRatio,
         a: Box<LayoutPlan>,
         b: Box<LayoutPlan>,
     },
@@ -157,7 +161,7 @@ impl LayoutPlan {
     pub fn split(orientation: SplitOrientation, a: LayoutPlan, b: LayoutPlan) -> Self {
         Self::Split {
             orientation,
-            ratio: 0.5,
+            ratio: SplitRatio::BALANCED,
             a: Box::new(a),
             b: Box::new(b),
         }
@@ -219,8 +223,11 @@ impl LayoutPlan {
                 Ok(())
             }
             Self::Split { ratio, a, b, .. } => {
-                if !(*ratio > 0.0 && *ratio < 1.0) {
-                    return Err(PlanError::BadRatio(*ratio));
+                // Defence in depth — `SplitRatio` makes this unreachable
+                // from any constructible plan. See `LayoutNode::validate_into`.
+                let r = ratio.get();
+                if !(r > 0.0 && r < 1.0) {
+                    return Err(PlanError::BadRatio(r));
                 }
                 a.validate_into(seen)?;
                 b.validate_into(seen)
@@ -333,15 +340,20 @@ mod tests {
         assert_eq!(p.validate(), Err(PlanError::DuplicateSlot(PaneSlot(7))));
     }
 
+    /// Was: construct `ratio: 1.0` and assert `validate()` rejects it.
+    /// That plan is now unconstructible — `SplitRatio` refines on the way
+    /// in. Matters more here than for a live tree, because a plan is
+    /// PERSISTED: a bad ratio used to survive a restart and be
+    /// re-instantiated on every attach.
     #[test]
-    fn validate_rejects_degenerate_ratio() {
+    fn a_degenerate_plan_ratio_has_no_representation() {
         let p = LayoutPlan::Split {
             orientation: SplitOrientation::Vertical,
-            ratio: 1.0,
+            ratio: SplitRatio::new(1.0),
             a: Box::new(LayoutPlan::leaf(PaneSlot(0))),
             b: Box::new(LayoutPlan::leaf(PaneSlot(1))),
         };
-        assert_eq!(p.validate(), Err(PlanError::BadRatio(1.0)));
+        p.validate().expect("a refined ratio always validates");
     }
 
     #[test]
@@ -367,7 +379,7 @@ mod tests {
     fn realize_preserves_ratio_and_orientation() {
         let plan = LayoutPlan::Split {
             orientation: SplitOrientation::Horizontal,
-            ratio: 0.25,
+            ratio: SplitRatio::new(0.25),
             a: Box::new(LayoutPlan::leaf(PaneSlot(0))),
             b: Box::new(LayoutPlan::leaf(PaneSlot(1))),
         };
@@ -375,7 +387,7 @@ mod tests {
         match plan.realize(&mut mint) {
             LayoutNode::Split { orientation, ratio, .. } => {
                 assert_eq!(orientation, SplitOrientation::Horizontal);
-                assert!((ratio - 0.25).abs() < f32::EPSILON);
+                assert!((ratio.get() - 0.25).abs() < f32::EPSILON);
             }
             LayoutNode::Leaf { .. } => panic!("expected a split"),
         }
@@ -393,11 +405,11 @@ mod tests {
         // slot 0 | (slot 1 / slot 2), asymmetric ratios.
         LayoutPlan::Split {
             orientation: SplitOrientation::Vertical,
-            ratio: 0.3,
+            ratio: SplitRatio::new(0.3),
             a: Box::new(LayoutPlan::leaf(PaneSlot(0))),
             b: Box::new(LayoutPlan::Split {
                 orientation: SplitOrientation::Horizontal,
-                ratio: 0.7,
+                ratio: SplitRatio::new(0.7),
                 a: Box::new(LayoutPlan::leaf(PaneSlot(1))),
                 b: Box::new(LayoutPlan::leaf(PaneSlot(2))),
             }),
@@ -425,11 +437,11 @@ mod tests {
         // the plan back through the recorded map — exactly the input tree.
         let node = LayoutNode::Split {
             orientation: SplitOrientation::Horizontal,
-            ratio: 0.4,
+            ratio: SplitRatio::new(0.4),
             a: Box::new(LayoutNode::leaf(PaneId(7))),
             b: Box::new(LayoutNode::Split {
                 orientation: SplitOrientation::Vertical,
-                ratio: 0.6,
+                ratio: SplitRatio::new(0.6),
                 a: Box::new(LayoutNode::leaf(PaneId(9))),
                 b: Box::new(LayoutNode::leaf(PaneId(2))),
             }),

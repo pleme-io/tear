@@ -23,6 +23,84 @@ use crate::{
 /// arithmetic squeeze it (a 2-cell window splits 1/1 regardless).
 pub const MIN_RATIO: f32 = 0.05;
 
+/// The fraction of a split's area allotted to side `a`, refined so that
+/// the illegal values have no representation.
+///
+/// ## Why a newtype and not a validated `f32`
+///
+/// The field used to be a public `f32`, which meant `0.0`, `1.0`, `-3.0`,
+/// `inf` and `NaN` were all constructible **and all deserialisable from the
+/// wire**. `validate()` rejected them — but `validate()` is called by a
+/// caller who remembers to, and CBOR deserialisation writes the field
+/// directly, so the guard was one forgotten call away from useless.
+///
+/// `NaN` was the worst of them because it fails *silently in the wrong
+/// direction*. `split_extent` computes `(total * ratio).round()` and then
+/// clamps — and **`f32::clamp` returns `NaN` for a `NaN` input** (it only
+/// panics when the *bounds* are NaN), after which `NaN as u16` saturates to
+/// `0`. So a NaN ratio did not panic and did not error: side `a` silently
+/// got zero cells and the pane vanished. The old comment on `split_extent`
+/// claimed the clamp "pins NaN-free bounds"; it did not.
+///
+/// Now the only way in is [`SplitRatio::new`], which normalises non-finite
+/// input to the balanced default and clamps the rest into
+/// `[MIN_RATIO, 1 - MIN_RATIO]`. The field is private, `Deserialize` routes
+/// through the same constructor, and `Serialize` is transparent — so the
+/// **CBOR wire shape is byte-identical to the bare `f32` it replaces.**
+///
+/// Tier: **truly-unrepresentable** in-process (no constructor produces an
+/// out-of-range or non-finite value); **parse-time-normalised** on the wire.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SplitRatio(f32);
+
+impl SplitRatio {
+    /// An even split. The value every balanced constructor uses.
+    pub const BALANCED: Self = Self(0.5);
+
+    /// Refine an arbitrary `f32`.
+    ///
+    /// Non-finite input (`NaN`, `±inf`) becomes [`Self::BALANCED`] rather
+    /// than propagating: there is no sensible clamp for a value that is not
+    /// on the number line, and silently yielding a zero-width pane is the
+    /// bug this type exists to remove.
+    #[must_use]
+    pub fn new(v: f32) -> Self {
+        if v.is_finite() {
+            Self(v.clamp(MIN_RATIO, 1.0 - MIN_RATIO))
+        } else {
+            Self::BALANCED
+        }
+    }
+
+    /// The refined value. Always finite and always within
+    /// `[MIN_RATIO, 1 - MIN_RATIO]`.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for SplitRatio {
+    fn default() -> Self {
+        Self::BALANCED
+    }
+}
+
+impl From<f32> for SplitRatio {
+    fn from(v: f32) -> Self {
+        Self::new(v)
+    }
+}
+
+impl<'de> Deserialize<'de> for SplitRatio {
+    /// Routes through [`SplitRatio::new`], so a hostile or merely stale
+    /// peer cannot put an out-of-range or `NaN` ratio into a live tree.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self::new(f32::deserialize(d)?))
+    }
+}
+
 /// Outcome of [`LayoutNode::remove_leaf`]. Removing a pane either
 /// collapses its parent split into the surviving sibling, removes the
 /// only pane (leaving nothing the tree can represent — the caller must
@@ -72,7 +150,7 @@ pub enum LayoutNode {
     /// to side `a`.
     Split {
         orientation: SplitOrientation,
-        ratio: f32,
+        ratio: SplitRatio,
         a: Box<LayoutNode>,
         b: Box<LayoutNode>,
     },
@@ -90,7 +168,7 @@ impl LayoutNode {
     pub fn split(orientation: SplitOrientation, a: LayoutNode, b: LayoutNode) -> Self {
         Self::Split {
             orientation,
-            ratio: 0.5,
+            ratio: SplitRatio::BALANCED,
             a: Box::new(a),
             b: Box::new(b),
         }
@@ -171,7 +249,7 @@ impl LayoutNode {
                     let bottom = even_chain(SplitOrientation::Vertical, &leaves(rest))?;
                     Some(Self::Split {
                         orientation: SplitOrientation::Horizontal,
-                        ratio: 0.5,
+                        ratio: SplitRatio::BALANCED,
                         a: Box::new(Self::leaf(*main)),
                         b: Box::new(bottom),
                     })
@@ -181,7 +259,7 @@ impl LayoutNode {
                     let right = even_chain(SplitOrientation::Horizontal, &leaves(rest))?;
                     Some(Self::Split {
                         orientation: SplitOrientation::Vertical,
-                        ratio: 0.5,
+                        ratio: SplitRatio::BALANCED,
                         a: Box::new(Self::leaf(*main)),
                         b: Box::new(right),
                     })
@@ -215,15 +293,10 @@ impl LayoutNode {
             Self::Leaf { pane } if *pane == target => {
                 let origin = Self::leaf(*pane);
                 let fresh = Self::leaf(new_pane);
-                // A non-finite ratio survives `clamp` (NaN compares false
-                // both ways), producing a tree `validate` rejects — coerce
-                // it to a balanced split before clamping.
-                let sane = if origin_ratio.is_finite() {
-                    origin_ratio
-                } else {
-                    0.5
-                };
-                let keep = sane.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                // Refinement (non-finite → balanced, then clamp) now lives
+                // in `SplitRatio::new`, so this site cannot get it wrong and
+                // neither can any future one.
+                let keep = SplitRatio::new(origin_ratio).get();
                 let orientation = direction.orientation();
                 // The new pane lands after the origin for Right/Below,
                 // before it for Left/Above. `ratio` is always the
@@ -235,7 +308,7 @@ impl LayoutNode {
                 };
                 *self = Self::Split {
                     orientation,
-                    ratio,
+                    ratio: SplitRatio::new(ratio),
                     a: Box::new(a),
                     b: Box::new(b),
                 };
@@ -309,10 +382,14 @@ impl LayoutNode {
         };
         // Growing toward b raises the ratio (side `a` = target grows);
         // toward a lowers it (side `b` = target grows). A non-finite delta
-        // leaves the ratio untouched (NaN must never reach the tree).
+        // leaves the ratio untouched — `SplitRatio::new` would coerce it to
+        // BALANCED, which for a *resize* would silently re-centre a divider
+        // the operator had placed, so that case is caught here instead.
         let sign = if toward_b { 1.0 } else { -1.0 };
-        let next = *ratio + sign * delta_frac;
-        *ratio = (if next.is_finite() { next } else { *ratio }).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+        let next = ratio.get() + sign * delta_frac;
+        if next.is_finite() {
+            *ratio = SplitRatio::new(next);
+        }
         true
     }
 
@@ -398,7 +475,7 @@ impl LayoutNode {
                 a,
                 b,
             } => {
-                let (ra, rb) = split_rect(bounds, *orientation, *ratio);
+                let (ra, rb) = split_rect(bounds, *orientation, ratio.get());
                 a.lay_out(ra, out);
                 b.lay_out(rb, out);
             }
@@ -486,8 +563,15 @@ impl LayoutNode {
                 Ok(())
             }
             Self::Split { ratio, a, b, .. } => {
-                if !(*ratio > 0.0 && *ratio < 1.0) {
-                    return Err(LayoutError::BadRatio(*ratio));
+                // Defence in depth only. `SplitRatio` has no constructor that
+                // yields a value outside `[MIN_RATIO, 1 - MIN_RATIO]`, and
+                // its `Deserialize` routes through that constructor, so this
+                // branch is now UNREACHABLE from any real tree — kept so a
+                // future change that widens the refinement is caught here
+                // rather than in `split_extent`.
+                let r = ratio.get();
+                if !(r > 0.0 && r < 1.0) {
+                    return Err(LayoutError::BadRatio(r));
                 }
                 a.validate_into(seen)?;
                 b.validate_into(seen)
@@ -554,7 +638,7 @@ fn even_chain(orientation: SplitOrientation, nodes: &[LayoutNode]) -> Option<Lay
             let rest_tree = even_chain(orientation, rest)?;
             Some(LayoutNode::Split {
                 orientation,
-                ratio: 1.0 / n,
+                ratio: SplitRatio::new(1.0 / n),
                 a: Box::new(first.clone()),
                 b: Box::new(rest_tree),
             })
@@ -711,7 +795,7 @@ mod tests {
         // 0.0 origin-keep clamps to MIN_RATIO — still a valid split.
         n.validate().unwrap();
         if let LayoutNode::Split { ratio, .. } = n {
-            assert!(ratio >= MIN_RATIO && ratio <= 1.0 - MIN_RATIO);
+            assert!(ratio.get() >= MIN_RATIO && ratio.get() <= 1.0 - MIN_RATIO);
         } else {
             panic!("expected a split");
         }
@@ -1274,15 +1358,103 @@ mod tests {
         assert_eq!(n.validate(), Err(LayoutError::DuplicatePane(PaneId(5))));
     }
 
+    /// This test used to construct `ratio: 0.0` and assert `validate()`
+    /// returned `BadRatio`. **That tree can no longer be written** — the
+    /// field is a `SplitRatio` whose only constructor refines its input, so
+    /// the degenerate value has no representation and the runtime check it
+    /// used to exercise is unreachable.
+    ///
+    /// The tier moved from *validated* to *unrepresentable*, so the test
+    /// moves with it: it now proves the refinement instead of the rejection.
     #[test]
-    fn validate_rejects_degenerate_ratio() {
+    fn a_degenerate_ratio_has_no_representation() {
+        for bad in [0.0, 1.0, -3.0, 42.0] {
+            let r = SplitRatio::new(bad);
+            assert!(
+                r.get() >= MIN_RATIO && r.get() <= 1.0 - MIN_RATIO,
+                "{bad} must refine into range, got {}",
+                r.get()
+            );
+        }
+        // And a tree built from them still validates, because there is no
+        // way to put the bad value in.
         let n = LayoutNode::Split {
             orientation: SplitOrientation::Vertical,
-            ratio: 0.0,
+            ratio: SplitRatio::new(0.0),
             a: Box::new(LayoutNode::leaf(PaneId(1))),
             b: Box::new(LayoutNode::leaf(PaneId(2))),
         };
-        assert_eq!(n.validate(), Err(LayoutError::BadRatio(0.0)));
+        n.validate().expect("a refined ratio always validates");
+    }
+
+    /// The silent one. `NaN` used to pass straight through `f32::clamp`
+    /// (which returns NaN for NaN input rather than panicking), and
+    /// `NaN as u16` saturates to `0` — so a NaN ratio did not error, it
+    /// silently gave one side ZERO cells and the pane vanished.
+    #[test]
+    fn a_nan_ratio_cannot_reach_the_geometry() {
+        assert_eq!(SplitRatio::new(f32::NAN).get(), SplitRatio::BALANCED.get());
+        assert_eq!(SplitRatio::new(f32::INFINITY).get(), SplitRatio::BALANCED.get());
+        assert_eq!(
+            SplitRatio::new(f32::NEG_INFINITY).get(),
+            SplitRatio::BALANCED.get()
+        );
+
+        // The end-to-end consequence: both sides get real cells.
+        let n = LayoutNode::Split {
+            orientation: SplitOrientation::Vertical,
+            ratio: SplitRatio::new(f32::NAN),
+            a: Box::new(LayoutNode::leaf(PaneId(1))),
+            b: Box::new(LayoutNode::leaf(PaneId(2))),
+        };
+        let rects = n.compute_rects(Rect::sized(80, 24));
+        assert_eq!(rects.len(), 2);
+        for (pane, r) in rects {
+            assert!(r.w > 0 && r.h > 0, "pane {pane:?} vanished: {r:?}");
+        }
+    }
+
+    /// A hostile or merely stale peer cannot put a bad ratio into a live
+    /// tree: `Deserialize` routes through the same refinement.
+    #[test]
+    fn deserialisation_refines_a_hostile_ratio() {
+        let zero: SplitRatio = serde_json::from_str("0.0").expect("deserialises");
+        assert!(zero.get() >= MIN_RATIO, "wire value must be refined");
+
+        let huge: SplitRatio = serde_json::from_str("42.0").expect("deserialises");
+        assert!(huge.get() <= 1.0 - MIN_RATIO, "wire value must be refined");
+
+        let neg: SplitRatio = serde_json::from_str("-3.0").expect("deserialises");
+        assert!(neg.get() >= MIN_RATIO, "wire value must be refined");
+    }
+
+    /// ★ The compatibility claim, tested rather than asserted.
+    ///
+    /// `SplitRatio` replaced a bare `f32` on a type that crosses the CBOR
+    /// wire between daemon and client, and is persisted to `praca.json`. If
+    /// the encoding changed, every already-running daemon would fail to
+    /// talk to a new client — a flag day. `#[serde(transparent)]` is what
+    /// prevents that, and this pins it.
+    #[test]
+    fn split_ratio_is_wire_identical_to_the_bare_f32_it_replaced() {
+        let as_ratio = serde_json::to_string(&SplitRatio::new(0.25)).unwrap();
+        let as_f32 = serde_json::to_string(&0.25_f32).unwrap();
+        assert_eq!(
+            as_ratio, as_f32,
+            "SplitRatio must serialise exactly like the f32 it replaced, or \
+             a running daemon cannot talk to a new client"
+        );
+
+        // And a whole tree round-trips through the wire form unchanged.
+        let tree = LayoutNode::Split {
+            orientation: SplitOrientation::Vertical,
+            ratio: SplitRatio::new(0.25),
+            a: Box::new(LayoutNode::leaf(PaneId(1))),
+            b: Box::new(LayoutNode::leaf(PaneId(2))),
+        };
+        let json = serde_json::to_string(&tree).unwrap();
+        let back: LayoutNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, tree);
     }
 
     #[test]
