@@ -57,8 +57,19 @@ use tear_types::MultiplexerControl;
 use crate::{InProcess, PaneGrid};
 
 /// The full query catalog. espelho's own `scan` table is private, so
-/// the variants are enumerated here — `catalog_is_exhaustive` below
-/// fails the build if espelho grows a variant this file doesn't cover.
+/// the variants are enumerated here, and [`catalog_index`] below is what
+/// actually holds this list to espelho's enum.
+///
+/// **Corrected 2026-08-01.** This docstring used to say
+/// `catalog_is_exhaustive` "fails the build if espelho grows a variant this
+/// file doesn't cover." It could not. That test builds its input by mapping
+/// over `CATALOG` itself and then asserts that scanning the result yields
+/// `CATALOG` — circular by construction, so a variant espelho added and this
+/// list omitted is never in the input and can never be detected. Its own
+/// inline comment half-conceded this ("this count assertion *documents* the
+/// coverage"), while the docstring promised enforcement. The test is still
+/// worth keeping — it pins scan/wire round-tripping — but it was never the
+/// forcing function, and [`catalog_index`] now is.
 const CATALOG: [VtQuery; 6] = [
     VtQuery::CursorPosition,
     VtQuery::DeviceStatus,
@@ -67,6 +78,33 @@ const CATALOG: [VtQuery; 6] = [
     VtQuery::OscForeground,
     VtQuery::OscBackground,
 ];
+
+/// The real forcing function: an **exhaustive match with no wildcard**.
+///
+/// `espelho::VtQuery` is a plain `pub enum` — not `#[non_exhaustive]` — so
+/// adding a variant upstream breaks this match with `E0004` and tear-core
+/// stops compiling until the variant is placed in [`CATALOG`]. That is a
+/// compile error, which is what the old docstring claimed and a
+/// self-referential runtime assertion could never deliver.
+///
+/// Returning the index (rather than `bool`) is what ties the match to the
+/// array: `catalog_index_matches_catalog_order` below asserts
+/// `CATALOG[catalog_index(q)] == q`, so a variant can be added to the match
+/// and *still* fail if it was not put in the list at the right position.
+///
+/// Tier: **truly-unrepresentable** for "espelho grew a variant this file does
+/// not name" (E0004). The ordering tie is a test — **CI-caught**.
+/// Do not collapse those two into one claim.
+const fn catalog_index(q: VtQuery) -> usize {
+    match q {
+        VtQuery::CursorPosition => 0,
+        VtQuery::DeviceStatus => 1,
+        VtQuery::PrimaryDeviceAttributes => 2,
+        VtQuery::TerminalVersion => 3,
+        VtQuery::OscForeground => 4,
+        VtQuery::OscBackground => 5,
+    }
+}
 
 /// Realistic byte streams a multiplexer actually sees, each embedding
 /// the query wire: bare, mid-prompt (SGR-wrapped), inside an
@@ -99,6 +137,30 @@ fn catalog_is_exhaustive() {
         cursor = end;
     }
     assert_eq!(found.as_slice(), CATALOG.as_slice());
+}
+
+/// Ties [`catalog_index`]'s exhaustive match to [`CATALOG`]'s contents.
+///
+/// The match alone proves every variant is *named*; this proves each is in
+/// the array, at the position the match assigns. Adding a variant to the
+/// match without adding it to `CATALOG` — the obvious way to silence an
+/// `E0004` without doing the work — fails here.
+#[test]
+fn catalog_index_matches_catalog_order() {
+    for (i, q) in CATALOG.iter().enumerate() {
+        assert_eq!(
+            catalog_index(*q),
+            i,
+            "{q:?} is at CATALOG[{i}] but catalog_index says {}",
+            catalog_index(*q)
+        );
+    }
+    assert_eq!(
+        CATALOG.len(),
+        6,
+        "CATALOG changed size — update catalog_index's match and this count \
+         together, or the two halves of the guard drift apart"
+    );
 }
 
 #[test]
