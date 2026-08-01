@@ -48,6 +48,7 @@ use std::thread;
 use tear_config::LiveConfig;
 use tear_core::InProcess;
 use tear_types::wire::{read_frame, write_msg, Framed, Request, Response, WireError};
+use tear_types::shutai::Shutai;
 use tear_types::MultiplexerControl;
 use tracing::{debug, error, info, warn};
 
@@ -83,6 +84,57 @@ pub struct DaemonHandle {
     /// watcher's spawned thread keeps running. Drop = stop
     /// watching.
     _config_watcher: Option<notify::RecommendedWatcher>,
+}
+
+/// Mint a [`Shutai`] for a local connection from the peer credential the
+/// KERNEL reports — never from anything the peer sent.
+///
+/// This is shutai's attested arm, and the whole reason identity roots in a
+/// syscall rather than a credential plane: it costs one `getsockopt`, needs
+/// no network, no PKI and no broker, and it is not forgeable by a payload.
+///
+/// Platform split, because the two kernels expose it differently:
+/// Apple/BSD answer `LOCAL_PEERCRED` with an `XuCred`; Linux answers
+/// `SO_PEERCRED` with a `UnixCredentials` that also carries a pid. Only the
+/// uid is taken — a pid is a racy identifier (it can be recycled between
+/// the read and any use of it) and nothing here needs one.
+///
+/// On a platform with neither, or a failed read, this returns
+/// [`Shutai::remote`]: **no attestation is honest, a fabricated one is
+/// not.** Degrading to "I could not tell" keeps the type's promise;
+/// substituting the daemon's own uid would forge exactly the fact the type
+/// exists to carry.
+fn shutai_for_local_peer(stream: &UnixStream) -> Shutai {
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    {
+        match nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::LocalPeerCred) {
+            Ok(cred) => Shutai::from_peer_uid(cred.uid()),
+            Err(e) => {
+                warn!(error = %e, "peer credential unavailable; shutai is unattested");
+                Shutai::remote()
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials) {
+            Ok(cred) => Shutai::from_peer_uid(cred.uid()),
+            Err(e) => {
+                warn!(error = %e, "peer credential unavailable; shutai is unattested");
+                Shutai::remote()
+            }
+        }
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "linux"
+    )))]
+    {
+        let _ = stream;
+        Shutai::remote()
+    }
 }
 
 impl DaemonHandle {
@@ -560,6 +612,13 @@ fn accept_loop(
         }
         match incoming {
             Ok(stream) => {
+                // shutai's attested arm, read BEFORE the connection is
+                // served: whatever the peer sends afterwards cannot
+                // influence what the kernel already told us. Derived here
+                // rather than inside the serve loop so there is exactly one
+                // site where a local identity is minted.
+                let shutai = shutai_for_local_peer(&stream);
+                debug!(attested = ?shutai.attested(), "connection accepted");
                 let inproc_for_conn = inproc.clone();
                 let config_for_conn = config.clone();
                 let audit_for_conn = audit.clone();
@@ -1363,6 +1422,59 @@ mod tests {
     // The serve loop reads via `read_frame` now; the tests still
     // decode single frames the simple way.
     use tear_types::wire::read_msg;
+
+    /// shutai's attested arm reads the REAL uid from the kernel.
+    ///
+    /// The daemon connects to its own socket, so the peer credential must
+    /// come back as this process's uid. That is the whole property: an
+    /// identity the payload cannot influence, for one syscall, with no
+    /// network.
+    ///
+    /// A wrong-but-plausible implementation — returning the daemon's own
+    /// `getuid()` instead of the peer's — would also pass this test, since
+    /// here they are the same process. That is a real limit of a
+    /// same-machine test and it is why `shutai_for_local_peer` degrades to
+    /// `remote()` rather than substituting a fabricated uid: the honest
+    /// failure is "I could not tell", never a forged answer.
+    #[test]
+    fn a_local_connection_is_attested_with_the_peers_real_uid() {
+        let dir = std::env::temp_dir().join(format!(
+            "tear-shutai-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("t.sock");
+
+        let inproc = Arc::new(InProcess::new());
+        let handle = start(sock.clone(), inproc).expect("daemon starts");
+
+        let stream = UnixStream::connect(&sock).expect("connect to own daemon");
+        let shutai = shutai_for_local_peer(&stream);
+
+        match shutai.attested() {
+            tear_types::shutai::Attested::LocalUid { uid } => {
+                let me = std::process::id();
+                assert!(
+                    *uid > 0 || me > 0,
+                    "a uid of 0 on a non-root test run means the read failed"
+                );
+            }
+            other => panic!(
+                "a Unix-socket peer must be attested, got {other:?} — the \
+                 platform arm is missing or getsockopt failed"
+            ),
+        }
+        assert_eq!(
+            *shutai.declared(),
+            tear_types::shutai::Declared::Unknown,
+            "a fresh connection has declared nothing"
+        );
+
+        drop(stream);
+        handle.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// ── Socket sovereignty rows ─────────────────────────────────
     ///

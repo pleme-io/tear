@@ -34,6 +34,9 @@ tokio = { version = "1", features = ["rt", "macros", "time"] }
 # notify is used transitively via tear-config; we re-export the
 # watcher type from DaemonHandle for keep-alive semantics.
 notify = { workspace = true }
+# Safe peer-credential read for shutai's attested arm — see the workspace
+# dep comment. This crate forbids unsafe, so the wrapper is load-bearing.
+nix = { workspace = true }
 
 [dev-dependencies]
 # Hand-encodes a request frame naming a variant this daemon's

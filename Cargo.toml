@@ -99,7 +99,11 @@ unicode-width = "0.2"
 ciborium = "0.2"
 
 # ── unit conversions for layout / dimensions ────────────────────────
-nix = { version = "0.30", features = ["term"] }
+# `socket` is for the peer-credential read that gives shutai its attested
+# arm (LOCAL_PEERCRED on Apple, SO_PEERCRED on Linux). It matters that nix
+# provides a SAFE wrapper: every tear crate is `#![forbid(unsafe_code)]`,
+# so a raw libc call would not compile.
+nix = { version = "0.30", features = ["term", "socket"] }
 
 # ── WebSocket transport for the browser-facing tear-ws-bridge (#1) ─
 tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
