@@ -1331,8 +1331,19 @@ pub fn dispatch_with_shutai(
         Request::NewSession { name, shell, source, size_cells, args } => {
             let src = derive_session_source(source, shutai);
             let size = size_cells.unwrap_or((80, 24));
-            let result =
-                inproc.new_session_with_source_and_size(&name, &shell, &args, src.clone(), size);
+            // Derive the pane's provenance from the SAME shutai that
+            // already decided the SessionSource one line up. Without this
+            // every socket-created session's panes are `Yurai::Unknown`,
+            // and `TearSession::admits` brakes only when
+            // `p.yurai.is_automation()` (tear-types/src/session.rs:94) — so
+            // `freio` engaged against an agent-spawned session stopped
+            // nothing, leaving a destructive kill as the only stop verb.
+            // `Yurai::from_shutai` is the one constructor that can mint
+            // `Automation`, and it takes a shutai the daemon minted from a
+            // connection it holds, so this cannot fabricate provenance.
+            let yurai = shutai.map(tear_types::Yurai::from_shutai).unwrap_or_default();
+            let result = inproc
+                .new_session_yurai(&name, &shell, &args, src.clone(), size, yurai);
             if let Ok(sid) = &result {
                 if let Some(a) = audit {
                     a.emit(&AuditEvent::SessionCreate {
@@ -1645,6 +1656,61 @@ mod tests {
             unbrakable.len(),
             1,
             "the operator MUST be told this pane kept accepting input;              silence here would let them believe everything stopped"
+        );
+    }
+
+    /// freio must brake a session the AGENT created over the socket — not
+    /// just one a test hand-stamped with `Yurai::Automation`.
+    ///
+    /// `Request::NewSession` used to call `new_session_with_source_and_size`,
+    /// which takes no provenance, so every socket-created session's panes
+    /// were `Yurai::Unknown`. `TearSession::admits` brakes only when
+    /// `p.yurai.is_automation()` (tear-types/src/session.rs:94), so engaging
+    /// freio against an agent-spawned session stopped NOTHING and the only
+    /// stop verb left was a destructive kill. The sibling freio tests all
+    /// passed throughout, because they built their sessions with
+    /// `new_session_yurai` directly and never exercised the dispatch path.
+    #[test]
+    fn freio_brakes_a_session_created_through_the_socket_by_an_agent() {
+        let inproc = InProcess::new();
+        let config = LiveConfig::default();
+        let shutai = Shutai::remote().declaring(Declared::Agent { label: Some("claude".into()) });
+
+        let resp = dispatch_with_shutai(
+            &inproc,
+            &config,
+            Request::NewSession {
+                name: "agent-made".into(),
+                shell: "/bin/sh".into(),
+                source: None,
+                size_cells: None,
+                args: vec![],
+            },
+            None,
+            None,
+            Some(&shutai),
+        );
+        let Response::SessionId(sid) = resp else {
+            panic!("expected Response::SessionId, got {resp:?}");
+        };
+
+        // Precondition: the provenance actually landed on the pane. Without
+        // this the brake assertion below could pass for the wrong reason.
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let session = inproc.get_session(sid).unwrap();
+        assert!(
+            session.panes.get(&pane).unwrap().yurai.is_automation(),
+            "the agent connection's provenance must reach the pane, else freio \
+             has nothing to filter on"
+        );
+
+        let resp = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
+        let Response::Freio { braked, .. } = resp else {
+            panic!("expected Response::Freio, got {resp:?}");
+        };
+        assert!(
+            braked.contains(&pane),
+            "freio engaged must brake the agent-created pane {pane}; braked = {braked:?}"
         );
     }
 
