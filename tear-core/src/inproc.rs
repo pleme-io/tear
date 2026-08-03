@@ -594,6 +594,7 @@ impl InProcess {
         let registry_for_exit = Arc::clone(&self.registry);
         let ptys_for_exit = Arc::clone(&self.ptys);
         let grids_for_exit = Arc::clone(&self.grids);
+        let recordings_for_exit = Arc::clone(&self.recordings);
         let on_exit = Box::new(move |code: Option<i32>| {
             let (still_present, fully_exited) = {
                 let mut r = registry_for_exit.write();
@@ -672,6 +673,7 @@ impl InProcess {
                         &ptys_for_exit,
                         &grids_for_exit,
                         &subscribers_for_exit,
+                        &recordings_for_exit,
                         proof,
                     );
                 }
@@ -704,6 +706,7 @@ impl InProcess {
             } else {
                 self.grids.lock().remove(&pane_id);
                 self.subscribers.lock().remove(&pane_id);
+                self.recordings.lock().remove(&pane_id);
                 self.ptys.lock().remove(&pane_id)
             }
         };
@@ -727,18 +730,30 @@ impl InProcess {
     /// leave the maps inside the lock scope and die outside it (the
     /// reap itself is additionally bounded — see `pty::reap_with_deadline`).
     fn detach_panes(&self, panes: &[PaneId]) -> Vec<PtyHandle> {
-        let mut ptys = self.ptys.lock();
-        let mut grids = self.grids.lock();
-        let mut subs = self.subscribers.lock();
-        let mut detached = Vec::with_capacity(panes.len());
-        for p in panes {
-            if let Some(h) = ptys.remove(p) {
-                detached.push(h);
+        let detached = {
+            let mut ptys = self.ptys.lock();
+            let mut grids = self.grids.lock();
+            let mut subs = self.subscribers.lock();
+            let mut detached = Vec::with_capacity(panes.len());
+            for p in panes {
+                if let Some(h) = ptys.remove(p) {
+                    detached.push(h);
+                }
+                grids.remove(p);
+                // Dropping the sender vec disconnects subscribers
+                // cleanly — their recv() returns Err on next read.
+                subs.remove(p);
             }
-            grids.remove(p);
-            // Dropping the sender vec disconnects subscribers
-            // cleanly — their recv() returns Err on next read.
-            subs.remove(p);
+            detached
+        };
+        // Drop the recording buffer as well — see the note in
+        // `reap_proven_dead` for why this is a separate scope taken after
+        // the three-map region rather than a fourth lock inside it.
+        {
+            let mut recs = self.recordings.lock();
+            for p in panes {
+                recs.remove(p);
+            }
         }
         detached
     }
@@ -769,6 +784,7 @@ impl InProcess {
             &self.ptys,
             &self.grids,
             &self.subscribers,
+            &self.recordings,
             proof,
         )
     }
@@ -785,6 +801,7 @@ fn reap_proven_dead(
     ptys: &Mutex<BTreeMap<PaneId, PtyHandle>>,
     grids: &Mutex<BTreeMap<PaneId, Arc<Mutex<PaneGrid>>>>,
     subscribers: &Mutex<BTreeMap<PaneId, PaneSubscribers>>,
+    recordings: &Mutex<BTreeMap<PaneId, Arc<PaneRecording>>>,
     proof: AllPanesExited,
 ) -> bool {
     let sid = proof.session();
@@ -822,6 +839,19 @@ fn reap_proven_dead(
             })
             .collect()
     };
+    // Drop the recording buffer too. Taken in its OWN scope, after the
+    // three-map scope above, deliberately: the pty reader acquires
+    // `subscribers` and `recordings` sequentially (it drops `subs` before
+    // taking `recordings` in `on_bytes`), so keeping this outside the
+    // triple-lock region adds no new lock-order edge to the deadlock
+    // contract on `detach_panes`. The `Arc<PaneRecording>` keeps any
+    // in-flight `push` alive until it returns.
+    {
+        let mut recs = recordings.lock();
+        for p in &panes_to_detach {
+            recs.remove(p);
+        }
+    }
     drop(detached);
     info!(session = %sid, "tear-core: reaped fully-exited unwatched session");
     true
@@ -1852,6 +1882,35 @@ mod tests {
         inproc.kill_session(sid).unwrap();
         let err = inproc.subscribe_pane_bytes(pane).unwrap_err();
         assert!(matches!(err, ControlError::NoSuchPane(_)));
+    }
+
+    #[test]
+    fn kill_session_prunes_the_recording_buffer() {
+        // The `recordings` map had NO `.remove()` anywhere in the crate, so
+        // every recorded pane kept its whole captured byte buffer for the
+        // DAEMON'S LIFETIME — invisible to `tear list`, `pane_stats` and
+        // `daemon_status`'s pane counts, which all read other maps. A few
+        // recorded build logs is routinely hundreds of MB.
+        //
+        // Sibling of `new_session_then_kill_then_subscribe_returns_nosuch`,
+        // which pins the same teardown contract for subscribers + grids +
+        // ptys. Recordings were simply missing from that list.
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("rec-leak", "/bin/sh").unwrap();
+        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        inproc.enable_pane_recording(pane).unwrap();
+        assert_eq!(
+            inproc.recordings.lock().len(),
+            1,
+            "precondition: the recording must actually be registered, or this \
+             test would pass vacuously against an empty map"
+        );
+        inproc.kill_session(sid).unwrap();
+        assert!(
+            inproc.recordings.lock().is_empty(),
+            "kill_session must drop the pane's recording buffer; leaking it \
+             retains the captured bytes until the daemon exits"
+        );
     }
 
     // ── #2 input policy ────────────────────────────────────────
