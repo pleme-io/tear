@@ -11,6 +11,13 @@ description = "The praça session-orchestration substrate for the mado/tear term
 [lints]
 workspace = true
 
+[features]
+default = []
+# Expose `mock_backend` to consumers so they can test their own definitions
+# against the real `instantiate`. Off by default — a shipped binary never
+# links a fake multiplexer.
+testing = []
+
 [dependencies]
 # SessionId — the stable handle praca binds a project root to. Pure
 # types, no I/O; same vocabulary the daemon/mado already speak.

@@ -47,9 +47,21 @@ pub mod instance_registry;
 pub mod instantiate;
 /// Recording test double for the `MultiplexerControl` Environment seam.
 ///
-/// `cfg(test)`-only: it is a testing affordance, not a shipped backend, and
-/// exposing it would invite a consumer to depend on a fake multiplexer.
-#[cfg(test)]
+/// Available to praça's own tests always, and to a CONSUMER under the
+/// opt-in `testing` feature.
+///
+/// It was `cfg(test)`-only, reasoning that "exposing it would invite a
+/// consumer to depend on a fake multiplexer". The caution is right and the
+/// conclusion was too strong: it also meant **no consumer could test that
+/// its own `SessionDefinition` actually instantiates** — only that the
+/// definition validates, which is a strictly weaker claim. A definition can
+/// validate and still spawn one pane where three were planned.
+///
+/// A mockable `Environment` seam that consumers cannot reach is only half a
+/// seam. `testing` is off by default, so nothing ships it; a consumer opts in
+/// under `[dev-dependencies]`, which is the same shape banken uses for its
+/// `live` feature and metsuke for `MockForge`.
+#[cfg(any(test, feature = "testing"))]
 pub mod mock_backend;
 pub mod picker;
 pub mod project;
