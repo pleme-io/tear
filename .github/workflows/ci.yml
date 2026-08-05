@@ -1,5 +1,29 @@
 name: ci
 
+# Thin shim onto substrate's reusable cargo-ci.yml — the fleet standard.
+#
+# REPLACED a hand-written `runs-on: macos-15` job: checkout → install nix →
+# nix flake check → nix build '.#default' → cargo fmt --all -- --check → cargo test --workspace.
+#
+# This is the SAME template eight repos were converted from on 2026-08-01
+# (arnes, promessa, remessa, repo-forge, tansa, zuihitsu,
+# engenho-promessa-controllers, gaveta-client). Six more copies survived that
+# pass — calha, ensaio, ishou, ponte, shigoto, tear — and were only found by
+# clustering the remaining hand-authored workflows by structural shape rather
+# than by filename. They carry the same three defects the original cohort did:
+#
+#  1. NO GIT CREDENTIALS, so a private pleme-io git dep dies in
+#     `nix flake check` with an anonymous 404. The reusable carries both
+#     credential paths (cargo's git AND nix's own GitHub fetcher).
+#  2. `macos-15` FOR NO REASON — no Package.swift, no .xcodeproj, no
+#     apple-darwin target. macOS minutes bill at 10x Linux on a private repo.
+#  3. A HARDCODED PUBLIC RUNNER, where the reusable resolves by repo
+#     visibility (private → the camelot ARC pool).
+#
+# Test coverage goes UP: the reusable defaults to
+# `--workspace --all-features --no-fail-fast` against the old bare
+# `--workspace`.
+
 on:
   push:
     branches:
@@ -7,22 +31,17 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: build
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Flake check
-        run: nix flake check
-      - name: Nix build
-        run: nix build '.#default'
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo test
-        run: cargo test --workspace
+  check:
+    uses: pleme-io/substrate/.github/workflows/cargo-ci.yml@main
+    with:
+      # Preserves the explicit `nix build` the old job ran. `nix flake check`
+      # builds `checks.<system>.*` and NOTHING else, so without this the
+      # package itself would stop being compiled by CI.
+      build-targets: ".#default"
+    secrets: inherit
