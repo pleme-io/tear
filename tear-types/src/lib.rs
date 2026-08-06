@@ -38,10 +38,12 @@
 #![forbid(unsafe_code)]
 #![doc(html_root_url = "https://docs.rs/tear-types/0.1.0")]
 
+pub mod address;
 pub mod block;
 pub mod capability;
 pub mod cast;
 pub mod control;
+pub mod genesis;
 #[cfg(feature = "engate")]
 pub mod engate_wrap;
 pub mod direction;
@@ -67,8 +69,13 @@ pub mod window;
 pub mod wire;
 pub mod yurai;
 
+// `address::Segment` is deliberately NOT re-exported: the crate root
+// already binds `Segment` to the status-bar widget. Reach the address
+// label as `tear_types::address::Segment`.
+pub use address::{Address, AddressError, Pattern, PatternError, PatternToken, SegmentError};
 pub use capability::{Capability, DaemonHello, DaemonIdentity};
 pub use control::{ControlError, ControlResult, MultiplexerControl};
+pub use genesis::{Genesis, Guid};
 pub use direction::{Direction, SplitOrientation};
 pub use geometry::Rect;
 pub use freio::{Admission, Freio, RefusalReason};
