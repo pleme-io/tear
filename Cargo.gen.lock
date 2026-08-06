@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "9c389433ef89b76ec356cff802df6f52329b7fa06ad049053c8c24d8187ccc33",
+  "cargo_lock_sha256": "754daf211c31ddf5107442f49aae713999cb27070c43eccc0cba3149adee131d",
   "manifest_sha256": {
-    "Cargo.toml": "1cc5a63136b1eb4ac647dc421be8eac7d7a952326bf29390925163d7e33fe5a3",
+    "Cargo.toml": "68f95649a1225696549cbf3a46082671b9f5e5a4cb1199c746bc1e16f833615b",
     "praca/Cargo.toml": "a76469f06bb0a0d65b4d0ca26a49f7429d77884256879efe3fb29a7e9f967abf",
     "tear-client/Cargo.toml": "083d0b1c4cc16e873b192f3e4304ee9a262abd1317c67902dba4d907d35aaf90",
     "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
@@ -11,7 +11,7 @@
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
     "tear-types/Cargo.toml": "628bd3df681893ec37265e87f15fc304dd284268ae14eb19d549d9a3550ddb9a",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
-    "tear/Cargo.toml": "602dcebd5da7a548e590ea05b1ebef229fe1ce222775290b3bcaaa8be9b39100"
+    "tear/Cargo.toml": "d4a41d443fc739797ab298aa2866656fa2645cc6795c4534ecb1dd1f20f12104"
   },
   "target_resolves": {
     "base": {
@@ -2257,7 +2257,7 @@
           "std"
         ]
       },
-      "gen-macros-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": {
+      "gen-macros-0.1.34": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -2296,11 +2296,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-platform-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": {
+      "gen-platform-0.1.34": {
         "runtime_dependencies": [
           {
             "name": "gen_macros",
-            "package_key": "gen-macros-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e",
+            "package_key": "gen-macros-0.1.34",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2310,7 +2310,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e",
+            "package_key": "gen-types-0.1.34",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2364,7 +2364,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-types-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": {
+      "gen-types-0.1.34": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -4990,7 +4990,7 @@
           },
           {
             "name": "shidou",
-            "package_key": "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2",
+            "package_key": "shidou-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5000,7 +5000,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.452-56adc8828ccb5f4f66258ca66ba402b92ae01dbb",
+            "package_key": "shikumi-0.1.490",
             "kind": "normal",
             "features": [
               "cli"
@@ -7532,7 +7532,7 @@
           "std"
         ]
       },
-      "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": {
+      "shidou-0.1.9": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7570,7 +7570,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.452-56adc8828ccb5f4f66258ca66ba402b92ae01dbb",
+            "package_key": "shikumi-0.1.490",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7617,7 +7617,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shikumi-0.1.452-56adc8828ccb5f4f66258ca66ba402b92ae01dbb": {
+      "shikumi-0.1.490": {
         "runtime_dependencies": [
           {
             "name": "arc_swap",
@@ -7667,7 +7667,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e",
+            "package_key": "gen-platform-0.1.34",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7677,7 +7677,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e",
+            "package_key": "gen-types-0.1.34",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8265,7 +8265,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.452-56adc8828ccb5f4f66258ca66ba402b92ae01dbb",
+            "package_key": "shikumi-0.1.490",
             "kind": "normal",
             "features": [
               "cli"
@@ -15560,14 +15560,14 @@
     "futures-util-0.3.32": {
       "edition": "2018"
     },
-    "gen-macros-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": {
+    "gen-macros-0.1.34": {
       "edition": "2024",
       "proc_macro": true
     },
-    "gen-platform-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": {
+    "gen-platform-0.1.34": {
       "edition": "2024"
     },
-    "gen-types-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": {
+    "gen-types-0.1.34": {
       "edition": "2024"
     },
     "generic-array-0.14.7": {
@@ -16115,10 +16115,10 @@
     "shell-words-1.1.1": {
       "edition": "2015"
     },
-    "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": {
+    "shidou-0.1.9": {
       "edition": "2024"
     },
-    "shikumi-0.1.452-56adc8828ccb5f4f66258ca66ba402b92ae01dbb": {
+    "shikumi-0.1.490": {
       "edition": "2024"
     },
     "shlex-1.3.0": {
@@ -16499,14 +16499,9 @@
   },
   "git_nar_sha256": {
     "espelho-0.1.0-e1ff733cb78637c1d38eac46abbfe2d7719dd5af": "sha256-mX8YVMxg+W4ea5ofdL5KLid6S5oKiGN48angjAj8OVc=",
-    "gen-macros-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": "sha256-EBxe7kPZNxphQ4xcIlx26FZFCPzKKJzwgG7c0HSlO6E=",
-    "gen-platform-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": "sha256-EBxe7kPZNxphQ4xcIlx26FZFCPzKKJzwgG7c0HSlO6E=",
-    "gen-types-0.1.31-83e648f90a2a7a6794b651d800c52d44ccceae7e": "sha256-EBxe7kPZNxphQ4xcIlx26FZFCPzKKJzwgG7c0HSlO6E=",
     "ishou-tokens-0.1.3-d972f9e7f31ada81b2c5ac5cc9cfe84539ec5d1f": "sha256-xk13C1WwSGg3jBnSxyit/1guqdTQBKAPkrs2s+o57Mg=",
     "kanshou-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
-    "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4=",
-    "shidou-0.1.7-65cb879cd76a4a1c1eefc53b1791d84f6df34cb2": "sha256-3hlg04OVg5MawDisQLDuorp0PmODWPF/t9PscUe56UE=",
-    "shikumi-0.1.452-56adc8828ccb5f4f66258ca66ba402b92ae01dbb": "sha256-SaqMDamyz34cOstgYT1Iy4+ZbsnGgKXvRHF25DfcRqM="
+    "kanshou-derive-0.1.0-cd7b34f4d8737d58b18e411fb8aeba0a25f1d28f": "sha256-wmwL7P5fEEvsEGa7YW4v+Xh3aEamhcnMz3KVz2hE0f4="
   },
   "flake_metadata": {}
 }
