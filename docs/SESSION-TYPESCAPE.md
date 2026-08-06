@@ -62,6 +62,8 @@ restart-durable live state (a tmux-resurrect-class feature).
 | 1:N definition→instances (`InstanceRegistry`) | **Shipped** | `BTreeMap<DefinitionId, BTreeSet<InstanceId>>` |
 | `instantiate` / `reinstantiate` morphism | **Shipped** | tested vs real `InProcess`; tree shape + per-pane shell exact |
 | `Durability::ProcessBound` (no restart-survival value) | **Shipped** | restart = re-instantiate, not resurrect |
+| Genesis-derived `Guid` (full 256-bit BLAKE3, domain-separated leaves) | **Shipped** | `tear-types::genesis`; the only producer is `Genesis::guid`. Deliberately NOT `SessionId::from_seed`, which truncates to 8 bytes and seeds off the mutable name |
+| `Address` / `address::Segment` / `Pattern` (dot-separated alias + NATS matcher) | **Shipped** (type) / **M2** (wired) | `tear-types::address`; nothing resolves an address yet — `Request` is still exhaustively id-typed |
 | Typed `SessionOrigin` (project / ad-hoc / authored) | **Shipped** | the ad-hoc path is a typed arm, not a hidden branch |
 | `AttachAction::Instantiate` branch | **Shipped** (type) / **M2** (wired) | `decide()` still returns the old `AttachDecision` |
 | `decide() → AttachAction`; `SessionRecord` as a projected view; delete `SessionState::Templated`; `ProjectBinding → InstanceRegistry`; mado→one store | **M2** | the production rewire — changes the live daemon + persisted format |
@@ -76,8 +78,11 @@ restart-durable live state (a tmux-resurrect-class feature).
 
 ## 3. The illegal-state ledger
 
-The ten states the pressure-test found, and what each became. **8 of 10
-are truly-unrepresentable and shipped; 2 are permanent ceilings.**
+The fifteen states the pressure-tests found, and what each became — ten
+from the original pressure-test (1-10) plus five from the addressing pass
+(11-15). **11 of 15 are truly-unrepresentable** (two of those are type-
+shipped with the wiring still at M2/M5), **1 is parse-time-rejected**, and
+**3 are ceilings** — the C2 and C4 pair, plus the CI-caught guard on 15.
 
 | # | Was admittable | Now | Tier |
 |---|---|---|---|
@@ -90,6 +95,11 @@ are truly-unrepresentable and shipped; 2 are permanent ceilings.**
 | 9 | ad-hoc = a silent third construction path | `SessionOrigin {Project, Adhoc, Authored}` non-Option field | **truly-unrep** ✓ |
 | 10 | model focus vs view focus conflated | `TearWindow.active_pane` (shared model) vs mado's displayed-pane (view-local) — different types/crates | **truly-unrep** (mado-side, M2/M5) |
 | 7 | `decide()` can return `SwitchTo(dead_id)` | resolve the instance against the live registry before switching | **only-mitigated — C2 ceiling** |
+| 11 | a `Guid` invented rather than derived | `Guid([u8; 32])` field is private to `genesis`; no `Default`, `Deserialize`, `FromStr` or `From`; sole producer `Genesis::guid`. Five forgery attempts are five compile errors (E0423/E0277×3/E0308) | **truly-unrep** ✓ |
+| 12 | identity derived from the mutable name, so a rename orphans everything keyed on it | `Guid` commits to genesis (program, spawn intent, cwd, parent guid). The address is **not** a hash input; the intent leaf records only the address requested at birth | **truly-unrep** ✓ |
+| 13 | a `Pattern` with `>` in a non-final position | `PatternError::TailNotFinal` fires before the token is pushed, and the `Vec<PatternToken>` is private — so `matches` has no branch for a case that cannot arrive | **truly-unrep** ✓ |
+| 14 | an address label carrying `.`, whitespace, or wildcard syntax | sole constructor `address::Segment::parse`; `FromStr`, `TryFrom<String>` and serde all delegate to it, so the wire border and the API border are the same code | **parse-time-rejected** — a `String` still exists inside; not rounded up |
+| 15 | a later commit quietly adding a second `Guid` constructor | comment-stripped `include_str!` source scan asserting exactly one `-> Guid` and no `Deserialize`; red-run verified | **only-mitigated — CI-caught** |
 | 8 | mado builds a second unsynced store | route mado through the one daemon `PracaStore` | **only-mitigated — C4 ceiling** |
 
 ### Why #7 and #8 are *ceilings*, not debt

@@ -57,7 +57,7 @@ Adding a new pane operation lands in one place (`tear-types::MultiplexerControl`
 
 | Crate | Role | M0 Status |
 |---|---|---|
-| `tear-types` | Pure typed domain — `SessionId`/`WindowId`/`PaneId` (BLAKE3-derived), `TearSession`/`TearWindow`/`TearPane`/`LayoutNode`/`KeyTable`/`StatusBar`/`TearTheme`, the `MultiplexerControl` trait. No I/O. | **shipped** |
+| `tear-types` | Pure typed domain — `SessionId`/`WindowId`/`PaneId` (BLAKE3-derived, truncated to 8 bytes: a spawn-unique handle, never an identity), `Genesis`/`Guid` (full 256-bit, the unforgeable identity), `Address`/`address::Segment`/`Pattern` (the mutable dot-separated alias; not wired to any lookup yet), `TearSession`/`TearWindow`/`TearPane`/`LayoutNode`/`KeyTable`/`StatusBar`/`TearTheme`, the `MultiplexerControl` trait. No I/O. | **shipped** |
 | `tear-config` | Shikumi-style live config — `~/.config/tear/tear.yaml` parser, `LiveConfig` w/ `ArcSwap<TearConfig>`, hot-reload via `notify`. Same pattern mado uses. | **shipped** |
 | `tear-core` | Runtime: `InProcess` impl of `MultiplexerControl`, `Registry` typed state, `PtyHandle` (via `portable-pty`). | **shipped** (M0 minimum-viable; M2 wires real layout + per-pane vte parsing) |
 | `tear-daemon` | Long-running server. Owns sessions across client disconnects. Length-prefixed CBOR over UDS (or `--tcp`). Wraps `tear-core::InProcess`. | **shipped + LIVE** (3,192 LOC; runs as a user launchd/systemd unit from a Nix store path) |
