@@ -951,8 +951,9 @@ dependencies = [
 
 [[package]]
 name = "gen-macros"
-version = "0.1.31"
-source = "git+https://github.com/pleme-io/gen#83e648f90a2a7a6794b651d800c52d44ccceae7e"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e87d6e8b417dad4ba0d2ed96c58c2cd7af538f592dcf698db0cd8480b08225ed"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -961,8 +962,9 @@ dependencies = [
 
 [[package]]
 name = "gen-platform"
-version = "0.1.31"
-source = "git+https://github.com/pleme-io/gen#83e648f90a2a7a6794b651d800c52d44ccceae7e"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "340242b11b413b24644f55a9dd7ffd05e371910a738ab52981a03a6ffedf6783"
 dependencies = [
  "gen-macros",
  "gen-types",
@@ -974,8 +976,9 @@ dependencies = [
 
 [[package]]
 name = "gen-types"
-version = "0.1.31"
-source = "git+https://github.com/pleme-io/gen#83e648f90a2a7a6794b651d800c52d44ccceae7e"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1efa39b439fd999e2f7454c08cb7a4d1f9e6e49ffa805557647f7f998caf7414"
 dependencies = [
  "blake3",
  "chrono",
@@ -1956,7 +1959,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "shidou",
- "shikumi 0.1.452 (git+https://github.com/pleme-io/shikumi?branch=main)",
+ "shikumi",
  "sysinfo",
  "tear-client",
  "tear-config",
@@ -2706,13 +2709,14 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shidou"
-version = "0.1.7"
-source = "git+https://github.com/pleme-io/shidou#65cb879cd76a4a1c1eefc53b1791d84f6df34cb2"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c75af90f7294a2c80a68dcb3569383e26329194da99a294c30271fc33b369bd"
 dependencies = [
  "anyhow",
  "clap",
  "serde",
- "shikumi 0.1.452 (git+https://github.com/pleme-io/shikumi)",
+ "shikumi",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2720,30 +2724,13 @@ dependencies = [
 
 [[package]]
 name = "shikumi"
-version = "0.1.452"
-source = "git+https://github.com/pleme-io/shikumi?branch=main#56adc8828ccb5f4f66258ca66ba402b92ae01dbb"
+version = "0.1.490"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffab76d7b217e3bfefb66517f82b840d24eb1e55433efd7fee059a62a1bf8ec"
 dependencies = [
  "arc-swap",
  "async-trait",
  "clap",
- "figment",
- "gen-platform",
- "gen-types",
- "notify",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "shikumi"
-version = "0.1.452"
-source = "git+https://github.com/pleme-io/shikumi#56adc8828ccb5f4f66258ca66ba402b92ae01dbb"
-dependencies = [
- "arc-swap",
- "async-trait",
  "figment",
  "gen-platform",
  "gen-types",
@@ -2938,7 +2925,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_yaml_ng",
- "shikumi 0.1.452 (git+https://github.com/pleme-io/shikumi?branch=main)",
+ "shikumi",
  "tear-types",
  "thiserror 2.0.18",
  "tracing",

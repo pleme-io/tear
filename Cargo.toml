@@ -39,9 +39,18 @@ praca = { path = "praca", version = "0.1.10" }
 # via shikumi so cross-tool muscle memory carries over.
 # `cli` feature pulls in shikumi::cli::ConfigShowCommand — the reusable
 # clap subcommand factory tear's binary wires into via one Subcommand
-# variant. Pin to branch=main so the workspace stays on a single
-# canonical shikumi source.
-shikumi = { git = "https://github.com/pleme-io/shikumi", branch = "main", features = ["cli"] , version = "0.1" }
+# variant.
+#
+# ★ crates.io ONLY — no git source. The previous `branch = "main"` pin was
+# annotated "so the workspace stays on a single canonical shikumi source",
+# which held INSIDE this workspace and was false across the fleet: a git
+# source (by branch, by rev, or by tag) is a distinct source that cargo
+# cannot unify with any other spelling. Measured 2026-08-06 — shikumi was
+# reached three incompatible ways at once (mado `rev`, shidou
+# `version+git+rev`, tear `branch=main`), so no two of them could exchange
+# a shikumi type. A semver range unifies automatically from one registry;
+# mado's own Cargo.toml already documents that failure for garasu.
+shikumi = { version = "0.1", features = ["cli"] }
 # Typed design tokens — palette + typography. tear's StatusBar /
 # tab-bar / pane-border / message colors all resolve through ishou
 # so a fleet-wide colorway change is one ishou-tokens edit.

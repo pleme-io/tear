@@ -64,7 +64,13 @@ rmcp = { version = "1.4", features = ["server", "transport-io"] }
 schemars = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util"] }
 sysinfo = "0.32"
-shidou = { git = "https://github.com/pleme-io/shidou" , version = "0.1" }
+# crates.io only — a git dep here re-imports shidou's OWN git dependencies
+# and re-fragments them. cargo strips git sources on publish, so the
+# PUBLISHED shidou depends on `shikumi ^0.1` from the registry (verified
+# against the index, 2026-08-06) while the git checkout dragged in a second
+# shikumi (0.1.452) alongside tear's own. Taking shidou from the registry is
+# what collapses them to one.
+shidou = { version = "0.1" }
 
 [dev-dependencies]
 tempfile = "3"
