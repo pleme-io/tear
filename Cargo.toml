@@ -54,13 +54,13 @@ shikumi = { version = "0.1", features = ["cli"] }
 # Typed design tokens — palette + typography. tear's StatusBar /
 # tab-bar / pane-border / message colors all resolve through ishou
 # so a fleet-wide colorway change is one ishou-tokens edit.
-ishou-tokens = { git = "https://github.com/pleme-io/ishou" , version = "0.1" }
+ishou-tokens = "0.1"
 # Typed terminal-conformance contract (dev-only). tear-core's
 # conformance tests drive PaneGrid + the subscriber fan-out against
 # espelho's VT query catalog — tear is the pass-through RELAY row
 # (queries survive verbatim to subscribers); mado holds the host row,
 # frost the guest row.
-espelho = { git = "https://github.com/pleme-io/espelho", branch = "main", version = "0.1" }
+espelho = "0.1"
 
 # ── canonical fleet runtime crates ─────────────────────────────────
 serde = { version = "1", features = ["derive"] }
