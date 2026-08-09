@@ -2034,6 +2034,7 @@ dependencies = [
  "serde_json",
  "tear-core",
  "tear-types",
+ "wadachi-spec",
 ]
 
 [[package]]
@@ -3580,6 +3581,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d9b2acfb050df409c972a37d3b8e08cdea3bddb0c09db9d53137e504cfabed0"
 dependencies = [
  "utf8parse",
+]
+
+[[package]]
+name = "wadachi-spec"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "417dce59b05a763108c09a84e219a6292b0a9e0158bb084215e4fa0f667cadba"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

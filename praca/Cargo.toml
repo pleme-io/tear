@@ -29,6 +29,13 @@ tear-types = { workspace = true }
 ishou-tokens = { workspace = true }
 # Persistence of the project↔session binding map + the session index.
 serde = { workspace = true }
+# The fleet frecency primitive. praça reads ONE thing from it — the decay
+# curve `frecency::score` scales a session's visit count by — but that one
+# thing was previously a byte-identical copy of `DecayKind::ZoxideLogBuckets`
+# living here. Zero-I/O by construction (the crate's whole point), so this
+# does not compromise praça's "no I/O, all time injected" contract: praça
+# calls `DecayKind::decay`, never the interpreter's clock-bearing environment.
+wadachi-spec = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
