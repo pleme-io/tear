@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
@@ -23,15 +23,15 @@ authors = ["pleme-io"]
 
 [workspace.dependencies]
 # ── tear internal crates ────────────────────────────────────────────
-tear-types = { path = "tear-types", version = "0.1.12" }
-tear-config = { path = "tear-config", version = "0.1.12" }
-tear-core = { path = "tear-core", version = "0.1.12" }
-tear-daemon = { path = "tear-daemon", version = "0.1.12" }
-tear-client = { path = "tear-client", version = "0.1.12" }
-tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.12" }
-tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.12" }
-tear = { path = "tear", version = "0.1.12" }
-praca = { path = "praca", version = "0.1.12" }
+tear-types = { path = "tear-types", version = "0.1.13" }
+tear-config = { path = "tear-config", version = "0.1.13" }
+tear-core = { path = "tear-core", version = "0.1.13" }
+tear-daemon = { path = "tear-daemon", version = "0.1.13" }
+tear-client = { path = "tear-client", version = "0.1.13" }
+tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.13" }
+tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.13" }
+tear = { path = "tear", version = "0.1.13" }
+praca = { path = "praca", version = "0.1.13" }
 
 # ── pleme-io shared libraries — same versions mado pins ────────────
 # Live configuration with hot-reload. Operators learn the shikumi
