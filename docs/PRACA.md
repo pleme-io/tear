@@ -42,7 +42,7 @@ ancestor with a marker (`.git`, then `Cargo.toml`/`flake.nix`/`package.json`/…
 | `SessionRecord` | a tear session + praça metadata: name, `project_root`, cwd, `visits`, `last_seen`, tags, state (`Live`/`Saved`/`Templated`) |
 | `ProjectBinding` | serde-persisted `project_root → SessionId` map (the auto-attach memory) |
 | `SessionIndex` | searchable/ranked collection — fuzzy match on name-word/cwd/tags, ranked by frecency |
-| `frecency::score` | recency-weighted frequency (zoxide/wadachi style) |
+| `frecency::score` | recency-weighted frequency — `visits × decay(age of the last visit)`. The decay curve is **not defined here**: it is `wadachi_spec::DecayKind::ZoxideLogBuckets`, the fleet frecency primitive. praça held a byte-identical private copy of its thresholds and multipliers until 2026-08-09. The configuration praça uses ships upstream as the named instance `praca-parity` |
 | `AttachDecision` / `AttachPolicy` | the automation core: `Stay` / `SwitchTo(id)` / `SpawnNew{root,name}`; policy `AutoSwitch`/`SuggestOnly`/`PickerOnly` |
 | `Praca` facade | `on_cwd_change(current, new_cwd, now) → AttachDecision`, `record_visit`, `search` |
 

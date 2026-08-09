@@ -61,6 +61,30 @@ ishou-tokens = { git = "https://github.com/pleme-io/ishou" , version = "0.1" }
 # (queries survive verbatim to subscribers); mado holds the host row,
 # frost the guest row.
 espelho = { git = "https://github.com/pleme-io/espelho", branch = "main", version = "0.1" }
+# The fleet's ONE frecency-ranking primitive — the decay curve praça ranks
+# sessions by. praça used to hand-copy `DecayKind::ZoxideLogBuckets`' bucket
+# thresholds and multipliers out of this crate while depending on nothing;
+# it now selects the curve from the primitive, so a fleet-wide change to how
+# recency decays reaches tear the same way it reaches wadachi and skim-tab.
+#
+# ★ crates.io, for the same reason shikumi is (above): a git source is a
+# distinct source cargo cannot unify, and skim-tab already reaches this crate
+# from the registry. Two spellings would mean two wadachi-specs in one fleet
+# closure — the exact drift this dependency exists to remove.
+#
+# ★ EXACT pin, and it is an MSRV pin, not a taste pin. wadachi-spec raised its
+# `rust-version` to 1.95.0 at 0.1.8 and 1.97.0 at 0.1.9; this workspace declares
+# 1.89.0. 0.1.7 is the newest release that fits, and its `DecayKind` body is
+# byte-identical to HEAD's, so nothing praça reads is older than current. A
+# caret range would resolve to 0.1.9 and fail the build outright under
+# `resolver = "2"` (no MSRV-aware resolution), so the pin fails LOUDLY at the
+# manifest instead of quietly at the next `cargo update`.
+#
+# Destination: move this workspace's MSRV onto the fleet's, then relax to a
+# caret. That also unblocks selecting the ranking by name —
+# `FrecencyRankingSpec::by_name("praca-parity")` + `score_counted()` land in
+# wadachi-spec after 0.1.9 (see praca/src/frecency.rs, "Named interim").
+wadachi-spec = "=0.1.7"
 
 # ── canonical fleet runtime crates ─────────────────────────────────
 serde = { version = "1", features = ["derive"] }

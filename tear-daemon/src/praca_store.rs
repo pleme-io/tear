@@ -22,14 +22,29 @@
 //! back to `~/.local/state/tear/praca.json`. `$TEAR_STATE_DIR` overrides
 //! the directory wholesale (the seam tests inject a temp dir through).
 //!
-//! ## Atomicity
+//! ## Atomicity + durability
 //!
-//! Writes are **write-temp-then-rename**: the snapshot is serialised to
-//! `praca.json.tmp.<pid>` in the same directory, then `rename`d over the
-//! real path. `rename(2)` within one filesystem is atomic, so a crash
-//! mid-write can leave the temp file but never a half-written
-//! `praca.json` — a reload always sees either the old complete document
-//! or the new complete one, never a torn one.
+//! Writes are **write-temp-then-fsync-then-rename**: the snapshot is
+//! serialised to `praca.json.tmp.<pid>` in the same directory, the temp
+//! file is `sync_all`ed, and only then `rename`d over the real path.
+//! `rename(2)` within one filesystem is atomic, so a reload always sees
+//! either the old complete document or the new complete one, never a
+//! half-written `praca.json`.
+//!
+//! **The `sync_all` is load-bearing, not belt-and-braces.** Rename is
+//! atomic with respect to the *directory entry*; it says nothing about
+//! whether the temp file's bytes reached the disk. Without the fsync a
+//! crash between the write and the rename can publish a snapshot that is
+//! present, correctly named, and truncated or empty — which reloads as a
+//! parse failure of an existing file, i.e. every binding lost. This store
+//! shipped without it until 2026-08-09.
+//!
+//! Durability is all this closes. The **fuller pattern** — a magic +
+//! BLAKE3 frame so a torn body is *detectable* on load rather than merely
+//! rarer, plus reclamation of temps left by a crashed prior write — is
+//! shipped in izumi's `izumi/src/persist.rs` (`atomic_write_framed` /
+//! `sweep_orphan_temps`); the pid-tagged temp name below is already that
+//! function's shape. Adopt it here when this snapshot earns a schema tag.
 //!
 //! ## Concurrency + time
 //!
@@ -188,9 +203,17 @@ fn load_snapshot(path: &Path) -> std::io::Result<Option<PracaSnapshot>> {
     Ok(Some(snap))
 }
 
-/// Serialise `snap` to `path` atomically (write-temp-then-rename).
-/// Creates parent dirs on demand.
+/// Serialise `snap` to `path` atomically and durably
+/// (write-temp → `sync_all` → rename). Creates parent dirs on demand.
+///
+/// The shipped reference for this shape is izumi's `atomic_write_framed`
+/// (`izumi/src/persist.rs`), which additionally frames the body with a magic
+/// tag + BLAKE3 hash so a torn file is *detectable* rather than merely
+/// unlikely. Only the durability half is implemented here — see the module
+/// docs for why the framing half is deferred rather than forgotten.
 fn persist_snapshot(path: &Path, snap: &PracaSnapshot) -> std::io::Result<()> {
+    use std::io::Write;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -199,7 +222,18 @@ fn persist_snapshot(path: &Path, snap: &PracaSnapshot) -> std::io::Result<()> {
     // Temp file in the SAME directory so the rename stays within one
     // filesystem (cross-device rename is not atomic / fails outright).
     let tmp = tmp_path(path);
-    std::fs::write(&tmp, json.as_bytes())?;
+    let mut f = std::fs::File::create(&tmp)?;
+    // `sync_all` BEFORE the rename. `std::fs::write` — which this replaced —
+    // does not sync, and rename only makes the *directory entry* atomic; the
+    // temp file's bytes can still be in flight. Publishing an unsynced temp
+    // means a crash can leave a present, correctly-named, EMPTY snapshot.
+    let written = f.write_all(json.as_bytes()).and_then(|()| f.sync_all());
+    drop(f);
+    if let Err(e) = written {
+        // Never leave a half-written temp behind for a later reader to find.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -349,7 +383,14 @@ mod tests {
         });
 
         // The real file exists and parses; the temp sidecar is gone
-        // (rename consumed it) — a torn write is unrepresentable.
+        // (rename consumed it).
+        //
+        // Tier-honest: this pins the HAPPY path, not the crash path. What the
+        // 2026-08-09 `sync_all` bought is that the bytes are on disk before
+        // the rename publishes them, which is **only-mitigated** — a torn body
+        // is now unlikely rather than detectable. Detectable needs the BLAKE3
+        // frame from izumi's `atomic_write_framed`, and a test that can only
+        // be written once the frame exists to check.
         assert!(path.exists());
         let tmp = tmp_path(&path);
         assert!(!tmp.exists(), "temp file must be renamed away, not left behind");

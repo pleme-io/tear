@@ -63,7 +63,7 @@ Adding a new pane operation lands in one place (`tear-types::MultiplexerControl`
 | `tear-daemon` | Long-running server. Owns sessions across client disconnects. Length-prefixed CBOR over UDS (or `--tcp`). Wraps `tear-core::InProcess`. | **shipped + LIVE** (3,192 LOC; runs as a user launchd/systemd unit from a Nix store path) |
 | `tear-client` | Typed RPC client. Consumed by the `tear` bin, by mado, by remote operators over SSH. Implements `MultiplexerControl` so remote ≡ local from the consumer's perspective. | **shipped** (2,476 LOC) |
 | `tear-tmux-backend` | Renders a typed `TearConfig` → `tmux.conf`. The M0 path AND the permanent escape hatch for remote hosts that have tmux but not tear. | **shipped** |
-| `praca` | Session orchestration: project-root→emoji-name hashing, frecency, project↔session bindings, cd-driven attach, the definition↔instance algebra. Time is injected — never reads a clock. | **shipped** (3,915 LOC) |
+| `praca` | Session orchestration: project-root→emoji-name hashing, frecency, project↔session bindings, cd-driven attach, the definition↔instance algebra. Time is injected — never reads a clock. Frecency's decay curve comes from **`wadachi-spec`** (the fleet primitive), not from praça — see below. | **shipped** (3,915 LOC) |
 | `tear-ws-bridge` | Re-frames the same CBOR wire over WebSocket. | **shipped** (395 LOC) |
 | `mado-web` | wasm32 browser client. **Skeleton** — streams raw bytes into a `<pre>`; no cell grid, no glyph atlas, no input path. Out-of-workspace, own `Cargo.lock`. | skeleton |
 | `tear` (bin) | Multi-call CLI, ~24 subcommands: `up`/`list`/`kill`/`rename`/`attach`/`top`/`mcp`/`daemon`/`blocks`/`block`/`history`/`replay`/`audit`/`ai`/`snapshot`/`migrate`/`pane-input`/`pane-info`/`pane-record`/`render`/`status`/`config-*`. GH releases via `rust-workspace-release-flake.nix`. | **shipped** |
@@ -156,3 +156,19 @@ authoring either learn one mental model.
   tear-specific config dialect that mado can't read or vice versa. If
   a new config knob makes sense on both apps, name + shape it the
   same way in both.
+- **Frecency ranking is `wadachi-spec`'s, not tear's.** `praca::frecency`
+  selects `DecayKind::ZoxideLogBuckets` from the fleet primitive; it defines no
+  curve of its own. Until 2026-08-09 it held a byte-identical copy of that
+  curve's thresholds (1h/1d/1w) and multipliers (4.0/2.0/0.5/0.25) while
+  depending on nothing. If praça ever needs a ranking shape wadachi-spec cannot
+  express, the fix is a **named instance upstream** — the multiplicative combine
+  praça uses now ships there as `praca-parity`
+  (`CombineKind::FreqTimesLatestDecay`) — never a second local copy.
+
+  **`wadachi-spec` is pinned to `=0.1.7`, and it is an MSRV pin.** 0.1.8 raised
+  its `rust-version` to 1.95.0 and 0.1.9 to 1.97.0; this workspace declares
+  1.89.0, and `resolver = "2"` does no MSRV-aware resolution, so a caret range
+  fails the build outright. Two things wait on moving tear's MSRV onto the
+  fleet's: relaxing that pin, and replacing praça's local two-line combine with
+  `FrecencyRankingSpec::by_name("praca-parity").score_counted(…)` (the named
+  interim is written out at the top of `praca/src/frecency.rs`).

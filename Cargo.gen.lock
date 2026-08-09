@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "0611f18248356593f47f0248aea028651e68bbb7656a73177951e830b6dee588",
+  "cargo_lock_sha256": "7424d4860553c85a061094a4afdaf27985ed232a552e64ec2cc46d3c0c45a04e",
   "manifest_sha256": {
-    "Cargo.toml": "ccb5c6fc2c63f9be57711bfba86217f0fb99cbfc432dac9d06102311725d5355",
-    "praca/Cargo.toml": "a76469f06bb0a0d65b4d0ca26a49f7429d77884256879efe3fb29a7e9f967abf",
+    "Cargo.toml": "8f424b960e03c3c2c60198ee510e6f2944d39e93378b057612bb128110142d14",
+    "praca/Cargo.toml": "e889736021d7137847dae413898b12e84c106ff8396e921025a1deba321c6b2d",
     "tear-client/Cargo.toml": "083d0b1c4cc16e873b192f3e4304ee9a262abd1317c67902dba4d907d35aaf90",
     "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
     "tear-core/Cargo.toml": "b55952e145bbd1f201be9dff8920a8ef26a825b273dfe542522f13349f23e961",
@@ -5305,6 +5305,16 @@
           {
             "name": "tear_types",
             "package_key": "tear-types-0.1.11",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "wadachi_spec",
+            "package_key": "wadachi-spec-0.1.7",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10889,6 +10899,57 @@
         "build_dependencies": [],
         "features": []
       },
+      "wadachi-spec-0.1.7": {
+        "runtime_dependencies": [
+          {
+            "name": "chrono",
+            "package_key": "chrono-0.4.44",
+            "kind": "normal",
+            "features": [
+              "clock",
+              "serde"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "wait-timeout-0.2.1": {
         "runtime_dependencies": [
           {
@@ -16405,6 +16466,9 @@
     },
     "vtparse-0.6.2": {
       "edition": "2018"
+    },
+    "wadachi-spec-0.1.7": {
+      "edition": "2024"
     },
     "wait-timeout-0.2.1": {
       "edition": "2015",
