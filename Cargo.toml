@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
@@ -23,15 +23,15 @@ authors = ["pleme-io"]
 
 [workspace.dependencies]
 # ── tear internal crates ────────────────────────────────────────────
-tear-types = { path = "tear-types", version = "0.1.11" }
-tear-config = { path = "tear-config", version = "0.1.11" }
-tear-core = { path = "tear-core", version = "0.1.11" }
-tear-daemon = { path = "tear-daemon", version = "0.1.11" }
-tear-client = { path = "tear-client", version = "0.1.11" }
-tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.11" }
-tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.11" }
-tear = { path = "tear", version = "0.1.11" }
-praca = { path = "praca", version = "0.1.11" }
+tear-types = { path = "tear-types", version = "0.1.12" }
+tear-config = { path = "tear-config", version = "0.1.12" }
+tear-core = { path = "tear-core", version = "0.1.12" }
+tear-daemon = { path = "tear-daemon", version = "0.1.12" }
+tear-client = { path = "tear-client", version = "0.1.12" }
+tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.12" }
+tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.12" }
+tear = { path = "tear", version = "0.1.12" }
+praca = { path = "praca", version = "0.1.12" }
 
 # ── pleme-io shared libraries — same versions mado pins ────────────
 # Live configuration with hot-reload. Operators learn the shikumi
@@ -54,13 +54,13 @@ shikumi = { version = "0.1", features = ["cli"] }
 # Typed design tokens — palette + typography. tear's StatusBar /
 # tab-bar / pane-border / message colors all resolve through ishou
 # so a fleet-wide colorway change is one ishou-tokens edit.
-ishou-tokens = { git = "https://github.com/pleme-io/ishou" , version = "0.1" }
+ishou-tokens = "0.1"
 # Typed terminal-conformance contract (dev-only). tear-core's
 # conformance tests drive PaneGrid + the subscriber fan-out against
 # espelho's VT query catalog — tear is the pass-through RELAY row
 # (queries survive verbatim to subscribers); mado holds the host row,
 # frost the guest row.
-espelho = { git = "https://github.com/pleme-io/espelho", branch = "main", version = "0.1" }
+espelho = "0.1"
 # The fleet's ONE frecency-ranking primitive — the decay curve praça ranks
 # sessions by. praça used to hand-copy `DecayKind::ZoxideLogBuckets`' bucket
 # thresholds and multipliers out of this crate while depending on nothing;

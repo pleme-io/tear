@@ -21,8 +21,8 @@ tear-types = { workspace = true }
 tear-config = { workspace = true }
 parking_lot = { workspace = true }
 serde_yaml_ng = { workspace = true }
-engate-types = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }
-engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }
+engate-types = { version = "0.1", optional = true }
+engate-attach = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tear-core = { path = "../tear-core" }

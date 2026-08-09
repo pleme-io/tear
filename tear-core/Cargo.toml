@@ -37,8 +37,8 @@ once_cell = { workspace = true }
 blake3 = { workspace = true }
 vte = { workspace = true }
 unicode-width = { workspace = true }
-engate-types ={ git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }
-engate-attach = { git = "https://github.com/pleme-io/engate", branch = "main", optional = true , version = "0.1" }
+engate-types = { version = "0.1", optional = true }
+engate-attach = { version = "0.1", optional = true }
 
 [dev-dependencies]
 proptest = "1"
