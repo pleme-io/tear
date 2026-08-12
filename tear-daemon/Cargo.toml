@@ -12,6 +12,11 @@ description = "Long-running tear server. Owns sessions across client disconnects
 workspace = true
 
 [dependencies]
+# okiba (置き場) — the XDG place-resolver. Replaced a hand-rolled state_dir()
+# that resolved a RELATIVE XDG_STATE_HOME against the cwd and fell back to
+# PathBuf::from(".") with no $HOME — durable daemon state in whatever
+# directory it was launched from.
+okiba = "0.1"
 tear-types = { workspace = true }
 tear-core = { workspace = true }
 tear-config = { workspace = true }

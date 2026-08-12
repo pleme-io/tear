@@ -172,22 +172,42 @@ pub fn default_praca_path() -> PathBuf {
 
 /// The base state directory, per the override ladder documented on
 /// [`default_praca_path`].
+///
+/// # Two bugs this used to have
+///
+/// It hand-rolled the XDG lookup and used whatever `XDG_STATE_HOME` contained.
+/// The spec forbids that — *"If an implementation encounters a relative path in
+/// any of these variables it should consider the path invalid and ignore it"* —
+/// so a relative override was resolved against the daemon's current working
+/// directory, i.e. wherever it happened to be launched from.
+///
+/// Worse, the final fallback was `PathBuf::from(".")`. With no `$HOME` — a
+/// container with no passwd entry is the ordinary case — the daemon wrote its
+/// durable praça state into the cwd **by construction**, and a restart from a
+/// different directory silently started from an empty state.
+///
+/// `okiba` refuses a relative override and has no arm that returns a relative
+/// path, so both are gone. `TEAR_STATE_DIR` is still honoured first and is
+/// still tear's own knob; it is checked for absoluteness for the same reason.
 fn state_dir() -> PathBuf {
     if let Ok(explicit) = std::env::var("TEAR_STATE_DIR") {
-        return PathBuf::from(explicit);
+        let p = PathBuf::from(explicit);
+        // Tear's own override gets the same rule as XDG's: a relative one
+        // would put the daemon's state in its cwd, which is the bug regardless
+        // of which variable spelled it.
+        if p.is_absolute() {
+            return p;
+        }
+        tracing::warn!(
+            path = %p.display(),
+            "TEAR_STATE_DIR is relative and was ignored — state paths must be \
+             absolute or the daemon writes into whatever directory it was \
+             started from",
+        );
     }
-    if let Ok(xdg) = std::env::var("XDG_STATE_HOME")
-        && !xdg.is_empty()
-    {
-        return PathBuf::from(xdg);
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".local");
-        p.push("state");
-        return p;
-    }
-    PathBuf::from(".")
+    okiba::Okiba::for_app("tear")
+        .base(okiba::Tier::State)
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 /// Read + parse the snapshot at `path`. `Ok(None)` when the file is
