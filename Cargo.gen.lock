@@ -1,17 +1,17 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "ecf03e55a538550e18d09336fa2fe27f3b95f119de750fbd1cc4ab3a4242badf",
+  "cargo_lock_sha256": "29ea74adc23e8f9f4ace5cd1e4436ec747cba9e8f2bf1ad120d66e29cfaf103b",
   "manifest_sha256": {
-    "Cargo.toml": "e403ae3d5cf4182bf360638f99293da111c8e98835aa98d97b656dd0378abb44",
+    "Cargo.toml": "d549e3c47bec07eaccf29804c9b1b32b2a20c8993781e0d3efe5b832c77231f8",
     "praca/Cargo.toml": "e889736021d7137847dae413898b12e84c106ff8396e921025a1deba321c6b2d",
     "tear-client/Cargo.toml": "146a70ab0117997feea3dcfe3fab32f42492d8e0f782bfb0f72079c7a6f30d42",
     "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
     "tear-core/Cargo.toml": "7ef92b040112b6212d8c9b6d4ab3bb023bd4cde1a0e47452c6652dc49c71b7d0",
-    "tear-daemon/Cargo.toml": "dcaf3ce1314917a6af50fd149a7e0242eb4b6b422bba6f82afd5b58273367ce8",
+    "tear-daemon/Cargo.toml": "82a69fb3d6984a82a7061c1d8cec8ae8a7d8a856f9eeb1e3e7318e5b460ed6e3",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
     "tear-types/Cargo.toml": "e08e202b40e15045542a8d2d823590f14643120cb33c71144e65e989fdd20b94",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
-    "tear/Cargo.toml": "d4a41d443fc739797ab298aa2866656fa2645cc6795c4534ecb1dd1f20f12104"
+    "tear/Cargo.toml": "39f5eae7cdf9d104ed1c437b509c3e073c839ddc4e2d0b05a0922f3b1b89f59a"
   },
   "target_resolves": {
     "base": {
@@ -3780,6 +3780,34 @@
           "std"
         ]
       },
+      "kotae-0.1.1": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.229",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.151",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "lab-0.11.0": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -4363,6 +4391,11 @@
           "default",
           "std"
         ]
+      },
+      "okiba-0.1.1": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "once_cell-1.21.4": {
         "runtime_dependencies": [],
@@ -5025,6 +5058,16 @@
           {
             "name": "ishou_tokens",
             "package_key": "ishou-tokens-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "kotae",
+            "package_key": "kotae-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8728,6 +8771,16 @@
               "macos_fsevent"
             ],
             "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "okiba",
+            "package_key": "okiba-0.1.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -15967,6 +16020,9 @@
     "kasuari-0.4.12": {
       "edition": "2021"
     },
+    "kotae-0.1.1": {
+      "edition": "2024"
+    },
     "lab-0.11.0": {
       "edition": "2015"
     },
@@ -16083,6 +16139,9 @@
     },
     "objc2-encode-4.1.0": {
       "edition": "2021"
+    },
+    "okiba-0.1.1": {
+      "edition": "2024"
     },
     "once_cell-1.21.4": {
       "edition": "2021"
