@@ -101,21 +101,3 @@ fn now_unix_ms() -> u64 {
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
-
-/// Spawn the kanshou server in a tokio task. Returns the path the
-/// server bound to. The task is detached; on drop the socket file
-/// is unlinked. `app_name` is the canonical wire identifier — pass
-/// `"tear-daemon"` for the long-running daemon process.
-pub fn spawn_server(
-    app_name: &str,
-    state: Arc<TearDaemonState>,
-) -> std::io::Result<std::path::PathBuf> {
-    let server = kanshou::Server::new(app_name, state)?;
-    let socket_path = server.socket_path().to_path_buf();
-    tokio::spawn(async move {
-        if let Err(e) = server.serve().await {
-            tracing::warn!(error = ?e, "tear-daemon kanshou server exited with error");
-        }
-    });
-    Ok(socket_path)
-}

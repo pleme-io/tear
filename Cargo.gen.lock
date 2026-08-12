@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "04f30683936d70053e7e4314097ed41a0d46e30b5874c8019c2ce64f7770f3b6",
+  "cargo_lock_sha256": "814b495ed19552dbd076b33e4c4566aba97cb8970c6bd787cd3172926ee6425d",
   "manifest_sha256": {
     "Cargo.toml": "53a2df2cb966b8fe4eb50345f741e37b5e396d1bdc617d448a879f01ba47bde3",
     "praca/Cargo.toml": "e889736021d7137847dae413898b12e84c106ff8396e921025a1deba321c6b2d",
@@ -3636,7 +3636,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "kanshou-0.1.3": {
+      "kanshou-0.1.5": {
         "runtime_dependencies": [
           {
             "name": "kanshou_derive",
@@ -8742,7 +8742,7 @@
           },
           {
             "name": "kanshou",
-            "package_key": "kanshou-0.1.3",
+            "package_key": "kanshou-0.1.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -16010,7 +16010,7 @@
     "itoa-1.0.18": {
       "edition": "2021"
     },
-    "kanshou-0.1.3": {
+    "kanshou-0.1.5": {
       "edition": "2024"
     },
     "kanshou-derive-0.1.3": {

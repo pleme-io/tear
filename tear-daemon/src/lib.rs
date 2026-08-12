@@ -457,40 +457,23 @@ pub fn start_with_config(
     // Expose the daemon's live Registry (sessions, panes, socket,
     // process metadata) over a kanshou Unix socket so operator
     // tools and MCP servers query the actual state. See
-    // pleme-io/kanshou. Spawned on a dedicated thread with its
-    // own tokio runtime so the existing std::thread accept loop
-    // here is untouched. Best-effort: bind failure logs and
-    // continues — the daemon still serves its RPC.
+    // pleme-io/kanshou. Best-effort, and now actually so: the whole
+    // sidecar — bind, runtime, thread, serve — is one call, and every
+    // failure along it degrades to "no introspection" instead of taking
+    // the daemon down.
+    //
+    // The hand-rolled block this replaces ended in
+    // `.expect("spawn tear-kanshou thread")`, so the comment's
+    // best-effort promise covered bind failure but NOT thread-spawn
+    // failure — under EAGAIN the daemon panicked. Three copies of that
+    // block existed (frost, mado, tear-daemon) and only frost degraded
+    // as advertised; folding it into kanshou::Server::spawn_sidecar
+    // makes the decision once so they cannot diverge again.
     {
         let kanshou_state = Arc::new(kanshou_state::TearDaemonState::new(inproc.clone()));
-        std::thread::Builder::new()
-            .name("tear-kanshou".into())
-            .spawn(move || {
-                match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .thread_name("tear-kanshou-tokio")
-                    .build()
-                {
-                    Ok(rt) => rt.block_on(async {
-                        match kanshou_state::spawn_server("tear-daemon", kanshou_state) {
-                            Ok(path) => {
-                                info!(
-                                    socket = %path.display(),
-                                    "kanshou introspection live"
-                                );
-                                std::future::pending::<()>().await;
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "kanshou bind failed; introspection disabled");
-                            }
-                        }
-                    }),
-                    Err(e) => {
-                        warn!(error = %e, "could not create kanshou tokio runtime");
-                    }
-                }
-            })
-            .expect("spawn tear-kanshou thread");
+        if let Some(path) = kanshou::Server::spawn_sidecar("tear-daemon", kanshou_state) {
+            info!(socket = %path.display(), "kanshou introspection live");
+        }
     }
 
     // ── NO orphan pruner. Deliberately. ──────────────────────────
