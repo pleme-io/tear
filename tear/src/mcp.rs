@@ -138,7 +138,7 @@ impl TearMcp {
             daemon_rss_bytes: daemon_pid.map(|(_, m, _)| m),
             daemon_cpu_pct: daemon_pid.map(|(_, _, c)| c),
         };
-        serde_json::to_string_pretty(&st).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&st).render()
     }
 
     #[tool(description = "System-wide resource snapshot: total_mem_bytes, used_mem_bytes, available_mem_bytes, cpu_count, load_avg (1m/5m/15m on unix; null on windows). Use alongside daemon_status to answer 'is tear the bottleneck or is the host saturated?' Pure read of /proc-style sysinfo — no daemon round-trip.")]
@@ -166,18 +166,18 @@ impl TearMcp {
             load_5m: load.five,
             load_15m: load.fifteen,
         };
-        serde_json::to_string_pretty(&s).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&s).render()
     }
 
     #[tool(description = "List every live session with summary: id, name, source (human/agent/named/<label>), window_count, pane_count, state (active/detached). Sorted by creation time (oldest first). For pane-level detail call `pane_stats` with a specific pane id.")]
     async fn list_sessions(&self) -> String {
         let c = match self.client() {
             Ok(c) => c,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         let sessions = match c.list_sessions() {
             Ok(s) => s,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         #[derive(Serialize)]
         struct Row {
@@ -199,7 +199,7 @@ impl TearMcp {
                 state: format!("{:?}", s.state),
             })
             .collect();
-        serde_json::to_string_pretty(&rows).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&rows).render()
     }
 
     #[tool(description = "Per-pane metrics: subscriber_count (number of byte-stream consumers attached — mado windows, recording sinks, etc.), input_policy (Free/Locked/Leader), size_cells. Use to investigate 'which pane is being watched the most' or 'why isn't my mado seeing output' (subscriber_count = 0 means nothing's listening).")]
@@ -207,15 +207,15 @@ impl TearMcp {
         let pane_id_str = &params.0.pane_id;
         let pane_id: tear_types::PaneId = match pane_id_str.parse() {
             Ok(p) => p,
-            Err(e) => return format!("{{\"error\":\"invalid pane_id `{pane_id_str}`: {e}\"}}"),
+            Err(e) => return kotae::Answer::refused_flatly(format!("invalid pane_id `{pane_id_str}`: {e}")).render(),
         };
         let c = match self.client() {
             Ok(c) => c,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         let pane = match c.get_pane(pane_id) {
             Ok(p) => p,
-            Err(e) => return format!("{{\"error\":\"get_pane: {e}\"}}"),
+            Err(e) => return kotae::Answer::blind(format!("get_pane: {e}")).render(),
         };
         let subs = c.pane_subscriber_count(pane_id).unwrap_or(0);
         #[derive(Serialize)]
@@ -235,7 +235,7 @@ impl TearMcp {
             size_cells: pane.size_cells,
             state: format!("{:?}", pane.state),
         };
-        serde_json::to_string_pretty(&s).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&s).render()
     }
 
     #[tool(description = "Top panes by subscriber count (descending). Surfaces 'which pane is fanning out to the most consumers right now.' Returns up to `limit` rows (default 10) with id, name (session), shell, subscriber_count.")]
@@ -243,11 +243,11 @@ impl TearMcp {
         let limit = params.0.limit.unwrap_or(10).max(1) as usize;
         let c = match self.client() {
             Ok(c) => c,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         let sessions = match c.list_sessions() {
             Ok(s) => s,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         #[derive(Serialize)]
         struct Row {
@@ -270,7 +270,7 @@ impl TearMcp {
         }
         rows.sort_by(|a, b| b.subscriber_count.cmp(&a.subscriber_count));
         rows.truncate(limit);
-        serde_json::to_string_pretty(&rows).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&rows).render()
     }
 
     #[tool(description = "Capture a pane's currently-rendered cell grid as text. Returns rows × cols of unicode (one string per row), plus cursor_row / cursor_col / cursor_visible and pane size. The 'what does the screen look like RIGHT NOW' tool — use to verify a TUI is rendering correctly, see what prompt is showing, confirm a command output landed, or debug 'mado shows X but tear says Y' divergence. Strips color/attrs (use mado's snapshot_grid for those). Returns {error} if pane id is invalid or daemon refuses (passthrough backends like tear-tmux-backend can't snapshot).")]
@@ -281,15 +281,15 @@ impl TearMcp {
         let pane_id_str = &params.0.pane_id;
         let pane_id: tear_types::PaneId = match pane_id_str.parse() {
             Ok(p) => p,
-            Err(e) => return format!("{{\"error\":\"invalid pane_id `{pane_id_str}`: {e}\"}}"),
+            Err(e) => return kotae::Answer::refused_flatly(format!("invalid pane_id `{pane_id_str}`: {e}")).render(),
         };
         let c = match self.client() {
             Ok(c) => c,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         let snap = match c.pane_snapshot(pane_id) {
             Ok(s) => s,
-            Err(e) => return format!("{{\"error\":\"pane_snapshot: {e}\"}}"),
+            Err(e) => return kotae::Answer::blind(format!("pane_snapshot: {e}")).render(),
         };
         let rows: Vec<String> = snap
             .cells
@@ -320,7 +320,7 @@ impl TearMcp {
             cursor_visible: snap.cursor_visible,
             lines: rows,
         };
-        serde_json::to_string_pretty(&s).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&s).render()
     }
 
     #[tool(description = "Full session detail: id, name, source, state, windows (with their panes), creation time. Drills past list_sessions' summary into the full tree so an agent can walk a session's full structure in one call. Returns {error} if session id is invalid.")]
@@ -332,30 +332,30 @@ impl TearMcp {
         let session_id: tear_types::SessionId = match session_id_str.parse() {
             Ok(s) => s,
             Err(e) => {
-                return format!("{{\"error\":\"invalid session_id `{session_id_str}`: {e}\"}}");
+                return kotae::Answer::refused_flatly(format!("invalid session_id `{session_id_str}`: {e}")).render();
             }
         };
         let c = match self.client() {
             Ok(c) => c,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         let s = match c.get_session(session_id) {
             Ok(s) => s,
-            Err(e) => return format!("{{\"error\":\"get_session: {e}\"}}"),
+            Err(e) => return kotae::Answer::blind(format!("get_session: {e}")).render(),
         };
         // Serde already derives Serialize on TearSession — pass through.
-        serde_json::to_string_pretty(&s).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&s).render()
     }
 
     #[tool(description = "Flat list of every pane across every session: pane_id, session_id, session_name, shell, size_cells, subscriber_count, input_policy, state. Cheaper than calling list_sessions + N × pane_stats; the canonical 'show me everything live' surface. Sorted by session_name then pane creation order.")]
     async fn list_panes(&self) -> String {
         let c = match self.client() {
             Ok(c) => c,
-            Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            Err(e) => return kotae::Answer::blind(e.to_string()).render(),
         };
         let sessions = match c.list_sessions() {
             Ok(s) => s,
-            Err(e) => return format!("{{\"error\":\"list_sessions: {e}\"}}"),
+            Err(e) => return kotae::Answer::blind(format!("list_sessions: {e}")).render(),
         };
         #[derive(Serialize)]
         struct Row {
@@ -385,7 +385,7 @@ impl TearMcp {
             }
         }
         rows.sort_by(|a, b| a.session_name.cmp(&b.session_name));
-        serde_json::to_string_pretty(&rows).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&rows).render()
     }
 
     #[tool(description = "Daemon socket + connectivity surface: socket_path, exists, can_connect, peer_metadata_supported. Use first when diagnosing 'is the daemon reachable at all' — separates 'socket file missing' from 'socket exists but daemon dead' from 'daemon alive but rejecting our user'.")]
@@ -422,7 +422,7 @@ impl TearMcp {
             latency_ms: start.elapsed().as_secs_f64() * 1000.0,
             error: err,
         };
-        serde_json::to_string_pretty(&p).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        kotae::Answer::found(&p).render()
     }
 }
 
@@ -480,4 +480,49 @@ pub async fn run(socket_path: Option<std::path::PathBuf>) -> Result<()> {
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod answer_shape_tests {
+    use kotae::Answer;
+    use serde_json::Value;
+
+    /// **The bug this file used to have, pinned at tear's own boundary.**
+    ///
+    /// Every error answer here was built with
+    /// `format!("{{\"error\":\"{e}\"}}")` — 24 sites — and a message
+    /// containing a double quote produced INVALID JSON. Several of those sites
+    /// interpolated a caller-supplied id straight into the string, so the
+    /// malformed output was reachable from the other end of the protocol: an
+    /// agent passing `pane_id = "a\"b"` got back bytes no parser accepts.
+    ///
+    /// This asserts the property at the shape tear now emits, so a future
+    /// hand-rolled `format!` here fails rather than silently reintroducing it.
+    #[test]
+    fn a_caller_supplied_quote_cannot_break_the_answer() {
+        let hostile = r#"a"b\c{"unbalanced":["#;
+        for answer in [
+            Answer::refused_flatly(format!("invalid pane_id `{hostile}`: bad digit")),
+            Answer::blind(format!("get_pane: {hostile}")),
+        ] {
+            let rendered = answer.render();
+            let parsed: Value = serde_json::from_str(&rendered)
+                .expect("a tear answer must always be parseable JSON");
+            assert_eq!(parsed["outcome"], answer.outcome());
+        }
+    }
+
+    /// The conversion sharpened a distinction the flat `error` shape had
+    /// collapsed: a malformed id is the CALLER asking wrong, a failed lookup is
+    /// tear being unable to look. An agent acts differently on each, and the
+    /// old shape gave it no way to tell.
+    #[test]
+    fn a_malformed_id_and_a_failed_lookup_are_different_answers() {
+        let refused = Answer::refused_flatly("invalid pane_id `x`: bad digit");
+        let blind = Answer::blind("get_pane: daemon not running");
+        assert_eq!(refused.outcome(), "refused");
+        assert_eq!(blind.outcome(), "blind");
+        assert!(!refused.is_about_the_world());
+        assert!(!blind.is_about_the_world());
+    }
 }
