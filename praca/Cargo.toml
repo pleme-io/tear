@@ -19,6 +19,13 @@ default = []
 testing = []
 
 [dependencies]
+# shibori — the fleet fuzzy-scoring contract. This algorithm was AUTHORED
+# here and then extracted, so praça is the donor: `Policy::smart()` IS
+# praça's historical contract (smart-case, whitespace-split, optimal
+# subsequence alignment), byte-for-byte. Delegating rather than keeping a
+# private copy is what stops egaku/tobira's weaker greedy scorers from
+# staying forked forever.
+shibori = "0.1"
 # SessionId — the stable handle praca binds a project root to. Pure
 # types, no I/O; same vocabulary the daemon/mado already speak.
 tear-types = { workspace = true }
