@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "eca6387a219bc4f2f2f790da07d8d8640bbf1c23a1c3020aef783f159529a236",
+  "cargo_lock_sha256": "c6f7533a6a8a961290a080469e8f37a4861869683b3e995845e71bec635b29ee",
   "manifest_sha256": {
     "Cargo.toml": "697a0a2b529ca446034820ea043b65db96c45a34e9f7658022fc4586ac352a76",
     "praca/Cargo.toml": "8a65097e5c25ead6f7c9e53f1fac5aeccccb24bb6d0d967e258b3246b33855f4",
     "tear-client/Cargo.toml": "146a70ab0117997feea3dcfe3fab32f42492d8e0f782bfb0f72079c7a6f30d42",
-    "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
+    "tear-config/Cargo.toml": "36b5d7b438eba05504078bbd3267d7258dc93ccd954f9e931b142e97b3cd5a22",
     "tear-core/Cargo.toml": "7ef92b040112b6212d8c9b6d4ab3bb023bd4cde1a0e47452c6652dc49c71b7d0",
     "tear-daemon/Cargo.toml": "e8e7a3b26b84c0241105bde8fa621f1e9332e7102a4372030fbb592562ad0de9",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
@@ -8501,6 +8501,16 @@
               "macos_fsevent"
             ],
             "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "okiba",
+            "package_key": "okiba-0.2.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"

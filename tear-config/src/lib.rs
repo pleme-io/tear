@@ -476,23 +476,55 @@ fn default_status() -> StatusBar {
 
 /// Resolve the operator's tear config path. Honours `$XDG_CONFIG_HOME`
 /// and `$TEAR_CONFIG_FILE`; falls back to `~/.config/tear/tear.yaml`.
+///
+/// Every arm is ABSOLUTE or it is skipped. All three used to take their
+/// variable verbatim and the last resort was the literal `.`, so the doc
+/// comment above described a `~`-rooted path the code could not promise:
+/// `XDG_CONFIG_HOME=""` resolved to the bare relative `tear/tear.yaml`, which
+/// means tear loads (and the reload watcher then follows) whatever
+/// `tear/tear.yaml` happens to sit in the directory it was launched from —
+/// a different config per cwd, with no error, because a missing file here
+/// falls back to defaults rather than failing. `TEAR_CONFIG_FILE=""` was the
+/// same shape one arm earlier: an empty path never exists, so the operator's
+/// real config was silently discarded in favour of the defaults.
 #[must_use]
 pub fn default_config_path() -> PathBuf {
-    if let Ok(explicit) = std::env::var("TEAR_CONFIG_FILE") {
-        return PathBuf::from(explicit);
+    config_path_from(
+        std::env::var("TEAR_CONFIG_FILE").ok(),
+        &okiba::Okiba::for_app("tear"),
+    )
+}
+
+/// [`default_config_path`] with its environment passed in — the seam a test
+/// drives, so the invariant is pinned without mutating `std::env` (which races
+/// every other test in the binary).
+#[must_use]
+fn config_path_from(explicit: Option<String>, places: &okiba::Okiba) -> PathBuf {
+    if let Some(raw) = explicit {
+        let p = PathBuf::from(raw);
+        // Tear's own override gets the same rule as XDG's: a relative one
+        // resolves against the cwd, which is the bug regardless of which
+        // variable spelled it. Warned rather than silently dropped — an
+        // ignored override that produces no output reads as "tear ignored my
+        // config file" with nothing to go on.
+        if p.is_absolute() {
+            return p;
+        }
+        warn!(
+            path = %p.display(),
+            "TEAR_CONFIG_FILE is relative or empty and was ignored — a config \
+             path must be absolute or tear reads whatever happens to sit in \
+             the directory it was started from",
+        );
     }
-    let xdg = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| {
-            std::env::var("HOME").ok().map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".config");
-                p
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    xdg.join("tear").join("tear.yaml")
+    // okiba applies the spec rule to $XDG_CONFIG_HOME: a relative or empty
+    // override is IGNORED rather than joined, and the $HOME fallback is
+    // absolute-filtered too. Same resulting path as before for every valid
+    // value — `$XDG_CONFIG_HOME/tear/tear.yaml`, else
+    // `$HOME/.config/tear/tear.yaml`. Only the homeless case moves, from the
+    // cwd-relative `./tear/tear.yaml` to a temp dir, and that arm was the
+    // defect rather than a configuration anyone holds.
+    places.path(okiba::Tier::Config, "tear.yaml")
 }
 
 /// Read + parse the config file at `path`. Returns the parsed
@@ -890,6 +922,79 @@ mod tiered_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a resolver over an explicit environment — no `std::env`, so
+    /// these run in parallel with everything else in the binary.
+    fn places(pairs: &[(&str, &str)]) -> okiba::Okiba {
+        let m: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        okiba::Okiba::from_env("tear", move |k| m.get(k).cloned())
+    }
+
+    /// The masked branch. A relative or empty `$XDG_CONFIG_HOME` must NOT be
+    /// joined — it would resolve against the cwd and give a different config
+    /// per launch directory.
+    #[test]
+    fn relative_or_empty_xdg_config_home_never_yields_a_relative_path() {
+        for bad in ["", "rel/x", "./x", ".."] {
+            let p = config_path_from(None, &places(&[("XDG_CONFIG_HOME", bad), ("HOME", "/h")]));
+            assert!(
+                p.is_absolute(),
+                "XDG_CONFIG_HOME={bad:?} produced the relative {}",
+                p.display(),
+            );
+            // Ignored, not joined: the $HOME fallback is what answers.
+            assert_eq!(p, PathBuf::from("/h/.config/tear/tear.yaml"));
+        }
+    }
+
+    /// The same rule for tear's own knob. An empty value used to return the
+    /// empty path, which never exists, so the operator's real config was
+    /// silently replaced by the defaults.
+    #[test]
+    fn relative_or_empty_tear_config_file_is_ignored_not_joined() {
+        for bad in ["", "tear.yaml", "./tear.yaml", "../tear.yaml"] {
+            let p = config_path_from(Some(bad.to_string()), &places(&[("HOME", "/h")]));
+            assert!(
+                p.is_absolute(),
+                "TEAR_CONFIG_FILE={bad:?} produced the relative {}",
+                p.display(),
+            );
+            assert_eq!(p, PathBuf::from("/h/.config/tear/tear.yaml"));
+        }
+    }
+
+    /// Where every VALID configuration resolves is unchanged by the fix —
+    /// these are the exact paths the pre-okiba chain produced.
+    #[test]
+    fn valid_values_resolve_exactly_where_they_did_before() {
+        assert_eq!(
+            config_path_from(Some("/etc/tear/custom.yaml".into()), &places(&[("HOME", "/h")])),
+            PathBuf::from("/etc/tear/custom.yaml"),
+            "an absolute TEAR_CONFIG_FILE still wins outright",
+        );
+        assert_eq!(
+            config_path_from(None, &places(&[("XDG_CONFIG_HOME", "/x"), ("HOME", "/h")])),
+            PathBuf::from("/x/tear/tear.yaml"),
+            "an absolute XDG_CONFIG_HOME still wins over $HOME",
+        );
+        assert_eq!(
+            config_path_from(None, &places(&[("HOME", "/h")])),
+            PathBuf::from("/h/.config/tear/tear.yaml"),
+            "the documented ~/.config/tear/tear.yaml fallback",
+        );
+    }
+
+    /// The homeless case is the one arm that moves: it was `./tear/tear.yaml`,
+    /// which is the defect itself, and is now absolute.
+    #[test]
+    fn a_homeless_environment_still_yields_an_absolute_path() {
+        let p = config_path_from(None, &places(&[]));
+        assert!(p.is_absolute(), "homeless resolution gave {}", p.display());
+        assert!(p.ends_with("tear/tear.yaml"));
+    }
 
     #[test]
     fn default_config_is_constructible() {

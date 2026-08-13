@@ -2968,6 +2968,7 @@ dependencies = [
  "arc-swap",
  "ishou-tokens",
  "notify",
+ "okiba",
  "once_cell",
  "serde",
  "serde_yaml_ng",

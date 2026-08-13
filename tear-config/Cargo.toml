@@ -12,6 +12,13 @@ description = "Shikumi-style live configuration for the tear multiplexer. Parses
 workspace = true
 
 [dependencies]
+# okiba (置き場) — XDG resolution where a RELATIVE or empty override is IGNORED
+# per spec rather than joined. default_config_path took $XDG_CONFIG_HOME
+# verbatim and fell back to the literal `.`, so an empty one made tear read
+# `tear/tear.yaml` out of whatever directory it was launched from — a
+# different config per cwd, silently, because a missing config file falls back
+# to defaults instead of erroring.
+okiba = "0.2"
 tear-types = { workspace = true }
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }
