@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "1fd6c9053de7b4733f1130a3bf7f53f78ddbab649ca49f19b4cd1b48e005a7c1",
+  "cargo_lock_sha256": "0d9ca5740741205994f4166d4252aeec9f0cd7996b84755997cac5772239782f",
   "manifest_sha256": {
     "Cargo.toml": "556c564b06dc3d22c7ded1fa895b0f60b7d0d59e041009ddd913716754441812",
     "praca/Cargo.toml": "8a65097e5c25ead6f7c9e53f1fac5aeccccb24bb6d0d967e258b3246b33855f4",
     "tear-client/Cargo.toml": "146a70ab0117997feea3dcfe3fab32f42492d8e0f782bfb0f72079c7a6f30d42",
     "tear-config/Cargo.toml": "e959b52c958b379b033daa746a9a0517b72bb023b2467a9371dba79de66d96bf",
     "tear-core/Cargo.toml": "7ef92b040112b6212d8c9b6d4ab3bb023bd4cde1a0e47452c6652dc49c71b7d0",
-    "tear-daemon/Cargo.toml": "82a69fb3d6984a82a7061c1d8cec8ae8a7d8a856f9eeb1e3e7318e5b460ed6e3",
+    "tear-daemon/Cargo.toml": "e8e7a3b26b84c0241105bde8fa621f1e9332e7102a4372030fbb592562ad0de9",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
     "tear-types/Cargo.toml": "e08e202b40e15045542a8d2d823590f14643120cb33c71144e65e989fdd20b94",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
@@ -4392,7 +4392,7 @@
           "std"
         ]
       },
-      "okiba-0.1.1": {
+      "okiba-0.2.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -8792,7 +8792,7 @@
           },
           {
             "name": "okiba",
-            "package_key": "okiba-0.1.1",
+            "package_key": "okiba-0.2.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -16155,7 +16155,7 @@
     "objc2-encode-4.1.0": {
       "edition": "2021"
     },
-    "okiba-0.1.1": {
+    "okiba-0.2.1": {
       "edition": "2024"
     },
     "once_cell-1.21.4": {

@@ -16,7 +16,7 @@ workspace = true
 # that resolved a RELATIVE XDG_STATE_HOME against the cwd and fell back to
 # PathBuf::from(".") with no $HOME — durable daemon state in whatever
 # directory it was launched from.
-okiba = "0.1"
+okiba = "0.2"
 tear-types = { workspace = true }
 tear-core = { workspace = true }
 tear-config = { workspace = true }
