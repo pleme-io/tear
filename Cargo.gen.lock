@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "6ab3e4f43e15e0dff8170c07583534c401217d5d5fe5d39cffb913575d0caffc",
+  "cargo_lock_sha256": "e8e48c2ee807100c5ebd5bedc07cd23344aac308f46fde62f12a3de266c661d4",
   "manifest_sha256": {
     "Cargo.toml": "6304b11cc63c367b5beb04535b3cf6b317d6d8fa84d8e4a7fb51940bc4056bfb",
     "praca/Cargo.toml": "8a65097e5c25ead6f7c9e53f1fac5aeccccb24bb6d0d967e258b3246b33855f4",
@@ -9,7 +9,7 @@
     "tear-core/Cargo.toml": "7ef92b040112b6212d8c9b6d4ab3bb023bd4cde1a0e47452c6652dc49c71b7d0",
     "tear-daemon/Cargo.toml": "e8e7a3b26b84c0241105bde8fa621f1e9332e7102a4372030fbb592562ad0de9",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
-    "tear-types/Cargo.toml": "e08e202b40e15045542a8d2d823590f14643120cb33c71144e65e989fdd20b94",
+    "tear-types/Cargo.toml": "b0c12bf983c3be0eb16cdb9ec72baf8bec546f53814eb176f66537c8393a36fb",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
     "tear/Cargo.toml": "39f5eae7cdf9d104ed1c437b509c3e073c839ddc4e2d0b05a0922f3b1b89f59a"
   },
@@ -8974,6 +8974,16 @@
           {
             "name": "ishou_tokens",
             "package_key": "ishou-tokens-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "okiba",
+            "package_key": "okiba-0.2.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

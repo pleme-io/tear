@@ -481,20 +481,31 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Default UDS socket path. Resolves at call time so a daemon
 /// started with `XDG_RUNTIME_DIR=/foo` and a client started later
 /// without the var both look in the same place (the XDG fallback).
+///
+/// Every arm is ABSOLUTE or it is skipped. Both env arms used to take their
+/// variable verbatim, and only the literal `/tmp/tear.sock` third arm was safe.
+/// That defeats the guarantee the paragraph above is making: with
+/// `XDG_RUNTIME_DIR=""` the result is the bare relative `tear.sock`, so "the
+/// same place" becomes the process's cwd and a daemon started from `$HOME`
+/// and a client started from a repo bind and dial different sockets. Neither
+/// errors — they simply never meet.
 #[must_use]
 pub fn default_socket_path() -> std::path::PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        let mut p = std::path::PathBuf::from(dir);
-        p.push("tear.sock");
-        return p;
+    // okiba applies the spec rule to $XDG_RUNTIME_DIR: a relative or empty
+    // override is IGNORED rather than joined. Same resulting path as before
+    // for every valid value.
+    if let Ok(dir) = okiba::Okiba::for_app("tear").base(okiba::Tier::Runtime) {
+        return dir.join("tear.sock");
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = std::path::PathBuf::from(home);
-        p.push(".local");
-        p.push("share");
-        p.push("tear");
-        p.push("tear.sock");
-        return p;
+    // $HOME deliberately stays a direct read rather than okiba's Tier::Data.
+    // Data would honour $XDG_DATA_HOME, which this function never did, and
+    // this is a SOCKET path shared between separately-started processes — a
+    // daemon on new code and a client on old would resolve different paths and
+    // silently stop finding each other. Only the absolute check is added.
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        if home.is_absolute() {
+            return home.join(".local/share/tear/tear.sock");
+        }
     }
     std::path::PathBuf::from("/tmp/tear.sock")
 }

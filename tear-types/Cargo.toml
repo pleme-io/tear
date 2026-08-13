@@ -20,6 +20,11 @@ default = []
 engate = ["dep:engate-types"]
 
 [dependencies]
+# okiba (置き場) — XDG resolution where a RELATIVE or empty override is IGNORED
+# per spec rather than joined. default_socket_path took $XDG_RUNTIME_DIR
+# verbatim, so an empty one made the tear socket cwd-relative — across 10 call
+# sites and 6 binaries, and this crate is in 14 manifests.
+okiba = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
