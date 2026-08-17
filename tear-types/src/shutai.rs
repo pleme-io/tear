@@ -23,8 +23,8 @@
 //!
 //! The attested half costs a syscall — `getpeereid` / `SO_PEERCRED` — and
 //! **no network call, no PKI, no broker**. It works offline, on a plane,
-//! with Akeyless deleted from the flake. That is why identity roots here
-//! rather than in a credential plane.
+//! with every secrets broker deleted from the flake. That is why identity
+//! roots here rather than in a credential plane.
 //!
 //! The declared half is *provenance the daemon records*, not identity it
 //! verifies. Same-uid processes are mutually trusting by construction:
