@@ -309,9 +309,9 @@ mod tests {
         // a field here, and doing so cannot happen silently.
         Genesis {
             program: "/bin/zsh".into(),
-            requested_address: addr("work.akeyless.helm-charts.build"),
+            requested_address: addr("work.acme.helm-charts.build"),
             args: vec!["-l".into()],
-            cwd: "/code/akeylesslabs/helm-charts".into(),
+            cwd: "/code/acme/helm-charts".into(),
             parent: None,
         }
     }
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn a_different_requested_address_derives_a_different_guid() {
         let mut other = sample();
-        other.requested_address = addr("work.akeyless.helm-charts.test");
+        other.requested_address = addr("work.acme.helm-charts.test");
         assert_ne!(sample().guid(), other.guid());
     }
 
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn a_different_cwd_derives_a_different_guid() {
         let mut other = sample();
-        other.cwd = "/code/akeylesslabs/cli".into();
+        other.cwd = "/code/acme/cli".into();
         assert_ne!(sample().guid(), other.guid());
     }
 
@@ -501,7 +501,7 @@ mod tests {
         let identity = genesis.guid();
 
         let mut live_alias = genesis.requested_address.clone();
-        assert_eq!(live_alias.to_string(), "work.akeyless.helm-charts.build");
+        assert_eq!(live_alias.to_string(), "work.acme.helm-charts.build");
         live_alias = addr("archive.2026.helm-charts.build");
 
         assert_eq!(genesis.guid(), identity);
@@ -525,7 +525,7 @@ mod tests {
         let json = serde_json::to_value(sample()).unwrap();
         assert_eq!(
             json["requested_address"],
-            serde_json::json!("work.akeyless.helm-charts.build")
+            serde_json::json!("work.acme.helm-charts.build")
         );
         assert_eq!(json["parent"], serde_json::Value::Null);
     }
@@ -552,9 +552,9 @@ mod tests {
             parent,
         } = sample();
         assert_eq!(program, "/bin/zsh");
-        assert_eq!(requested_address.to_string(), "work.akeyless.helm-charts.build");
+        assert_eq!(requested_address.to_string(), "work.acme.helm-charts.build");
         assert_eq!(args, vec!["-l".to_string()]);
-        assert_eq!(cwd, "/code/akeylesslabs/helm-charts");
+        assert_eq!(cwd, "/code/acme/helm-charts");
         assert!(parent.is_none());
     }
 

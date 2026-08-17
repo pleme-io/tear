@@ -9,7 +9,7 @@
 //! | [`Address`] | *what do I call it today?* | yes | operator intent |
 //!
 //! An `Address` is a NATS-style, dot-separated alias —
-//! `work.akeyless.helm-charts.build` — used for lookup, aggregation,
+//! `work.acme.helm-charts.build` — used for lookup, aggregation,
 //! and assignment. Because every durable record keys on the `Guid` and
 //! never on the `Address`, renaming or re-parenting a session cannot
 //! orphan its data: the alias moves, the identity does not.
@@ -213,7 +213,7 @@ pub enum AddressError {
 
 /// An ordered, non-empty sequence of [`Segment`]s — a session's alias.
 ///
-/// Displays and parses dot-joined (`work.akeyless.build`). Non-empty
+/// Displays and parses dot-joined (`work.acme.build`). Non-empty
 /// is an invariant of the type, not a runtime check: every constructor
 /// is fallible or takes at least one segment, and [`Address::depth`]
 /// returns [`NonZeroUsize`] so the guarantee is visible in the
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn segment_accepts_the_documented_charset() {
-        for good in ["a", "Z", "0", "helm-charts", "build_2", "AkeyLess", "x-_-x"] {
+        for good in ["a", "Z", "0", "helm-charts", "build_2", "MixedUp", "x-_-x"] {
             assert_eq!(seg(good).as_str(), good);
         }
     }
@@ -656,8 +656,8 @@ mod tests {
 
     #[test]
     fn address_parses_and_displays_dot_joined() {
-        let a = addr("work.akeyless.helm-charts.build");
-        assert_eq!(a.to_string(), "work.akeyless.helm-charts.build");
+        let a = addr("work.acme.helm-charts.build");
+        assert_eq!(a.to_string(), "work.acme.helm-charts.build");
         assert_eq!(a.depth().get(), 4);
         assert_eq!(a.leaf().as_str(), "build");
     }
@@ -705,9 +705,9 @@ mod tests {
 
     #[test]
     fn address_parent_child_and_depth_compose() {
-        let a = addr("work.akeyless");
+        let a = addr("work.acme");
         let child = a.child(seg("build"));
-        assert_eq!(child.to_string(), "work.akeyless.build");
+        assert_eq!(child.to_string(), "work.acme.build");
         assert_eq!(child.depth().get(), 3);
         assert_eq!(child.parent().unwrap(), a);
         assert_eq!(a.parent().unwrap(), Address::root(seg("work")));
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn pattern_star_matches_exactly_one_segment() {
         let p = pat("work.*.build");
-        assert!(p.matches(&addr("work.akeyless.build")));
+        assert!(p.matches(&addr("work.acme.build")));
         assert!(p.matches(&addr("work.x.build")));
         // zero segments in the slot
         assert!(!p.matches(&addr("work.build")));
@@ -815,7 +815,7 @@ mod tests {
     fn pattern_tail_matches_one_or_more_but_never_zero() {
         let p = pat("work.>");
         assert!(p.matches(&addr("work.build")));
-        assert!(p.matches(&addr("work.akeyless.helm-charts.build")));
+        assert!(p.matches(&addr("work.acme.helm-charts.build")));
         // one-or-more, so the bare prefix does NOT match
         assert!(!p.matches(&addr("work")));
         assert!(!p.matches(&addr("other.build")));
@@ -828,10 +828,10 @@ mod tests {
     #[test]
     fn pattern_mixes_literals_stars_and_a_tail() {
         let p = pat("work.*.helm-charts.>");
-        assert!(p.matches(&addr("work.akeyless.helm-charts.build")));
+        assert!(p.matches(&addr("work.acme.helm-charts.build")));
         assert!(p.matches(&addr("work.pleme.helm-charts.a.b")));
-        assert!(!p.matches(&addr("work.akeyless.helm-charts")));
-        assert!(!p.matches(&addr("work.akeyless.other.build")));
+        assert!(!p.matches(&addr("work.acme.helm-charts")));
+        assert!(!p.matches(&addr("work.acme.other.build")));
         assert!(!p.matches(&addr("work.helm-charts.build")));
     }
 
@@ -847,12 +847,12 @@ mod tests {
 
     #[test]
     fn pattern_exact_matches_only_its_own_address() {
-        let a = addr("work.akeyless.build");
+        let a = addr("work.acme.build");
         let p = Pattern::exact(&a);
         assert_eq!(p.to_string(), a.to_string());
         assert!(p.matches(&a));
-        assert!(!p.matches(&addr("work.akeyless")));
-        assert!(!p.matches(&addr("work.akeyless.build.x")));
+        assert!(!p.matches(&addr("work.acme")));
+        assert!(!p.matches(&addr("work.acme.build.x")));
         assert_eq!(p.tokens().len(), 3);
     }
 
