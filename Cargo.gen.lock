@@ -1,15 +1,16 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "4eef30d112963b545330d99cadeef169a45e8444ca9c2d218988639912867a63",
+  "cargo_lock_sha256": "ea2a1259e5c8f5077330f35b3396dffdc4dffb95f253967abd069a01633473f4",
   "manifest_sha256": {
-    "Cargo.toml": "ef532cff29e901de0f77cb778e6596155203b66bf1faaec9128bf614d10faf31",
+    "Cargo.toml": "2df3f2617712c302ea67544ff94368edc72e707e22ad36cf28166e21c1cc3566",
+    "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
     "praca/Cargo.toml": "8a65097e5c25ead6f7c9e53f1fac5aeccccb24bb6d0d967e258b3246b33855f4",
     "tear-client/Cargo.toml": "146a70ab0117997feea3dcfe3fab32f42492d8e0f782bfb0f72079c7a6f30d42",
     "tear-config/Cargo.toml": "36b5d7b438eba05504078bbd3267d7258dc93ccd954f9e931b142e97b3cd5a22",
     "tear-core/Cargo.toml": "7ef92b040112b6212d8c9b6d4ab3bb023bd4cde1a0e47452c6652dc49c71b7d0",
     "tear-daemon/Cargo.toml": "e8e7a3b26b84c0241105bde8fa621f1e9332e7102a4372030fbb592562ad0de9",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
-    "tear-types/Cargo.toml": "b0c12bf983c3be0eb16cdb9ec72baf8bec546f53814eb176f66537c8393a36fb",
+    "tear-types/Cargo.toml": "fc85e48deda19504834d22af1615ff8b3e55f4338fe1401d7e27709156fd36a3",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
     "tear/Cargo.toml": "39f5eae7cdf9d104ed1c437b509c3e073c839ddc4e2d0b05a0922f3b1b89f59a"
   },
@@ -3799,6 +3800,24 @@
             "package_key": "serde_json-1.0.151",
             "kind": "normal",
             "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "kukaku-0.1.19": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.229",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -8984,6 +9003,16 @@
           {
             "name": "ishou_tokens",
             "package_key": "ishou-tokens-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "kukaku",
+            "package_key": "kukaku-0.1.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -16057,6 +16086,13 @@
     },
     "kotae-0.1.1": {
       "edition": "2024"
+    },
+    "kukaku-0.1.19": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "kukaku",
+        "path": "src/lib.rs"
+      }
     },
     "lab-0.11.0": {
       "edition": "2015"

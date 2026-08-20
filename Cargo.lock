@@ -1438,6 +1438,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kukaku"
+version = "0.1.19"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lab"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3042,6 +3050,7 @@ dependencies = [
  "ciborium",
  "engate-types",
  "ishou-tokens",
+ "kukaku",
  "okiba",
  "serde",
  "serde_json",

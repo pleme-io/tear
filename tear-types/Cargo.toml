@@ -20,6 +20,11 @@ default = []
 engate = ["dep:engate-types"]
 
 [dependencies]
+# kukaku (区画) — the split-tree layout algebra this crate used to define
+# inline. Extracted when omoya became its third consumer; `layout`,
+# `geometry` and `direction` here are now re-exports, so tear's own source
+# and its CBOR wire are unchanged.
+kukaku = { workspace = true }
 # okiba (置き場) — XDG resolution where a RELATIVE or empty override is IGNORED
 # per spec rather than joined. default_socket_path took $XDG_RUNTIME_DIR
 # verbatim, so an empty one made the tear socket cwd-relative — across 10 call

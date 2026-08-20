@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "kukaku",
     "tear-types",
     "tear-config",
     "tear-core",
@@ -22,6 +23,10 @@ repository = "https://github.com/pleme-io/tear"
 authors = ["pleme-io"]
 
 [workspace.dependencies]
+# kukaku (区画) — the split-tree layout algebra, extracted from tear-types
+# when omoya became its third consumer. `path` for in-workspace builds,
+# `version` so published tear-types resolves it from crates.io.
+kukaku = { version = "0.1", path = "kukaku" }
 # ── tear internal crates ────────────────────────────────────────────
 tear-types = { path = "tear-types", version = "0.1.19" }
 tear-config = { path = "tear-config", version = "0.1.19" }

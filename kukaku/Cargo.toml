@@ -1,0 +1,21 @@
+[package]
+name = "kukaku"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "kukaku (区画) — the split-tree layout algebra: a binary tiling tree generic over what a leaf is, with a refined split ratio and no I/O. Consumed by tear (terminal panes) and omoya (compositor windows)."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+# Round-trip tests only. The wire format is a REAL invariant here — tear
+# serialises these trees to CBOR and a shape change would silently break
+# every stored session — so the round-trip cases came across with the rest.
+serde_json = { workspace = true }
