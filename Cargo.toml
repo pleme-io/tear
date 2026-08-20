@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.19"
+version = "0.1.20"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
@@ -26,17 +26,17 @@ authors = ["pleme-io"]
 # kukaku (区画) — the split-tree layout algebra, extracted from tear-types
 # when omoya became its third consumer. `path` for in-workspace builds,
 # `version` so published tear-types resolves it from crates.io.
-kukaku = { version = "0.1", path = "kukaku" }
+kukaku = { version = "0.1.20", path = "kukaku" }
 # ── tear internal crates ────────────────────────────────────────────
-tear-types = { path = "tear-types", version = "0.1.19" }
-tear-config = { path = "tear-config", version = "0.1.19" }
-tear-core = { path = "tear-core", version = "0.1.19" }
-tear-daemon = { path = "tear-daemon", version = "0.1.19" }
-tear-client = { path = "tear-client", version = "0.1.19" }
-tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.19" }
-tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.19" }
-tear = { path = "tear", version = "0.1.19" }
-praca = { path = "praca", version = "0.1.19" }
+tear-types = { path = "tear-types", version = "0.1.20" }
+tear-config = { path = "tear-config", version = "0.1.20" }
+tear-core = { path = "tear-core", version = "0.1.20" }
+tear-daemon = { path = "tear-daemon", version = "0.1.20" }
+tear-client = { path = "tear-client", version = "0.1.20" }
+tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.20" }
+tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.20" }
+tear = { path = "tear", version = "0.1.20" }
+praca = { path = "praca", version = "0.1.20" }
 
 # ── pleme-io shared libraries — same versions mado pins ────────────
 # Live configuration with hot-reload. Operators learn the shikumi
