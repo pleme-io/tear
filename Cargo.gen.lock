@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "aa5baeec62369caa7baa0a3ed26681014e6e4af5a20a2a43a10424cbf9b01d80",
+  "cargo_lock_sha256": "c8f172078164fd76823bb21a650d75fa5e99637fe4e9db361fbd38a05a549b4e",
   "manifest_sha256": {
     "Cargo.toml": "b7bfebe7b7d32bacdb98ec1e35d28b1e76fc89ebd7fef2f2723eaf15ecbc2b22",
     "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
@@ -3573,7 +3573,7 @@
           "default"
         ]
       },
-      "ishou-tokens-0.1.4": {
+      "ishou-tokens-0.1.14": {
         "runtime_dependencies": [
           {
             "name": "irodori",
@@ -5076,7 +5076,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.4",
+            "package_key": "ishou-tokens-0.1.14",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5463,7 +5463,7 @@
         "runtime_dependencies": [
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.4",
+            "package_key": "ishou-tokens-0.1.14",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8504,7 +8504,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.4",
+            "package_key": "ishou-tokens-0.1.14",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8636,7 +8636,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.4",
+            "package_key": "ishou-tokens-0.1.14",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -9002,7 +9002,7 @@
           },
           {
             "name": "ishou_tokens",
-            "package_key": "ishou-tokens-0.1.4",
+            "package_key": "ishou-tokens-0.1.14",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -16065,7 +16065,7 @@
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
-    "ishou-tokens-0.1.4": {
+    "ishou-tokens-0.1.14": {
       "edition": "2024"
     },
     "itertools-0.14.0": {

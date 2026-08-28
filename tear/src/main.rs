@@ -608,15 +608,21 @@ fn cmd_up(
     source: String,
 ) -> Result<()> {
     let (client, _socket_path) = connect_to_daemon(socket)?;
-    // The daemon already enforces its own default_shell from its
-    // live config; we only need to fall back here if the user
-    // didn't pass one and the daemon doesn't either. The simpler
-    // path: leave shell resolution to the daemon, which lets a
-    // single `tear daemon`-side config update change every CLI
-    // invocation's default without recompile.
-    let shell = shell.unwrap_or_else(|| {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    });
+    // ── ★ THIS COMMENT DESCRIBED A DESIGN, NOT THE CODE ────────────────
+    // It said "leave shell resolution to the daemon, which lets a single
+    // daemon-side config update change every CLI invocation's default
+    // without recompile" -- and the next line resolved it here, then put a
+    // concrete string on the wire. So the daemon's default was never
+    // consulted and editing tear.yaml changed nothing about `tear up`.
+    //
+    // The wire takes `shell: &str`, so genuinely deferring is a protocol
+    // change. Until then both sides run ONE ladder and cannot disagree.
+    // ★ The SAME ladder the daemon uses (tear_config::resolve_shell).
+    // This resolved client-side with its own $SHELL/-bin-sh chain, so
+    // the client and the daemon could disagree about one question -- and
+    // because a concrete string always goes on the wire, the daemon's
+    // configured default was never consulted at all.
+    let shell = tear_config::resolve_shell(shell.as_deref());
     let name = name.unwrap_or_else(|| {
         use std::time::{SystemTime, UNIX_EPOCH};
         let n = SystemTime::now()
@@ -1227,9 +1233,12 @@ fn cmd_migrate(
     socket: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let name = name.unwrap_or_else(default_session_name_for_cwd);
-    let shell = shell.unwrap_or_else(|| {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    });
+    // ★ The SAME ladder the daemon uses (tear_config::resolve_shell).
+    // This resolved client-side with its own $SHELL/-bin-sh chain, so
+    // the client and the daemon could disagree about one question -- and
+    // because a concrete string always goes on the wire, the daemon's
+    // configured default was never consulted at all.
+    let shell = tear_config::resolve_shell(shell.as_deref());
 
     let (client, socket_path) = match connect_to_daemon(socket.clone()) {
         Ok(pair) => pair,

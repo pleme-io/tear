@@ -344,8 +344,16 @@ fn default_prefix() -> String {
     // prescribed-default tier, not a hard-cap.
     tear_types::KeyChord::from_tmux(ishou_tokens::FleetKeybinds::prescribed().multiplexer_prefix).0
 }
+/// The daemon-side default for every session, window and pane.
+///
+/// ── ★ ONE LADDER, SHARED WITH THE REST OF THE FLEET ────────────────
+/// This was `$SHELL or /bin/sh` -- no prescription and no executable
+/// guard, so tear (which owns the panes under mado) answered the shell
+/// question differently from mado itself. Same reasoning as
+/// `default_prefix` above, which already reads a fleet token: the value
+/// is being one hand-edited source every app shares.
 fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    ishou_tokens::fleet_shell::FleetShell::prescribed().resolve(None)
 }
 fn default_mouse() -> bool {
     true
@@ -1074,4 +1082,23 @@ mod tests {
         assert_eq!(cfg.audit_log, None);
         assert_eq!(cfg.ai, None);
     }
+}
+
+/// Resolve a shell the way the daemon would.
+///
+/// ── ★ WHY THE CLI NEEDS THIS ────────────────────────────────────────────
+/// `tear up` resolves the shell CLIENT-side, four lines beneath a comment
+/// saying resolution belongs to the daemon so "a single daemon-side config
+/// update change[s] every CLI invocation's default without recompile". It
+/// does not: because the client always sends a concrete string, the daemon's
+/// `default_shell` is never consulted, and editing tear.yaml does not change
+/// what `tear up` spawns.
+///
+/// The wire takes `shell: &str`, not an Option, so genuinely deferring to the
+/// daemon is a protocol change. This closes the half that can be closed
+/// today: client and daemon now run the SAME ladder, so they agree even
+/// though the client is the one that evaluates it.
+#[must_use]
+pub fn resolve_shell(configured: Option<&str>) -> String {
+    ishou_tokens::fleet_shell::FleetShell::prescribed().resolve(configured)
 }
