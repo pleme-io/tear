@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "kukaku"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -1977,7 +1977,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pleme-tear"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "clap",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "praca"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "ishou-tokens",
  "serde",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "tear-client"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "engate-attach",
  "engate-types",
@@ -2970,7 +2970,7 @@ dependencies = [
 
 [[package]]
 name = "tear-config"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2988,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "tear-core"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "tear-daemon"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3034,7 +3034,7 @@ dependencies = [
 
 [[package]]
 name = "tear-tmux-backend"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "tear-config",
@@ -3043,7 +3043,7 @@ dependencies = [
 
 [[package]]
 name = "tear-types"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3059,7 +3059,7 @@ dependencies = [
 
 [[package]]
 name = "tear-ws-bridge"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "clap",
