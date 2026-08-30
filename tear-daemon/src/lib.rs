@@ -41,15 +41,15 @@ use std::net::{SocketAddr, TcpListener};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use tear_config::LiveConfig;
 use tear_core::InProcess;
-use tear_types::wire::{read_frame, write_msg, Framed, Request, Response, WireError};
-use tear_types::shutai::{Declared, Shutai};
 use tear_types::MultiplexerControl;
+use tear_types::shutai::{Declared, Shutai};
+use tear_types::wire::{Framed, Request, Response, WireError, read_frame, write_msg};
 use tracing::{debug, error, info, warn};
 
 use crate::audit::{AuditEvent, AuditLog};
@@ -838,9 +838,9 @@ pub fn serve_connection_shutai<S: io::Read + io::Write>(
                     authed = true;
                     Response::Ok
                 }
-                Some(_) => Response::Err(tear_types::wire::WireError::Rejected(
-                    "auth failed".into(),
-                )),
+                Some(_) => {
+                    Response::Err(tear_types::wire::WireError::Rejected("auth failed".into()))
+                }
                 None => Response::Ok,
             };
             write_msg(&mut stream, &resp)?;
@@ -882,10 +882,10 @@ pub fn serve_connection_shutai<S: io::Read + io::Write>(
             // point: the brake lives on the session, so a gate that peeks
             // at the pane alone cannot see it — an agent-driven pane would
             // sail straight through a freio the operator had engaged.
-            let admission = inproc
-                .with_registry(|r| r.locate_pane(*id).and_then(|(sid, _)| {
-                    r.sessions.get(&sid).and_then(|s| s.admits(*id))
-                }));
+            let admission = inproc.with_registry(|r| {
+                r.locate_pane(*id)
+                    .and_then(|(sid, _)| r.sessions.get(&sid).and_then(|s| s.admits(*id)))
+            });
             match admission {
                 Some(tear_types::Admission::Refuse(tear_types::RefusalReason::Freio)) => {
                     let resp = Response::Err(tear_types::wire::WireError::Rejected(format!(
@@ -993,9 +993,7 @@ fn serve_subscription<S: io::Read + io::Write>(
     match inproc.pane_snapshot(pane) {
         Ok(snap) => {
             let bytes = snap.to_ansi();
-            if !bytes.is_empty()
-                && write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err()
-            {
+            if !bytes.is_empty() && write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err() {
                 return Ok(());
             }
         }
@@ -1076,7 +1074,13 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             window: w,
         }),
         Request::GetPane(id) => map_result(inproc.get_pane(id), Response::Pane),
-        Request::NewSession { name, shell, source, size_cells, args } => {
+        Request::NewSession {
+            name,
+            shell,
+            source,
+            size_cells,
+            args,
+        } => {
             let src = source.unwrap_or_default();
             let size = size_cells.unwrap_or((80, 24));
             map_result(
@@ -1084,43 +1088,51 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
                 Response::SessionId,
             )
         }
-        Request::RenameSession { id, new_name } => {
-            map_unit(inproc.rename_session(id, &new_name))
-        }
+        Request::RenameSession { id, new_name } => map_unit(inproc.rename_session(id, &new_name)),
         Request::KillSession(id) => map_unit(inproc.kill_session(id)),
-        Request::NewWindow { session, name, shell, args } => {
-            map_result(
-                inproc.new_window(session, &name, &shell, &args),
-                Response::WindowId,
-            )
-        }
+        Request::NewWindow {
+            session,
+            name,
+            shell,
+            args,
+        } => map_result(
+            inproc.new_window(session, &name, &shell, &args),
+            Response::WindowId,
+        ),
         Request::KillWindow(id) => map_unit(inproc.kill_window(id)),
         Request::SelectWindow(id) => map_unit(inproc.select_window(id)),
-        Request::SplitPane { origin, direction, shell, args } => {
-            map_result(
-                inproc.split_pane(origin, direction, &shell, &args),
-                Response::PaneId,
-            )
-        }
+        Request::SplitPane {
+            origin,
+            direction,
+            shell,
+            args,
+        } => map_result(
+            inproc.split_pane(origin, direction, &shell, &args),
+            Response::PaneId,
+        ),
         Request::KillPane(id) => map_unit(inproc.kill_pane(id)),
         Request::SelectPane(id) => map_unit(inproc.select_pane(id)),
-        Request::ResizePane { id, direction, delta_cells } => {
-            map_unit(inproc.resize_pane(id, direction, delta_cells))
-        }
+        Request::ResizePane {
+            id,
+            direction,
+            delta_cells,
+        } => map_unit(inproc.resize_pane(id, direction, delta_cells)),
         Request::ApplyLayout { window, kind } => map_unit(inproc.apply_layout(window, kind)),
         Request::SendKeys { id, bytes } => map_unit(inproc.send_keys(id, &bytes)),
         Request::SetFreio { session, engaged } => {
             let (sessions, braked, unbrakable) = inproc.set_freio(session, engaged);
-            Response::Freio { sessions, braked, unbrakable }
+            Response::Freio {
+                sessions,
+                braked,
+                unbrakable,
+            }
         }
         Request::GetFreio => Response::Freio {
             sessions: inproc.freio_state(),
             braked: Vec::new(),
             unbrakable: Vec::new(),
         },
-        Request::SetInputPolicy { id, policy } => {
-            map_unit(inproc.set_input_policy(id, policy))
-        }
+        Request::SetInputPolicy { id, policy } => map_unit(inproc.set_input_policy(id, policy)),
         Request::PaneSubscriberCount(id) => {
             map_result(inproc.pane_subscriber_count(id), Response::SubscriberCount)
         }
@@ -1138,9 +1150,14 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
                 Response::RecordingStatus { enabled, events }
             })
         }
-        Request::PaneBlocksList { pane, since_index, limit } => {
-            map_result(inproc.pane_blocks_list(pane, since_index, limit), Response::Blocks)
-        }
+        Request::PaneBlocksList {
+            pane,
+            since_index,
+            limit,
+        } => map_result(
+            inproc.pane_blocks_list(pane, since_index, limit),
+            Response::Blocks,
+        ),
         Request::PaneBlockAt { pane, index } => {
             map_result(inproc.pane_block_at(pane, index), Response::Block)
         }
@@ -1175,8 +1192,7 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
         // need a LiveConfig handle. Same rationale as Subscribe.
         Request::GetConfig | Request::ReloadConfig | Request::SetConfig(_) => {
             Response::Err(WireError::Rejected(
-                "config requests must be handled by dispatch_with_config (needs LiveConfig)"
-                    .into(),
+                "config requests must be handled by dispatch_with_config (needs LiveConfig)".into(),
             ))
         }
         // SubscribeConfigChange is handled in serve_connection BEFORE
@@ -1264,9 +1280,7 @@ pub fn dispatch_with_shutai(
         }
         Request::ReloadConfig => match config.reload() {
             Ok(()) => Response::Ok,
-            Err(e) => Response::Err(WireError::Internal(format!(
-                "config reload failed: {e}"
-            ))),
+            Err(e) => Response::Err(WireError::Internal(format!("config reload failed: {e}"))),
         },
         Request::SetConfig(yaml) => {
             match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
@@ -1311,7 +1325,13 @@ pub fn dispatch_with_shutai(
             }
             resp
         }
-        Request::NewSession { name, shell, source, size_cells, args } => {
+        Request::NewSession {
+            name,
+            shell,
+            source,
+            size_cells,
+            args,
+        } => {
             let src = derive_session_source(source, shutai);
             let size = size_cells.unwrap_or((80, 24));
             // Derive the pane's provenance from the SAME shutai that
@@ -1324,9 +1344,10 @@ pub fn dispatch_with_shutai(
             // `Yurai::from_shutai` is the one constructor that can mint
             // `Automation`, and it takes a shutai the daemon minted from a
             // connection it holds, so this cannot fabricate provenance.
-            let yurai = shutai.map(tear_types::Yurai::from_shutai).unwrap_or_default();
-            let result = inproc
-                .new_session_yurai(&name, &shell, &args, src.clone(), size, yurai);
+            let yurai = shutai
+                .map(tear_types::Yurai::from_shutai)
+                .unwrap_or_default();
+            let result = inproc.new_session_yurai(&name, &shell, &args, src.clone(), size, yurai);
             if let Ok(sid) = &result {
                 if let Some(a) = audit {
                     a.emit(&AuditEvent::SessionCreate {
@@ -1464,7 +1485,14 @@ fn praca_on_session_create(
                     praca::SessionTheme::Brazil
                 };
                 (
-                    praca::SessionRecord::for_adhoc(id, seed, theme, cwd.clone(), p.name_style, now),
+                    praca::SessionRecord::for_adhoc(
+                        id,
+                        seed,
+                        theme,
+                        cwd.clone(),
+                        p.name_style,
+                        now,
+                    ),
                     cwd.clone(),
                 )
             }
@@ -1539,8 +1567,8 @@ fn flush_session_recordings(inproc: &InProcess, session: tear_types::SessionId, 
         }
         match inproc.export_pane_recording(pane) {
             Ok(cast) => {
-                let path = std::path::Path::new(&expanded)
-                    .join(format!("{session}-{ts}-{pane}.cast"));
+                let path =
+                    std::path::Path::new(&expanded).join(format!("{session}-{ts}-{pane}.cast"));
                 if let Err(e) = std::fs::write(&path, cast.as_bytes()) {
                     warn!(path = %path.display(), error = %e, "auto-flush: write failed");
                 } else {
@@ -1552,10 +1580,7 @@ fn flush_session_recordings(inproc: &InProcess, session: tear_types::SessionId, 
     }
 }
 
-fn map_result<T, F: FnOnce(T) -> Response>(
-    r: tear_types::ControlResult<T>,
-    ok: F,
-) -> Response {
+fn map_result<T, F: FnOnce(T) -> Response>(r: tear_types::ControlResult<T>, ok: F) -> Response {
     match r {
         Ok(v) => ok(v),
         Err(e) => Response::Err(WireError::from(e)),
@@ -1592,12 +1617,25 @@ mod tests {
                 &[],
                 tear_types::SessionSource::Agent,
                 (80, 24),
-                tear_types::Yurai::Automation { label: Some("claude".into()) },
+                tear_types::Yurai::Automation {
+                    label: Some("claude".into()),
+                },
             )
             .unwrap();
 
-        let resp = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
-        let Response::Freio { sessions, braked, unbrakable } = resp else {
+        let resp = dispatch(
+            &inproc,
+            Request::SetFreio {
+                session: None,
+                engaged: true,
+            },
+        );
+        let Response::Freio {
+            sessions,
+            braked,
+            unbrakable,
+        } = resp
+        else {
             panic!("expected Response::Freio, got {resp:?}");
         };
         assert!(
@@ -1618,7 +1656,9 @@ mod tests {
         });
         assert_eq!(
             admission,
-            Some(tear_types::Admission::Refuse(tear_types::RefusalReason::Freio))
+            Some(tear_types::Admission::Refuse(
+                tear_types::RefusalReason::Freio
+            ))
         );
     }
 
@@ -1630,8 +1670,17 @@ mod tests {
         // tmux-backend / pre-yurai case.
         inproc.new_session("legacy", "/bin/sh").unwrap();
 
-        let resp = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
-        let Response::Freio { braked, unbrakable, .. } = resp else {
+        let resp = dispatch(
+            &inproc,
+            Request::SetFreio {
+                session: None,
+                engaged: true,
+            },
+        );
+        let Response::Freio {
+            braked, unbrakable, ..
+        } = resp
+        else {
             panic!("expected Response::Freio");
         };
         assert!(braked.is_empty(), "nothing to brake — provenance unknown");
@@ -1657,7 +1706,9 @@ mod tests {
     fn freio_brakes_a_session_created_through_the_socket_by_an_agent() {
         let inproc = InProcess::new();
         let config = LiveConfig::default();
-        let shutai = Shutai::remote().declaring(Declared::Agent { label: Some("claude".into()) });
+        let shutai = Shutai::remote().declaring(Declared::Agent {
+            label: Some("claude".into()),
+        });
 
         let resp = dispatch_with_shutai(
             &inproc,
@@ -1679,7 +1730,13 @@ mod tests {
 
         // Precondition: the provenance actually landed on the pane. Without
         // this the brake assertion below could pass for the wrong reason.
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         let session = inproc.get_session(sid).unwrap();
         assert!(
             session.panes.get(&pane).unwrap().yurai.is_automation(),
@@ -1687,7 +1744,13 @@ mod tests {
              has nothing to filter on"
         );
 
-        let resp = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
+        let resp = dispatch(
+            &inproc,
+            Request::SetFreio {
+                session: None,
+                engaged: true,
+            },
+        );
         let Response::Freio { braked, .. } = resp else {
             panic!("expected Response::Freio, got {resp:?}");
         };
@@ -1712,8 +1775,20 @@ mod tests {
             )
             .unwrap();
 
-        let _ = dispatch(&inproc, Request::SetFreio { session: None, engaged: true });
-        let _ = dispatch(&inproc, Request::SetFreio { session: None, engaged: false });
+        let _ = dispatch(
+            &inproc,
+            Request::SetFreio {
+                session: None,
+                engaged: true,
+            },
+        );
+        let _ = dispatch(
+            &inproc,
+            Request::SetFreio {
+                session: None,
+                engaged: false,
+            },
+        );
 
         let resp = dispatch(&inproc, Request::GetFreio);
         let Response::Freio { sessions, .. } = resp else {
@@ -1832,11 +1907,8 @@ mod tests {
     /// failure is "I could not tell", never a forged answer.
     #[test]
     fn a_local_connection_is_attested_with_the_peers_real_uid() {
-        let dir = std::env::temp_dir().join(format!(
-            "tear-shutai-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("tear-shutai-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("t.sock");
 
@@ -1879,11 +1951,8 @@ mod tests {
     /// REACHABILITY: who can open the socket at all.
     #[test]
     fn the_socket_is_0600_so_only_this_uid_can_reach_the_daemon() {
-        let dir = std::env::temp_dir().join(format!(
-            "tear-sock-perm-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("tear-sock-perm-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("t.sock");
 
@@ -1939,9 +2008,7 @@ mod tests {
         // `DaemonHandle` is not Debug, so match rather than expect_err.
         let err = match start_tcp(addr, inproc) {
             Err(e) => e,
-            Ok(_) => panic!(
-                "binding a routable address with no auth_token_env must be refused"
-            ),
+            Ok(_) => panic!("binding a routable address with no auth_token_env must be refused"),
         };
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         assert!(
@@ -2187,7 +2254,7 @@ mod tests {
 
     #[test]
     fn auth_required_rejects_other_requests_until_authenticate() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         // Pre-encode: (a) ListSessions before auth → Rejected.
@@ -2204,13 +2271,7 @@ mod tests {
         let stream = DuplexStream::new(input, tx);
         let inproc = Arc::new(InProcess::new());
         let live = Arc::new(LiveConfig::default());
-        let _ = serve_connection_with_auth(
-            stream,
-            inproc,
-            live,
-            None,
-            Some("secret".into()),
-        );
+        let _ = serve_connection_with_auth(stream, inproc, live, None, Some("secret".into()));
 
         let resps = drain_responses(&rx);
         assert_eq!(resps.len(), 4, "got: {resps:?}");
@@ -2222,7 +2283,7 @@ mod tests {
 
     #[test]
     fn no_auth_required_accepts_requests_immediately() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2235,14 +2296,17 @@ mod tests {
         let _ = serve_connection_with_auth(stream, inproc, live, None, None);
 
         let resps = drain_responses(&rx);
-        assert!(matches!(resps.first(), Some(Response::Sessions(_))), "got: {resps:?}");
+        assert!(
+            matches!(resps.first(), Some(Response::Sessions(_))),
+            "got: {resps:?}"
+        );
     }
 
     // ── extra coverage: re-authenticate, empty token, identify_idempotent ──
 
     #[test]
     fn re_authenticate_after_success_returns_ok_again() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2263,7 +2327,7 @@ mod tests {
 
     #[test]
     fn pre_emptive_authenticate_on_no_auth_daemon_is_ok() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2276,12 +2340,15 @@ mod tests {
         let _ = serve_connection_with_auth(stream, inproc, live, None, None);
 
         let resps = drain_responses(&rx);
-        assert!(matches!(resps.first(), Some(Response::Ok)), "got: {resps:?}");
+        assert!(
+            matches!(resps.first(), Some(Response::Ok)),
+            "got: {resps:?}"
+        );
     }
 
     #[test]
     fn identify_client_is_idempotent_and_returns_ok() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2334,13 +2401,8 @@ mod tests {
         // SetConfig YAML must parse as a valid TearConfig — use
         // the default round-tripped through YAML.
         let yaml = serde_yaml_ng::to_string(&tear_config::TearConfig::default()).unwrap();
-        let resp = dispatch_with_config(
-            &inproc,
-            &live,
-            Request::SetConfig(yaml),
-            Some(&audit),
-            None,
-        );
+        let resp =
+            dispatch_with_config(&inproc, &live, Request::SetConfig(yaml), Some(&audit), None);
         assert!(matches!(resp, Response::Ok));
 
         // Drop the audit handle so the file's BufWriter flushes.
@@ -2509,7 +2571,10 @@ mod tests {
                 p.binding.lookup(&project).is_none(),
                 "killed session's binding removed"
             );
-            assert!(p.index.get(sid).is_none(), "killed session's record removed");
+            assert!(
+                p.index.get(sid).is_none(),
+                "killed session's record removed"
+            );
         });
         let reloaded = crate::praca_store::PracaStore::open(path.clone());
         reloaded.with(|p| assert!(p.binding.lookup(&project).is_none()));
@@ -2581,7 +2646,7 @@ mod tests {
     /// day against any daemon left running.
     #[test]
     fn an_unknown_request_variant_is_refused_and_the_connection_survives() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2633,7 +2698,7 @@ mod tests {
     /// and the connection still survives; only the detail is withheld.
     #[test]
     fn an_unauthenticated_peer_is_refused_without_learning_the_daemons_shape() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2678,7 +2743,7 @@ mod tests {
     /// to silent degradation with extra steps.
     #[test]
     fn an_unknown_request_variant_is_never_answered_ok() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2704,7 +2769,7 @@ mod tests {
     /// silent drop started all of this.
     #[test]
     fn hello_answers_with_this_daemons_version_and_capabilities() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();
@@ -2745,7 +2810,7 @@ mod tests {
     /// on it.
     #[test]
     fn hello_before_authenticate_is_rejected_on_an_auth_required_daemon() {
-        use crate::testing::{drain_responses, DuplexStream};
+        use crate::testing::{DuplexStream, drain_responses};
         use std::sync::mpsc::channel;
 
         let mut input = Vec::new();

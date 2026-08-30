@@ -31,7 +31,9 @@ fn cwds_under(cwd: &str) -> Vec<Option<String>> {
     let sid = inproc.new_session("probe", "/bin/sh").unwrap();
     let s0 = inproc.get_session(sid).unwrap();
     let p0 = s0.windows[&s0.active_window].active_pane;
-    inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
+    inproc
+        .split_pane(p0, Direction::Right, "/bin/sh", &[])
+        .unwrap();
 
     let session = inproc.get_session(sid).unwrap();
     let mut out: Vec<Option<String>> = session.panes.values().map(|p| p.cwd.clone()).collect();
@@ -89,7 +91,9 @@ fn a_write_between_spawns_splits_one_session_across_two_directories() {
     second.cwd = Some("/tmp/probe-second".to_owned());
     inproc.set_spawn_env(second);
 
-    inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
+    inproc
+        .split_pane(p0, Direction::Right, "/bin/sh", &[])
+        .unwrap();
 
     let session = inproc.get_session(sid).unwrap();
     let mut got: Vec<Option<String>> = session.panes.values().map(|p| p.cwd.clone()).collect();

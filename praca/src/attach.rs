@@ -225,8 +225,10 @@ mod tests {
         match d {
             AttachDecision::SpawnNew { project_root, name } => {
                 assert_eq!(project_root, PathBuf::from("/code/tear"));
-                let expected =
-                    FleetSessionNames::from_project_path(Path::new("/code/tear"), SessionNameStyle::Emoji);
+                let expected = FleetSessionNames::from_project_path(
+                    Path::new("/code/tear"),
+                    SessionNameStyle::Emoji,
+                );
                 assert_eq!(name.to_string(), expected.to_string());
             }
             other => panic!("expected SpawnNew, got {other:?}"),

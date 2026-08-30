@@ -375,14 +375,7 @@ mod tests {
         let store2 = PracaStore::open(path.clone());
         let decision = store2.with(|p| {
             // current=None, cd straight into the bound project root.
-            praca::decide_with_root(
-                p.policy,
-                None,
-                &root,
-                &p.binding,
-                &p.index,
-                p.name_style,
-            )
+            praca::decide_with_root(p.policy, None, &root, &p.binding, &p.index, p.name_style)
         });
         assert_eq!(
             decision,
@@ -413,7 +406,10 @@ mod tests {
         // be written once the frame exists to check.
         assert!(path.exists());
         let tmp = tmp_path(&path);
-        assert!(!tmp.exists(), "temp file must be renamed away, not left behind");
+        assert!(
+            !tmp.exists(),
+            "temp file must be renamed away, not left behind"
+        );
         let text = std::fs::read_to_string(&path).unwrap();
         let parsed: PracaSnapshot = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed.binding.lookup(Path::new("/x")), Some(sid("x")));

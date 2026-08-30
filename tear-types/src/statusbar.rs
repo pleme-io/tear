@@ -157,10 +157,7 @@ pub enum Segment {
     Hostname { short: bool },
     /// User-defined shell-command output, refreshed every `interval`
     /// seconds. The backend caches the most recent value.
-    Shell {
-        cmd: String,
-        interval_seconds: u32,
-    },
+    Shell { cmd: String, interval_seconds: u32 },
     /// Conditional: render `then` if `cond` evaluates non-empty,
     /// otherwise `else`. `cond` is a `#{...}`-style condition for
     /// tmux compatibility.
@@ -302,7 +299,10 @@ mod tests {
         };
         let json = serde_json::to_string(&seg).unwrap();
         assert!(json.contains("\"kind\":\"signal\""), "tag: {json}");
-        assert!(json.contains("\"signal\":\"pane-zoomed\""), "signal: {json}");
+        assert!(
+            json.contains("\"signal\":\"pane-zoomed\""),
+            "signal: {json}"
+        );
         let back: Segment = serde_json::from_str(&json).unwrap();
         assert_eq!(back, seg);
 

@@ -59,13 +59,13 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use parking_lot::Mutex;
 
-use tear_types::wire::{read_msg, write_msg, Request, Response};
+use tear_types::wire::{Request, Response, read_msg, write_msg};
 use tear_types::{
     Capability, ControlError, ControlResult, DaemonIdentity, Direction, MultiplexerControl, PaneId,
     PaneSnapshot, SessionId, TearPane, TearSession, TearWindow, WindowId,
@@ -517,15 +517,15 @@ impl Client {
         write_msg(&mut writer, &Request::Subscribe(pane))
             .map_err(|e| ControlError::Transport(e.to_string()))?;
         // First reply: Ok or Err (NoSuchPane / etc.).
-        let ack: Response = read_msg(&mut reader)
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let ack: Response =
+            read_msg(&mut reader).map_err(|e| ControlError::Transport(e.to_string()))?;
         match ack {
             Response::Ok => {}
             Response::Err(we) => return Err(ControlError::from(we)),
             other => {
                 return Err(ControlError::Transport(format!(
                     "unexpected ack to Subscribe: {other:?}"
-                )))
+                )));
             }
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -537,7 +537,7 @@ impl Client {
                     match read_msg::<_, Response>(&mut reader) {
                         Ok(Response::PaneBytes(b)) => on_bytes(&b),
                         Ok(Response::PaneClosed(_)) => return,
-                        Ok(_) => return, // unexpected variant — bail
+                        Ok(_) => return,  // unexpected variant — bail
                         Err(_) => return, // EOF / I/O error → done
                     }
                 }
@@ -568,10 +568,7 @@ impl Client {
     /// or when the returned [`SubscribeHandle`] is dropped. The
     /// callback runs on the reader thread — keep it cheap and
     /// non-blocking.
-    pub fn subscribe_config_change<F>(
-        &self,
-        mut on_change: F,
-    ) -> ControlResult<SubscribeHandle>
+    pub fn subscribe_config_change<F>(&self, mut on_change: F) -> ControlResult<SubscribeHandle>
     where
         F: FnMut(Arc<tear_config::TearConfig>) + Send + 'static,
     {
@@ -589,15 +586,15 @@ impl Client {
         let mut writer = BufWriter::new(stream);
         write_msg(&mut writer, &Request::SubscribeConfigChange)
             .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let ack: Response = read_msg(&mut reader)
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let ack: Response =
+            read_msg(&mut reader).map_err(|e| ControlError::Transport(e.to_string()))?;
         match ack {
             Response::Ok => {}
             Response::Err(we) => return Err(ControlError::from(we)),
             other => {
                 return Err(ControlError::Transport(format!(
                     "unexpected ack to SubscribeConfigChange: {other:?}"
-                )))
+                )));
             }
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -618,9 +615,7 @@ impl Client {
                     }
                 }
             })
-            .map_err(|e| {
-                ControlError::Transport(format!("spawn config subscriber thread: {e}"))
-            })?;
+            .map_err(|e| ControlError::Transport(format!("spawn config subscriber thread: {e}")))?;
         Ok(SubscribeHandle {
             stop,
             socket: socket_for_handle,
@@ -641,8 +636,8 @@ impl Client {
         let ClientInner { reader, writer } = &mut *inner;
         write_msg::<_, Request>(writer, &req)
             .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let resp: Response = read_msg(reader)
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let resp: Response =
+            read_msg(reader).map_err(|e| ControlError::Transport(e.to_string()))?;
         if let Response::Err(we) = resp {
             return Err(ControlError::from(we));
         }
@@ -830,12 +825,7 @@ impl MultiplexerControl for Client {
         }
     }
 
-    fn resize_pane(
-        &self,
-        id: PaneId,
-        direction: Direction,
-        delta_cells: i16,
-    ) -> ControlResult<()> {
+    fn resize_pane(&self, id: PaneId, direction: Direction, delta_cells: i16) -> ControlResult<()> {
         match self.rpc(Request::ResizePane {
             id,
             direction,
@@ -846,11 +836,7 @@ impl MultiplexerControl for Client {
         }
     }
 
-    fn apply_layout(
-        &self,
-        window: WindowId,
-        kind: tear_types::LayoutKind,
-    ) -> ControlResult<()> {
+    fn apply_layout(&self, window: WindowId, kind: tear_types::LayoutKind) -> ControlResult<()> {
         match self.rpc(Request::ApplyLayout { window, kind })? {
             Response::Ok => Ok(()),
             other => Err(unexpected("Ok", other)),
@@ -867,11 +853,7 @@ impl MultiplexerControl for Client {
         }
     }
 
-    fn set_input_policy(
-        &self,
-        id: PaneId,
-        policy: tear_types::InputPolicy,
-    ) -> ControlResult<()> {
+    fn set_input_policy(&self, id: PaneId, policy: tear_types::InputPolicy) -> ControlResult<()> {
         match self.rpc(Request::SetInputPolicy { id, policy })? {
             Response::Ok => Ok(()),
             other => Err(unexpected("Ok", other)),
@@ -915,13 +897,21 @@ impl Client {
         &self,
         session: Option<SessionId>,
         engaged: bool,
-    ) -> ControlResult<(Vec<(SessionId, tear_types::Freio)>, Vec<PaneId>, Vec<PaneId>)> {
+    ) -> ControlResult<(
+        Vec<(SessionId, tear_types::Freio)>,
+        Vec<PaneId>,
+        Vec<PaneId>,
+    )> {
         self.daemon().require(
             tear_types::Capability::Freio,
             "freio (the operator's brake) needs a daemon that reads SetFreio",
         )?;
         match self.rpc(Request::SetFreio { session, engaged })? {
-            Response::Freio { sessions, braked, unbrakable } => Ok((sessions, braked, unbrakable)),
+            Response::Freio {
+                sessions,
+                braked,
+                unbrakable,
+            } => Ok((sessions, braked, unbrakable)),
             other => Err(unexpected("Freio", other)),
         }
     }
@@ -987,7 +977,11 @@ impl Client {
         since_index: u64,
         limit: u32,
     ) -> ControlResult<Vec<tear_types::Block>> {
-        match self.rpc(Request::PaneBlocksList { pane, since_index, limit })? {
+        match self.rpc(Request::PaneBlocksList {
+            pane,
+            since_index,
+            limit,
+        })? {
             Response::Blocks(b) => Ok(b),
             other => Err(unexpected("Blocks", other)),
         }
@@ -1055,7 +1049,9 @@ impl Client {
     /// is NOT touched; the next file-system reload reverts.
     pub fn set_config(&self, cfg: &tear_config::TearConfig) -> ControlResult<()> {
         let yaml = serde_yaml_ng::to_string(cfg).map_err(|e| {
-            ControlError::Rejected(format!("client-side TearConfig YAML serialisation failed: {e}"))
+            ControlError::Rejected(format!(
+                "client-side TearConfig YAML serialisation failed: {e}"
+            ))
         })?;
         self.set_config_yaml(yaml)
     }
@@ -1182,8 +1178,7 @@ mod tests {
             p
         };
         let inproc = Arc::new(tear_core::InProcess::new());
-        let daemon =
-            tear_daemon::start(socket.clone(), inproc.clone()).expect("daemon start");
+        let daemon = tear_daemon::start(socket.clone(), inproc.clone()).expect("daemon start");
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let client = Client::connect(&socket).expect("connect");
@@ -1215,8 +1210,7 @@ mod tests {
 
         // Poll up to 2s for the marker to appear in the snapshot —
         // PTY round-trip latency varies on busy CI hardware.
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut got = String::new();
         while std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1273,8 +1267,7 @@ mod tests {
             .expect("send_keys");
 
         // Drain the channel for up to 2s looking for the marker.
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut accum = Vec::new();
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -1344,8 +1337,7 @@ mod tests {
         // Each subscriber should accumulate the marker independently.
         let collect = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
             let mut acc = Vec::new();
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while std::time::Instant::now() < deadline {
                 if let Ok(c) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
                     acc.extend(c);
@@ -1363,8 +1355,14 @@ mod tests {
         let got_b = collect(&rx_b);
         let text_a = String::from_utf8_lossy(&got_a).to_string();
         let text_b = String::from_utf8_lossy(&got_b).to_string();
-        assert!(text_a.contains(marker), "subscriber A missed marker:\n{text_a}");
-        assert!(text_b.contains(marker), "subscriber B missed marker:\n{text_b}");
+        assert!(
+            text_a.contains(marker),
+            "subscriber A missed marker:\n{text_a}"
+        );
+        assert!(
+            text_b.contains(marker),
+            "subscriber B missed marker:\n{text_b}"
+        );
         daemon.stop();
     }
 
@@ -1483,7 +1481,10 @@ mod tests {
         // returns Disconnected (sender gone) within the timeout.
         let res = rx.recv_timeout(std::time::Duration::from_millis(500));
         assert!(
-            matches!(res, Err(std::sync::mpsc::RecvTimeoutError::Disconnected) | Ok(_)),
+            matches!(
+                res,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) | Ok(_)
+            ),
             "expected channel disconnected after pane kill, got {res:?}"
         );
 
@@ -1513,8 +1514,8 @@ mod tests {
             ..tear_config::TearConfig::default()
         };
         live.replace(custom.clone());
-        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live.clone())
-            .expect("daemon");
+        let daemon =
+            tear_daemon::start_with_config(socket.clone(), inproc, live.clone()).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let client = Client::connect(&socket).expect("connect");
 
@@ -1550,8 +1551,8 @@ mod tests {
         };
         let inproc = Arc::new(tear_core::InProcess::new());
         let live = Arc::new(tear_config::LiveConfig::default());
-        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live.clone())
-            .expect("daemon");
+        let daemon =
+            tear_daemon::start_with_config(socket.clone(), inproc, live.clone()).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let client = Client::connect(&socket).expect("connect");
 
@@ -1684,8 +1685,7 @@ mod tests {
         };
         let inproc = Arc::new(tear_core::InProcess::new());
         let live = Arc::new(tear_config::LiveConfig::default());
-        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live)
-            .expect("daemon");
+        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let client = Client::connect(&socket).expect("connect");
         let err = client
@@ -1713,8 +1713,8 @@ mod tests {
             prefix: "C-z".into(),
             ..tear_config::TearConfig::default()
         });
-        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live.clone())
-            .expect("daemon");
+        let daemon =
+            tear_daemon::start_with_config(socket.clone(), inproc, live.clone()).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let client = Client::connect(&socket).expect("connect");
 
@@ -1770,12 +1770,7 @@ mod tests {
         };
         let inproc = Arc::new(tear_core::InProcess::new());
         let live = Arc::new(tear_config::LiveConfig::default());
-        let daemon = tear_daemon::start_with_config(
-            socket.clone(),
-            inproc,
-            live,
-        )
-        .expect("daemon");
+        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let client = Client::connect(&socket).expect("connect");
@@ -1814,12 +1809,7 @@ mod tests {
         };
         let inproc = Arc::new(tear_core::InProcess::new());
         let live = Arc::new(tear_config::LiveConfig::default());
-        let daemon = tear_daemon::start_with_config(
-            socket.clone(),
-            inproc,
-            live,
-        )
-        .expect("daemon");
+        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let client = Client::connect(&socket).expect("connect");
@@ -1846,8 +1836,7 @@ mod tests {
 
         let collect = |rx: &std::sync::mpsc::Receiver<String>| {
             let mut got = Vec::new();
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while got.len() < 2 && std::time::Instant::now() < deadline {
                 if let Ok(p) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
                     got.push(p);
@@ -1922,24 +1911,34 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         let client = Client::connect(&socket).expect("connect");
         let sid = client.new_session("subcount", "/bin/sh").unwrap();
-        let pane_id = *client.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *client
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         // No subscribers yet.
         assert_eq!(client.pane_subscriber_count(pane_id).unwrap(), 0);
 
         // Attach one subscriber. The daemon counts it.
         let (tx, _rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let h1 = client.subscribe_pane_bytes(pane_id, move |b| {
-            let _ = tx.send(b.to_vec());
-        }).expect("sub 1");
+        let h1 = client
+            .subscribe_pane_bytes(pane_id, move |b| {
+                let _ = tx.send(b.to_vec());
+            })
+            .expect("sub 1");
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(client.pane_subscriber_count(pane_id).unwrap(), 1);
 
         // Two subscribers.
         let (tx2, _rx2) = std::sync::mpsc::channel::<Vec<u8>>();
-        let h2 = client.subscribe_pane_bytes(pane_id, move |b| {
-            let _ = tx2.send(b.to_vec());
-        }).expect("sub 2");
+        let h2 = client
+            .subscribe_pane_bytes(pane_id, move |b| {
+                let _ = tx2.send(b.to_vec());
+            })
+            .expect("sub 2");
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(client.pane_subscriber_count(pane_id).unwrap(), 2);
 
@@ -1970,12 +1969,7 @@ mod tests {
         };
         let inproc = Arc::new(tear_core::InProcess::new());
         let live = Arc::new(tear_config::LiveConfig::default());
-        let daemon = tear_daemon::start_with_config(
-            socket.clone(),
-            inproc,
-            live,
-        )
-        .expect("daemon");
+        let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live).expect("daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let client = Client::connect(&socket).expect("connect");
@@ -1991,7 +1985,9 @@ mod tests {
         let mut cfg = tear_config::TearConfig::default();
         cfg.prefix = "C-before-drop".into();
         client.set_config(&cfg).expect("set 1");
-        let _ = rx.recv_timeout(std::time::Duration::from_secs(1)).expect("first frame");
+        let _ = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first frame");
 
         // Drop the handle; subsequent frames must NOT arrive.
         handle.stop();

@@ -76,7 +76,10 @@ impl Rect {
     #[must_use]
     pub fn contains(self, px: u16, py: u16) -> bool {
         let (px, py) = (u32::from(px), u32::from(py));
-        u32::from(self.x) <= px && px < self.right() && u32::from(self.y) <= py && py < self.bottom()
+        u32::from(self.x) <= px
+            && px < self.right()
+            && u32::from(self.y) <= py
+            && py < self.bottom()
     }
 
     /// Length of the overlap between two 1-D intervals `[a0, a1)` and

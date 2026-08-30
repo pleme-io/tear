@@ -259,11 +259,7 @@ pub trait MultiplexerControl: Send + Sync {
     /// subsequent `send_keys` for that pane to return
     /// `ControlError::Rejected`. Idempotent — same policy is a
     /// no-op.
-    fn set_input_policy(
-        &self,
-        id: PaneId,
-        policy: crate::pane::InputPolicy,
-    ) -> ControlResult<()>;
+    fn set_input_policy(&self, id: PaneId, policy: crate::pane::InputPolicy) -> ControlResult<()>;
 
     // ── Rendering (Phase 2) ──────────────────────────────────────
 

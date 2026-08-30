@@ -112,8 +112,14 @@ fn status_quiet_mode_suppresses_output_but_keeps_exit_code() {
     let h = DaemonHarness::new("status-quiet");
     let (stdout, stderr, code) = h.run(&["status", "--quiet"]);
     assert_eq!(code, 0);
-    assert!(stdout.is_empty(), "quiet should suppress stdout: {stdout:?}");
-    assert!(stderr.is_empty(), "quiet should suppress stderr: {stderr:?}");
+    assert!(
+        stdout.is_empty(),
+        "quiet should suppress stdout: {stdout:?}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "quiet should suppress stderr: {stderr:?}"
+    );
 }
 
 // ── tear up + list + kill (daemon-routed) ──────────────────────────
@@ -121,8 +127,7 @@ fn status_quiet_mode_suppresses_output_but_keeps_exit_code() {
 #[test]
 fn up_creates_session_in_daemon_visible_via_list() {
     let h = DaemonHarness::new("up-list");
-    let (stdout, _stderr, code) =
-        h.run(&["up", "--name", "lifecycle", "--shell", "/bin/sh"]);
+    let (stdout, _stderr, code) = h.run(&["up", "--name", "lifecycle", "--shell", "/bin/sh"]);
     assert_eq!(code, 0, "up failed: {stdout}");
     assert!(stdout.contains("created session"));
     assert!(stdout.contains("(lifecycle) in daemon"));
@@ -141,8 +146,8 @@ fn up_list_yaml_emits_round_trippable_yaml() {
     let _ = h.run(&["up", "--name", "yaml-test", "--shell", "/bin/sh"]);
     let (stdout, _se, code) = h.run(&["list", "--yaml"]);
     assert_eq!(code, 0);
-    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("bad yaml: {e}\nraw: {stdout}"));
+    let parsed: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&stdout).unwrap_or_else(|e| panic!("bad yaml: {e}\nraw: {stdout}"));
     let arr = parsed.as_sequence().expect("yaml top-level is a sequence");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["name"], serde_yaml_ng::Value::from("yaml-test"));
@@ -183,8 +188,7 @@ fn kill_by_name_resolves_unique_match() {
 #[test]
 fn kill_by_name_fails_when_no_match() {
     let h = DaemonHarness::new("kill-name-miss");
-    let (_, stderr, code) =
-        h.run(&["kill", "--name", "this-name-does-not-exist"]);
+    let (_, stderr, code) = h.run(&["kill", "--name", "this-name-does-not-exist"]);
     assert_ne!(code, 0);
     assert!(
         stderr.contains("no session named"),
@@ -367,15 +371,18 @@ fn leader_policy_gates_send_keys_by_client_identity() {
 
     // Create a session, find its pane.
     let (up_stdout, _, _) = h.run(&["up", "--name", "leader-test"]);
-    let sid_line = up_stdout.lines().find(|l| l.contains("created session")).unwrap();
+    let sid_line = up_stdout
+        .lines()
+        .find(|l| l.contains("created session"))
+        .unwrap();
     let _sid_token = sid_line.split_whitespace().nth(2).unwrap();
     let (list_stdout, _, _) = h.run(&["list"]);
     // Parse "<sid> leader-test  windows=1 panes=1 ..." — get pane id.
     use tear_types::MultiplexerControl;
     let sessions = {
-        let client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket().to_path_buf()),
-        )
+        let client = tear_client::Client::connect_transport(tear_client::Transport::Unix(
+            h.socket().to_path_buf(),
+        ))
         .unwrap();
         client.list_sessions().unwrap()
     };
@@ -384,23 +391,20 @@ fn leader_policy_gates_send_keys_by_client_identity() {
 
     // Set Leader policy with id=42.
     let pane_str = format!("{pane_id}");
-    let (out_input, err_input, code_input) = h.run(&[
-        "pane-input",
-        &pane_str,
-        "leader",
-        "--leader-id",
-        "42",
-    ]);
+    let (out_input, err_input, code_input) =
+        h.run(&["pane-input", &pane_str, "leader", "--leader-id", "42"]);
     assert_eq!(code_input, 0, "stderr: {err_input}");
     assert!(out_input.contains("leader"), "out: {out_input}");
 
     // Naive client without TEAR_CLIENT_ID: SendKeys must be rejected.
     {
-        let client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket().to_path_buf()),
-        )
+        let client = tear_client::Client::connect_transport(tear_client::Transport::Unix(
+            h.socket().to_path_buf(),
+        ))
         .unwrap();
-        let err = client.send_keys(pane_id, b"hello").expect_err("must reject");
+        let err = client
+            .send_keys(pane_id, b"hello")
+            .expect_err("must reject");
         let msg = format!("{err}");
         assert!(
             msg.contains("leader") || msg.contains("Rejected"),
@@ -410,19 +414,21 @@ fn leader_policy_gates_send_keys_by_client_identity() {
 
     // Authorized leader: identify_as(42) then SendKeys → Ok.
     {
-        let mut client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket().to_path_buf()),
-        )
+        let mut client = tear_client::Client::connect_transport(tear_client::Transport::Unix(
+            h.socket().to_path_buf(),
+        ))
         .unwrap();
         client.identify_as(42).unwrap();
-        client.send_keys(pane_id, b"hello").expect("authorized leader");
+        client
+            .send_keys(pane_id, b"hello")
+            .expect("authorized leader");
     }
 
     // Wrong identity: identify_as(99) then SendKeys → still rejected.
     {
-        let mut client = tear_client::Client::connect_transport(
-            tear_client::Transport::Unix(h.socket().to_path_buf()),
-        )
+        let mut client = tear_client::Client::connect_transport(tear_client::Transport::Unix(
+            h.socket().to_path_buf(),
+        ))
         .unwrap();
         client.identify_as(99).unwrap();
         let err = client.send_keys(pane_id, b"hi").expect_err("99 != 42");
@@ -456,7 +462,9 @@ fn client_can_authenticate_against_auth_required_daemon() {
     // concurrent reader observes the env mutation. The 2024-edition
     // `set_var` unsafety contract is satisfied because we're not
     // racing other threads on this env var.
-    unsafe { std::env::set_var(&env_name, token); }
+    unsafe {
+        std::env::set_var(&env_name, token);
+    }
 
     let mut cfg = tear_config::TearConfig::default();
     cfg.auth_token_env = Some(env_name.clone());
@@ -464,18 +472,16 @@ fn client_can_authenticate_against_auth_required_daemon() {
     live.replace(cfg);
 
     let inproc = std::sync::Arc::new(tear_core::InProcess::new());
-    let daemon = tear_daemon::start_with_config(socket.clone(), inproc, live)
-        .expect("daemon start");
+    let daemon =
+        tear_daemon::start_with_config(socket.clone(), inproc, live).expect("daemon start");
     std::thread::sleep(Duration::from_millis(50));
 
     // Auth-aware client: passes the token. ListSessions should succeed.
     {
         let transport = tear_client::Transport::Unix(socket.clone());
-        let client = tear_client::Client::connect_transport_with_auth(
-            transport,
-            Some(token.into()),
-        )
-        .expect("auth connect");
+        let client =
+            tear_client::Client::connect_transport_with_auth(transport, Some(token.into()))
+                .expect("auth connect");
         use tear_types::MultiplexerControl;
         let sessions = client.list_sessions().expect("list");
         assert!(sessions.is_empty());
@@ -485,8 +491,7 @@ fn client_can_authenticate_against_auth_required_daemon() {
     // Rejected travels through the trait as ControlError::Rejected.
     {
         let transport = tear_client::Transport::Unix(socket.clone());
-        let client = tear_client::Client::connect_transport(transport)
-            .expect("connect (unauthed)");
+        let client = tear_client::Client::connect_transport(transport).expect("connect (unauthed)");
         use tear_types::MultiplexerControl;
         let err = client.list_sessions().expect_err("must reject");
         // Smoke-check the message routes through the Rejected path.
@@ -499,7 +504,9 @@ fn client_can_authenticate_against_auth_required_daemon() {
 
     drop(daemon);
     // SAFETY: see set_var above — single-threaded teardown.
-    unsafe { std::env::remove_var(&env_name); }
+    unsafe {
+        std::env::remove_var(&env_name);
+    }
     let _ = std::fs::remove_file(&socket);
 }
 
@@ -510,10 +517,7 @@ fn migrate_creates_session_if_missing() {
     let h = DaemonHarness::new("migrate-creates");
     let (stdout, stderr, code) = h.run(&["migrate", "--name", "demo"]);
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("migrate: session"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("migrate: session"), "stdout: {stdout}");
     assert!(stdout.contains("demo"), "stdout: {stdout}");
     // Sanity: the session is actually listed by the daemon.
     let (list_stdout, _, list_code) = h.run(&["list"]);
@@ -551,13 +555,9 @@ fn migrate_is_idempotent_for_same_name() {
 #[test]
 fn migrate_shell_snippet_emits_exports() {
     let h = DaemonHarness::new("migrate-snippet");
-    let (stdout, stderr, code) =
-        h.run(&["migrate", "--name", "snip", "--shell-snippet"]);
+    let (stdout, stderr, code) = h.run(&["migrate", "--name", "snip", "--shell-snippet"]);
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("export TEAR_SESSION="),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("export TEAR_SESSION="), "stdout: {stdout}");
     assert!(
         stdout.contains("TEAR_SESSION_NAME='snip'"),
         "stdout: {stdout}"
@@ -573,8 +573,7 @@ fn migrate_shell_snippet_emits_exports() {
 fn migrate_shell_snippet_escapes_single_quotes_safely() {
     let h = DaemonHarness::new("migrate-snippet-quote");
     let dangerous_name = "it's; rm -rf";
-    let (stdout, _, code) =
-        h.run(&["migrate", "--name", dangerous_name, "--shell-snippet"]);
+    let (stdout, _, code) = h.run(&["migrate", "--name", dangerous_name, "--shell-snippet"]);
     assert_eq!(code, 0);
     // POSIX-safe quoting: every embedded single quote becomes
     // '"'"' so the resulting export literally contains the
@@ -588,8 +587,7 @@ fn migrate_shell_snippet_escapes_single_quotes_safely() {
 #[test]
 fn migrate_with_explicit_shell_creates_session_with_that_shell() {
     let h = DaemonHarness::new("migrate-shell");
-    let (stdout, _, code) =
-        h.run(&["migrate", "--name", "with-shell", "--shell", "/bin/dash"]);
+    let (stdout, _, code) = h.run(&["migrate", "--name", "with-shell", "--shell", "/bin/dash"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("with-shell"));
     // The daemon should report the session via list; we don't
@@ -607,9 +605,18 @@ fn ai_help_lists_required_options() {
         .output()
         .expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("--pane"), "ai --help missing --pane: {stdout}");
-    assert!(stdout.contains("--block"), "ai --help missing --block: {stdout}");
-    assert!(stdout.contains("--model"), "ai --help missing --model: {stdout}");
+    assert!(
+        stdout.contains("--pane"),
+        "ai --help missing --pane: {stdout}"
+    );
+    assert!(
+        stdout.contains("--block"),
+        "ai --help missing --block: {stdout}"
+    );
+    assert!(
+        stdout.contains("--model"),
+        "ai --help missing --model: {stdout}"
+    );
 }
 
 #[test]
@@ -618,7 +625,9 @@ fn ai_without_prompt_errors_clearly() {
     let (_stdout, stderr, code) = h.run(&["ai"]);
     assert_ne!(code, 0);
     assert!(
-        stderr.contains("missing prompt") || stderr.contains("required") || stderr.contains("Required"),
+        stderr.contains("missing prompt")
+            || stderr.contains("required")
+            || stderr.contains("Required"),
         "got: {stderr}"
     );
 }
@@ -643,7 +652,10 @@ fn history_with_no_blocks_returns_empty() {
     let _ = h.run(&["up", "--name", "h-empty"]);
     let (stdout, _, code) = h.run(&["history", "--limit", "10"]);
     assert_eq!(code, 0, "history failed: {stdout}");
-    assert!(stdout.contains("(no matching history rows)"), "got: {stdout}");
+    assert!(
+        stdout.contains("(no matching history rows)"),
+        "got: {stdout}"
+    );
 }
 
 #[test]
@@ -653,7 +665,10 @@ fn history_json_emits_array() {
     let (stdout, _, code) = h.run(&["history", "--limit", "10", "--json"]);
     assert_eq!(code, 0, "history --json failed: {stdout}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert!(v.is_array(), "history --json must emit JSON array, got: {stdout}");
+    assert!(
+        v.is_array(),
+        "history --json must emit JSON array, got: {stdout}"
+    );
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
 
@@ -759,8 +774,6 @@ fn pane_info_on_fresh_pane_shows_zero_subscribers() {
     assert_eq!(v["id"], pane_hex);
 }
 
-
-
 #[test]
 fn pane_input_lock_unlock_round_trip() {
     let h = DaemonHarness::new("input-policy");
@@ -807,7 +820,10 @@ fn pane_input_lock_unlock_round_trip() {
     // 0000000000000000 doesn't exist — expect a non-zero exit with
     // a "no such pane" error from the daemon, NOT a clap parse
     // failure. Proves the subcommand is wired through.
-    assert_ne!(code, 0, "expected non-zero exit on missing pane, got 0: {stdout}");
+    assert_ne!(
+        code, 0,
+        "expected non-zero exit on missing pane, got 0: {stdout}"
+    );
 }
 
 // ── #6 source provenance ────────────────────────────────────────────
@@ -817,7 +833,10 @@ fn up_default_source_is_human() {
     let h = DaemonHarness::new("source-default");
     let (stdout, _, code) = h.run(&["up", "--name", "default-src"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("source=human"), "expected human, got: {stdout}");
+    assert!(
+        stdout.contains("source=human"),
+        "expected human, got: {stdout}"
+    );
 }
 
 #[test]
@@ -878,8 +897,14 @@ fn names_session_does_not_match_inside_a_session_id() {
         "precondition: the raw substring DOES collide with the id — if this \
          ever stops holding, the regression this guards is gone"
     );
-    assert!(!names_session(observed, "a1"), "must not match inside the id");
-    assert!(names_session(observed, "h1"), "must still match the name column");
+    assert!(
+        !names_session(observed, "a1"),
+        "must not match inside the id"
+    );
+    assert!(
+        names_session(observed, "h1"),
+        "must still match the name column"
+    );
 }
 
 #[test]
@@ -890,23 +915,50 @@ fn list_source_filter_shows_only_matching_sessions() {
     let _ = h.run(&["up", "--name", "n1", "--source", "named:ci-runner"]);
 
     let (stdout_h, _, _) = h.run(&["list", "--source", "human"]);
-    assert!(names_session(&stdout_h, "h1"), "human filter missed h1: {stdout_h}");
-    assert!(!names_session(&stdout_h, "a1"), "human filter included a1: {stdout_h}");
-    assert!(!names_session(&stdout_h, "n1"), "human filter included n1: {stdout_h}");
+    assert!(
+        names_session(&stdout_h, "h1"),
+        "human filter missed h1: {stdout_h}"
+    );
+    assert!(
+        !names_session(&stdout_h, "a1"),
+        "human filter included a1: {stdout_h}"
+    );
+    assert!(
+        !names_session(&stdout_h, "n1"),
+        "human filter included n1: {stdout_h}"
+    );
 
     let (stdout_a, _, _) = h.run(&["list", "--source", "agent"]);
-    assert!(names_session(&stdout_a, "a1"), "agent filter missed a1: {stdout_a}");
-    assert!(!names_session(&stdout_a, "h1"), "agent filter included h1: {stdout_a}");
+    assert!(
+        names_session(&stdout_a, "a1"),
+        "agent filter missed a1: {stdout_a}"
+    );
+    assert!(
+        !names_session(&stdout_a, "h1"),
+        "agent filter included h1: {stdout_a}"
+    );
 
     let (stdout_n, _, _) = h.run(&["list", "--source", "named"]);
-    assert!(names_session(&stdout_n, "n1"), "named filter missed n1: {stdout_n}");
-    assert!(!names_session(&stdout_n, "h1"), "named filter included h1: {stdout_n}");
+    assert!(
+        names_session(&stdout_n, "n1"),
+        "named filter missed n1: {stdout_n}"
+    );
+    assert!(
+        !names_session(&stdout_n, "h1"),
+        "named filter included h1: {stdout_n}"
+    );
 
     let (stdout_exact, _, _) = h.run(&["list", "--source", "named:ci-runner"]);
-    assert!(names_session(&stdout_exact, "n1"), "exact named missed n1: {stdout_exact}");
+    assert!(
+        names_session(&stdout_exact, "n1"),
+        "exact named missed n1: {stdout_exact}"
+    );
 
     let (stdout_miss, _, _) = h.run(&["list", "--source", "named:does-not-exist"]);
-    assert!(stdout_miss.contains("(no sessions"), "expected empty list: {stdout_miss}");
+    assert!(
+        stdout_miss.contains("(no sessions"),
+        "expected empty list: {stdout_miss}"
+    );
 }
 
 // ── error paths shared by every daemon-routed command ──────────────

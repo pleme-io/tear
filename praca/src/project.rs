@@ -113,14 +113,20 @@ mod tests {
     fn git_at_cwd_returns_cwd() {
         let cwd = Path::new("/home/u/code/repo");
         let has = mock(&["/home/u/code/repo::.git"]);
-        assert_eq!(project_root_with(cwd, has), PathBuf::from("/home/u/code/repo"));
+        assert_eq!(
+            project_root_with(cwd, has),
+            PathBuf::from("/home/u/code/repo")
+        );
     }
 
     #[test]
     fn walks_up_to_git_ancestor() {
         let cwd = Path::new("/home/u/code/repo/src/deep/nested");
         let has = mock(&["/home/u/code/repo::.git"]);
-        assert_eq!(project_root_with(cwd, has), PathBuf::from("/home/u/code/repo"));
+        assert_eq!(
+            project_root_with(cwd, has),
+            PathBuf::from("/home/u/code/repo")
+        );
     }
 
     #[test]
@@ -132,7 +138,10 @@ mod tests {
         // At cwd: no .git, but Cargo.toml present -> matches cwd FIRST.
         // This is intentional: .git is only "outranked" if it sits at the
         // SAME level. A Cargo.toml at the cwd makes the cwd a root.
-        assert_eq!(project_root_with(cwd, has), PathBuf::from("/repo/crates/inner"));
+        assert_eq!(
+            project_root_with(cwd, has),
+            PathBuf::from("/repo/crates/inner")
+        );
     }
 
     #[test]

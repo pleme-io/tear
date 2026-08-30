@@ -65,8 +65,10 @@ mod tests {
     fn wrap_size_bytes_scales_with_grid() {
         let small = PaneSnapshotWrap(dummy_snap(1, 1));
         let big = PaneSnapshotWrap(dummy_snap(24, 80));
-        assert!(<PaneSnapshotWrap as Snapshot>::size_bytes(&big)
-            > <PaneSnapshotWrap as Snapshot>::size_bytes(&small));
+        assert!(
+            <PaneSnapshotWrap as Snapshot>::size_bytes(&big)
+                > <PaneSnapshotWrap as Snapshot>::size_bytes(&small)
+        );
         // 24*80 cells × 4 bytes/cell = 7680.
         assert_eq!(<PaneSnapshotWrap as Snapshot>::size_bytes(&big), 7680);
     }

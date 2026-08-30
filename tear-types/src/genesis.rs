@@ -192,7 +192,11 @@ impl Genesis {
     /// with [`Genesis::with_args`] and a parent with
     /// [`Genesis::with_parent`].
     #[must_use]
-    pub fn new(program: impl Into<String>, requested_address: Address, cwd: impl Into<String>) -> Self {
+    pub fn new(
+        program: impl Into<String>,
+        requested_address: Address,
+        cwd: impl Into<String>,
+    ) -> Self {
         Self {
             program: program.into(),
             requested_address,
@@ -486,8 +490,8 @@ mod tests {
         // one that came out of some Genesis, so an invented ancestry is
         // unrepresentable rather than merely discouraged.
         let parent = Genesis::new("/bin/zsh", addr("work"), "/code");
-        let child = Genesis::new("/bin/zsh", addr("work.build"), "/code")
-            .with_parent(parent.guid());
+        let child =
+            Genesis::new("/bin/zsh", addr("work.build"), "/code").with_parent(parent.guid());
         assert_eq!(child.parent, Some(parent.guid()));
         assert_ne!(child.guid(), parent.guid());
     }

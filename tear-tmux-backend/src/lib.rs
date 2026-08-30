@@ -219,13 +219,20 @@ fn segment_to_format(s: &Segment) -> String {
                 "#H".into()
             }
         }
-        Segment::Shell { cmd, interval_seconds } => {
+        Segment::Shell {
+            cmd,
+            interval_seconds,
+        } => {
             // tmux re-runs `#(...)` every status-interval, so the
             // segment's own interval is informational here.
             let _ = interval_seconds;
             format!("#({cmd})")
         }
-        Segment::If { cond, then, otherwise } => {
+        Segment::If {
+            cond,
+            then,
+            otherwise,
+        } => {
             format!(
                 "#{{?{},{},{}}}",
                 cond,

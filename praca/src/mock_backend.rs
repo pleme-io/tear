@@ -34,9 +34,7 @@ use std::sync::Mutex;
 
 use tear_types::{
     ControlError, ControlResult, Direction, LayoutKind, MultiplexerControl, PaneId, PaneSnapshot,
-    SessionId, TearPane, TearSession, TearWindow, WindowId,
-    layout::LayoutNode,
-    pane::InputPolicy,
+    SessionId, TearPane, TearSession, TearWindow, WindowId, layout::LayoutNode, pane::InputPolicy,
     session::SessionSource,
 };
 
@@ -162,7 +160,14 @@ impl MockBackend {
 
 impl MultiplexerControl for MockBackend {
     fn list_sessions(&self) -> ControlResult<Vec<TearSession>> {
-        Ok(self.inner.lock().unwrap().sessions.values().cloned().collect())
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .values()
+            .cloned()
+            .collect())
     }
 
     fn get_session(&self, id: SessionId) -> ControlResult<TearSession> {

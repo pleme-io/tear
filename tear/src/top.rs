@@ -24,17 +24,19 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
 };
 use tear_client::Client;
 use tear_types::{InputPolicy, MultiplexerControl, PaneId, TearPane, TearSession};
@@ -143,9 +145,8 @@ impl DashboardState {
         for session in sessions {
             for (pane_id, pane) in &session.panes {
                 let subscribers = client.pane_subscriber_count(*pane_id).unwrap_or(0);
-                let (recording_enabled, recording_events) = client
-                    .pane_recording_status(*pane_id)
-                    .unwrap_or((false, 0));
+                let (recording_enabled, recording_events) =
+                    client.pane_recording_status(*pane_id).unwrap_or((false, 0));
                 rows.push(Row {
                     session: session.clone(),
                     pane: pane.clone(),
@@ -166,14 +167,14 @@ impl DashboardState {
         }
         self.status = format!(
             "{} session(s)  {} pane(s)  refreshed {}",
-            self.rows.iter().map(|r| r.session.id).fold(
-                std::collections::BTreeSet::new(),
-                |mut acc, id| {
+            self.rows
+                .iter()
+                .map(|r| r.session.id)
+                .fold(std::collections::BTreeSet::new(), |mut acc, id| {
                     acc.insert(id);
                     acc
-                },
-            )
-            .len(),
+                },)
+                .len(),
             self.rows.len(),
             chrono_like_now(),
         );
@@ -183,7 +184,11 @@ impl DashboardState {
         if self.rows.is_empty() {
             return;
         }
-        let next = self.list_state.selected().map(|i| (i + 1) % self.rows.len()).unwrap_or(0);
+        let next = self
+            .list_state
+            .selected()
+            .map(|i| (i + 1) % self.rows.len())
+            .unwrap_or(0);
         self.list_state.select(Some(next));
     }
 
@@ -252,8 +257,12 @@ impl DashboardState {
     }
 
     fn kill_selected_session(&mut self, client: &Client) {
-        let Some(sel) = self.list_state.selected() else { return; };
-        let Some(row) = self.rows.get(sel) else { return; };
+        let Some(sel) = self.list_state.selected() else {
+            return;
+        };
+        let Some(row) = self.rows.get(sel) else {
+            return;
+        };
         let sid = row.session.id;
         if let Err(e) = client.kill_session(sid) {
             self.last_error = Some(format!("kill_session: {e}"));
@@ -274,15 +283,22 @@ fn draw(f: &mut ratatui::Frame, state: &mut DashboardState) {
 
     // ── header ────────────────────────────────────────────
     let mut header_text = vec![Line::from(vec![
-        Span::styled("tear top", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
+        Span::styled(
+            "tear top",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        ),
         Span::raw("  "),
         Span::raw(&state.status),
     ])];
     if let Some(err) = &state.last_error {
-        header_text.push(Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))));
+        header_text.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        )));
     }
-    let header = Paragraph::new(header_text)
-        .block(Block::default().borders(Borders::BOTTOM));
+    let header = Paragraph::new(header_text).block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(header, chunks[0]);
 
     // ── list ──────────────────────────────────────────────
@@ -291,14 +307,20 @@ fn draw(f: &mut ratatui::Frame, state: &mut DashboardState) {
         .iter()
         .map(|r| {
             let line = Line::from(vec![
-                Span::styled(format!("{}", r.session.id), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{}", r.session.id),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::raw("  "),
                 Span::styled(
                     format!("{:<20}", truncate(&r.session.name, 20)),
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::raw("  "),
-                Span::styled(format!("{}", r.pane.id), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{}", r.pane.id),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::raw("  "),
                 Span::raw(format!("{}x{}", r.pane.size_cells.0, r.pane.size_cells.1)),
                 Span::raw("  policy="),
@@ -314,8 +336,16 @@ fn draw(f: &mut ratatui::Frame, state: &mut DashboardState) {
         })
         .collect();
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" sessions / panes "))
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" sessions / panes "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▶ ");
     f.render_stateful_widget(list, chunks[1], &mut state.list_state);
 
@@ -342,10 +372,9 @@ fn policy_span(p: InputPolicy) -> Span<'static> {
     match p {
         InputPolicy::Free => Span::styled("free", Style::default().fg(Color::Green)),
         InputPolicy::Locked => Span::styled("locked", Style::default().fg(Color::Red)),
-        InputPolicy::Leader { id } => Span::styled(
-            format!("leader({id})"),
-            Style::default().fg(Color::Yellow),
-        ),
+        InputPolicy::Leader { id } => {
+            Span::styled(format!("leader({id})"), Style::default().fg(Color::Yellow))
+        }
     }
 }
 
@@ -353,7 +382,9 @@ fn recording_span(enabled: bool, events: u32) -> Span<'static> {
     if enabled {
         Span::styled(
             format!("on({events})"),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
@@ -368,10 +399,9 @@ fn source_span(src: &tear_types::SessionSource) -> Span<'static> {
     match src {
         SessionSource::Human => Span::styled("human", Style::default().fg(Color::Cyan)),
         SessionSource::Agent => Span::styled("agent", Style::default().fg(Color::Magenta)),
-        SessionSource::Named(s) => Span::styled(
-            format!("named:{s}"),
-            Style::default().fg(Color::LightBlue),
-        ),
+        SessionSource::Named(s) => {
+            Span::styled(format!("named:{s}"), Style::default().fg(Color::LightBlue))
+        }
     }
 }
 

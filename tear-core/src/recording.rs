@@ -306,8 +306,7 @@ mod tests {
         r.set_epoch_anchor_for_test(backdated);
 
         let json = r.to_cast_json();
-        let header: serde_json::Value =
-            serde_json::from_str(json.lines().next().unwrap()).unwrap();
+        let header: serde_json::Value = serde_json::from_str(json.lines().next().unwrap()).unwrap();
         let ts = header["timestamp"].as_u64().unwrap();
 
         assert_eq!(
@@ -326,7 +325,10 @@ mod tests {
     #[test]
     fn the_epoch_anchor_appears_on_enable_and_clears_on_disable() {
         let r = PaneRecording::default();
-        assert!(r.epoch_anchor().is_none(), "nothing recorded, nothing to anchor");
+        assert!(
+            r.epoch_anchor().is_none(),
+            "nothing recorded, nothing to anchor"
+        );
         r.enable(80, 24);
         let a = r.epoch_anchor().expect("enabled");
         assert!(a > 1_700_000_000_000, "anchor must be epoch MS, got {a}");

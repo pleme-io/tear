@@ -18,9 +18,8 @@ use std::time::{Duration, Instant};
 
 use tear_core::inproc::InProcess;
 use tear_types::{
-    Cell, MultiplexerControl, PaneId, PaneSnapshot, SessionId,
-    SessionSource,
-    wire::{read_msg, write_msg, Response},
+    Cell, MultiplexerControl, PaneId, PaneSnapshot, SessionId, SessionSource,
+    wire::{Response, read_msg, write_msg},
 };
 
 /// Reach into InProcess and install a synthetic grid for `pane_id` so
@@ -32,13 +31,7 @@ use tear_types::{
 /// Returns (sid, pid).
 fn spawn_pane_with_known_content(inproc: &InProcess) -> (SessionId, PaneId) {
     let sid = inproc
-        .new_session_with_source_and_size(
-            "m0-test",
-            "/bin/sh",
-            &[],
-            SessionSource::Human,
-            (80, 24),
-        )
+        .new_session_with_source_and_size("m0-test", "/bin/sh", &[], SessionSource::Human, (80, 24))
         .expect("spawn session");
 
     // Find the pane the session created.
@@ -57,7 +50,11 @@ fn spawn_pane_with_known_content(inproc: &InProcess) -> (SessionId, PaneId) {
     while Instant::now() < deadline {
         if let Ok(snap) = inproc.pane_snapshot(pid) {
             let txt: String = snap.to_text();
-            if txt.trim_start().chars().any(|c| !c.is_whitespace() && c != '·') {
+            if txt
+                .trim_start()
+                .chars()
+                .any(|c| !c.is_whitespace() && c != '·')
+            {
                 return (sid, pid);
             }
         }
@@ -152,11 +149,26 @@ fn to_ansi_emits_known_byte_sequence_for_known_grid() {
         rows: 1,
         cols: 5,
         cells: vec![vec![
-            Cell { ch: 'h', ..Cell::BLANK },
-            Cell { ch: 'e', ..Cell::BLANK },
-            Cell { ch: 'l', ..Cell::BLANK },
-            Cell { ch: 'l', ..Cell::BLANK },
-            Cell { ch: 'o', ..Cell::BLANK },
+            Cell {
+                ch: 'h',
+                ..Cell::BLANK
+            },
+            Cell {
+                ch: 'e',
+                ..Cell::BLANK
+            },
+            Cell {
+                ch: 'l',
+                ..Cell::BLANK
+            },
+            Cell {
+                ch: 'l',
+                ..Cell::BLANK
+            },
+            Cell {
+                ch: 'o',
+                ..Cell::BLANK
+            },
         ]],
         cursor_row: 0,
         cursor_col: 5,

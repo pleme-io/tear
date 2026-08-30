@@ -453,39 +453,98 @@ fn main() -> Result<()> {
     init_tracing(cli.verbose);
 
     match cli.command {
-        Cmd::Up { name, shell, socket, source } => cmd_up(name, shell, socket, source),
-        Cmd::List { yaml, socket, source } => cmd_list(yaml, socket, source),
+        Cmd::Up {
+            name,
+            shell,
+            socket,
+            source,
+        } => cmd_up(name, shell, socket, source),
+        Cmd::List {
+            yaml,
+            socket,
+            source,
+        } => cmd_list(yaml, socket, source),
         Cmd::Kill { id, name, socket } => cmd_kill(&id, name, socket),
-        Cmd::Rename { id, new_name, socket } => cmd_rename(&id, &new_name, socket),
-        Cmd::Freio { session, release, status, socket } => {
-            cmd_freio(session, release, status, socket)
-        }
-        Cmd::PaneInput { pane, action, leader_id, socket } => {
-            cmd_pane_input(&pane, action, leader_id, socket)
-        }
+        Cmd::Rename {
+            id,
+            new_name,
+            socket,
+        } => cmd_rename(&id, &new_name, socket),
+        Cmd::Freio {
+            session,
+            release,
+            status,
+            socket,
+        } => cmd_freio(session, release, status, socket),
+        Cmd::PaneInput {
+            pane,
+            action,
+            leader_id,
+            socket,
+        } => cmd_pane_input(&pane, action, leader_id, socket),
         Cmd::PaneInfo { pane, socket, json } => cmd_pane_info(&pane, socket, json),
-        Cmd::PaneRecord { pane, action, socket, out } => cmd_pane_record(&pane, action, socket, out),
-        Cmd::Blocks { pane, since, limit, socket, json } => {
-            cmd_blocks(&pane, since, limit, socket, json)
-        }
-        Cmd::Block { pane, index, latest, socket, json } => {
-            cmd_block(&pane, index, latest, socket, json)
-        }
-        Cmd::History { pane, session, since_secs, exit_code, limit, socket, json } => {
-            cmd_history(pane, session, since_secs, exit_code, limit, socket, json)
-        }
-        Cmd::Ai { prompt, pane, block, model, socket } => {
-            cmd_ai(prompt, pane, block, model, socket)
-        }
-        Cmd::Audit { path, since_secs, kind, limit, socket, json } => {
-            cmd_audit(path, since_secs, kind, limit, socket, json)
-        }
-        Cmd::Replay { cast, speed, max_delay_ms } => cmd_replay(&cast, speed, max_delay_ms),
-        Cmd::Migrate { name, shell, start_daemon, shell_snippet, socket } => {
-            cmd_migrate(name, shell, start_daemon, shell_snippet, socket)
-        }
+        Cmd::PaneRecord {
+            pane,
+            action,
+            socket,
+            out,
+        } => cmd_pane_record(&pane, action, socket, out),
+        Cmd::Blocks {
+            pane,
+            since,
+            limit,
+            socket,
+            json,
+        } => cmd_blocks(&pane, since, limit, socket, json),
+        Cmd::Block {
+            pane,
+            index,
+            latest,
+            socket,
+            json,
+        } => cmd_block(&pane, index, latest, socket, json),
+        Cmd::History {
+            pane,
+            session,
+            since_secs,
+            exit_code,
+            limit,
+            socket,
+            json,
+        } => cmd_history(pane, session, since_secs, exit_code, limit, socket, json),
+        Cmd::Ai {
+            prompt,
+            pane,
+            block,
+            model,
+            socket,
+        } => cmd_ai(prompt, pane, block, model, socket),
+        Cmd::Audit {
+            path,
+            since_secs,
+            kind,
+            limit,
+            socket,
+            json,
+        } => cmd_audit(path, since_secs, kind, limit, socket, json),
+        Cmd::Replay {
+            cast,
+            speed,
+            max_delay_ms,
+        } => cmd_replay(&cast, speed, max_delay_ms),
+        Cmd::Migrate {
+            name,
+            shell,
+            start_daemon,
+            shell_snippet,
+            socket,
+        } => cmd_migrate(name, shell, start_daemon, shell_snippet, socket),
         Cmd::Top { socket, refresh_ms } => cmd_top(socket, refresh_ms),
-        Cmd::Status { socket, json, quiet } => cmd_status(socket, json, quiet),
+        Cmd::Status {
+            socket,
+            json,
+            quiet,
+        } => cmd_status(socket, json, quiet),
         Cmd::Mcp { socket } => cmd_mcp(socket),
         Cmd::ConfigCheck => cmd_config_check(),
         Cmd::ConfigPath => {
@@ -518,16 +577,13 @@ fn connect_to_daemon(
     // `tcp://...` as the --socket value, route via Tcp; else
     // treat it as a UDS path. Backward-compat: a None input
     // falls through to default_socket_path().
-    let raw = socket
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| {
-            tear_types::wire::default_socket_path()
-                .display()
-                .to_string()
-        });
-    let transport = tear_client::Transport::parse(&raw).map_err(|e| {
-        anyhow::anyhow!("invalid --socket value `{raw}`: {e}")
-    })?;
+    let raw = socket.map(|p| p.display().to_string()).unwrap_or_else(|| {
+        tear_types::wire::default_socket_path()
+            .display()
+            .to_string()
+    });
+    let transport = tear_client::Transport::parse(&raw)
+        .map_err(|e| anyhow::anyhow!("invalid --socket value `{raw}`: {e}"))?;
     // #5 — auth token passes through the env var. The daemon checks
     // `config.auth_token_env` and resolves the *same* env var on its
     // side; an explicit name (e.g. `TEAR_AUTH_TOKEN`) is the canonical
@@ -541,29 +597,28 @@ fn connect_to_daemon(
     let auth_token = std::env::var("TEAR_AUTH_TOKEN")
         .ok()
         .filter(|s| !s.is_empty());
-    let mut client = tear_client::Client::connect_transport_with_auth(
-        transport.clone(),
-        auth_token,
-    )
-    .map_err(|e| {
-        anyhow::anyhow!(
-            "tear-daemon not reachable at {}: {}\nStart it with: tear daemon \
+    let mut client =
+        tear_client::Client::connect_transport_with_auth(transport.clone(), auth_token).map_err(
+            |e| {
+                anyhow::anyhow!(
+                    "tear-daemon not reachable at {}: {}\nStart it with: tear daemon \
              (or enable the launchd/systemd user unit via the tear flake's HM module)",
-            transport.display_string(),
-            e
-        )
-    })?;
+                    transport.display_string(),
+                    e
+                )
+            },
+        )?;
     // #2 — opt-in client identity for Leader policy. Parse as u64;
     // an unparseable value is operator misconfiguration and bubbles
     // up as a clear anyhow error.
     if let Ok(raw) = std::env::var(FleetStateVar::TearClientId.name()) {
         if !raw.is_empty() {
-            let id: u64 = raw.parse().map_err(|e| {
-                anyhow::anyhow!("TEAR_CLIENT_ID={raw} must parse as u64: {e}")
-            })?;
-            client.identify_as(id).map_err(|e| {
-                anyhow::anyhow!("tear-daemon rejected IdentifyClient({id}): {e}")
-            })?;
+            let id: u64 = raw
+                .parse()
+                .map_err(|e| anyhow::anyhow!("TEAR_CLIENT_ID={raw} must parse as u64: {e}"))?;
+            client
+                .identify_as(id)
+                .map_err(|e| anyhow::anyhow!("tear-daemon rejected IdentifyClient({id}): {e}"))?;
         }
     }
     Ok((client, std::path::PathBuf::from(transport.display_string())))
@@ -634,7 +689,10 @@ fn cmd_up(
     let source = parse_source_for_creation(&source)?;
     let id = client.new_session_with_source(&name, &shell, source.clone())?;
     info!(session_id = %id, name, shell, source = %source.label(), "tear up");
-    println!("created session {id} ({name}) in daemon  source={}", source.label());
+    println!(
+        "created session {id} ({name}) in daemon  source={}",
+        source.label()
+    );
     Ok(())
 }
 
@@ -750,11 +808,7 @@ fn cmd_kill(id: &str, by_name: bool, socket: Option<std::path::PathBuf>) -> Resu
     Ok(())
 }
 
-fn cmd_rename(
-    id: &str,
-    new_name: &str,
-    socket: Option<std::path::PathBuf>,
-) -> Result<()> {
+fn cmd_rename(id: &str, new_name: &str, socket: Option<std::path::PathBuf>) -> Result<()> {
     let (client, _socket_path) = connect_to_daemon(socket)?;
     // Rename only accepts the id form on the wire; `--name`-style
     // lookup isn't exposed at the CLI level (no operator hit asks
@@ -822,15 +876,23 @@ fn cmd_freio(
 
     if release {
         println!("freio RELEASED — panes return to their own input policy.");
-        println!("(a pane you had locked stays locked; release clears the brake, not your settings)");
+        println!(
+            "(a pane you had locked stays locked; release clears the brake, not your settings)"
+        );
         return Ok(());
     }
 
-    println!("freio ENGAGED — {} agent-driven pane(s) braked.", braked.len());
+    println!(
+        "freio ENGAGED — {} agent-driven pane(s) braked.",
+        braked.len()
+    );
     if !unbrakable.is_empty() {
         // The honest miss, stated where it matters. Never elided.
         println!();
-        println!("  NOT braked: {} pane(s) of unknown provenance.", unbrakable.len());
+        println!(
+            "  NOT braked: {} pane(s) of unknown provenance.",
+            unbrakable.len()
+        );
         for p in &unbrakable {
             println!("    {p}");
         }
@@ -908,11 +970,7 @@ fn cmd_pane_record(
 
 /// `tear pane-info <pane>` — typed pane metadata + current
 /// subscriber count. Migration ergonomic.
-fn cmd_pane_info(
-    pane: &str,
-    socket: Option<std::path::PathBuf>,
-    json: bool,
-) -> Result<()> {
+fn cmd_pane_info(pane: &str, socket: Option<std::path::PathBuf>, json: bool) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
     let pane_id = parse_pane_id(pane, "pane id")?;
     let p = client.get_pane(pane_id)?;
@@ -957,7 +1015,9 @@ fn cmd_blocks(
     if json {
         println!("{}", serde_json::to_string(&blocks)?);
     } else if blocks.is_empty() {
-        println!("(no captured blocks for {pane_id} — make sure your shell emits OSC 133 prompt marks)");
+        println!(
+            "(no captured blocks for {pane_id} — make sure your shell emits OSC 133 prompt marks)"
+        );
     } else {
         for b in &blocks {
             let exit = b
@@ -1001,9 +1061,8 @@ fn cmd_block(
             .ok_or_else(|| anyhow::anyhow!("no blocks returned"))?;
         last
     } else {
-        let idx = index.ok_or_else(|| {
-            anyhow::anyhow!("either --index <N> or --latest is required")
-        })?;
+        let idx =
+            index.ok_or_else(|| anyhow::anyhow!("either --index <N> or --latest is required"))?;
         client.pane_block_at(pane_id, idx)?
     };
     if json {
@@ -1025,11 +1084,7 @@ fn cmd_block(
 /// Streams rows via `CastPlayer` so the timing logic is reusable
 /// from any other consumer (TUI scrubbers, web playback, mado
 /// embedded replay).
-fn cmd_replay(
-    cast: &std::path::Path,
-    speed: f32,
-    max_delay_ms: u64,
-) -> Result<()> {
+fn cmd_replay(cast: &std::path::Path, speed: f32, max_delay_ms: u64) -> Result<()> {
     use std::io::Write;
     let content = std::fs::read_to_string(cast)
         .map_err(|e| anyhow::anyhow!("read {}: {e}", cast.display()))?;
@@ -1079,11 +1134,7 @@ mod replay {
         /// skipped (matches `asciinema play`'s resilience); the
         /// asciinema header (a JSON object on row 1) is also a
         /// silent skip.
-        pub fn feed_line<W: Write>(
-            &mut self,
-            line: &str,
-            out: &mut W,
-        ) -> io::Result<()> {
+        pub fn feed_line<W: Write>(&mut self, line: &str, out: &mut W) -> io::Result<()> {
             match CastRow::parse(line) {
                 Ok(row) => self.feed_row(row, out),
                 Err(CastParseError::HeaderRow) => Ok(()),
@@ -1094,11 +1145,7 @@ mod replay {
         /// Feed a pre-parsed row — used by tests and by consumers
         /// that already hold a `CastRow` stream (e.g. a typed cast
         /// store).
-        pub fn feed_row<W: Write>(
-            &mut self,
-            row: CastRow,
-            out: &mut W,
-        ) -> io::Result<()> {
+        pub fn feed_row<W: Write>(&mut self, row: CastRow, out: &mut W) -> io::Result<()> {
             let delay = self.compute_delay_ms(row.t);
             if delay > 0 {
                 std::thread::sleep(Duration::from_millis(delay));
@@ -1117,7 +1164,11 @@ mod replay {
         pub fn compute_delay_ms(&self, t: f64) -> u64 {
             // Treat speed <= 0 as 1x to avoid div-by-zero or
             // negative scaling. Pure math; never panics.
-            let speed = if self.speed <= 0.0 { 1.0 } else { f64::from(self.speed) };
+            let speed = if self.speed <= 0.0 {
+                1.0
+            } else {
+                f64::from(self.speed)
+            };
             let delta = (t - self.last_t).max(0.0) / speed;
             let ms = (delta * 1000.0) as u64;
             ms.min(self.max_delay_ms)
@@ -1208,8 +1259,16 @@ mod replay {
             // last_t must advance on input rows so the next output's
             // delta is computed from the correct anchor.
             let mut p = CastPlayer::new(1.0, 0);
-            let r1 = CastRow { t: 1.5, kind: CastRowKind::Input, payload: "x".into() };
-            let r2 = CastRow { t: 2.0, kind: CastRowKind::Output, payload: "z".into() };
+            let r1 = CastRow {
+                t: 1.5,
+                kind: CastRowKind::Input,
+                payload: "x".into(),
+            };
+            let r2 = CastRow {
+                t: 2.0,
+                kind: CastRowKind::Output,
+                payload: "z".into(),
+            };
             let mut buf = Vec::new();
             p.feed_row(r1, &mut buf).unwrap();
             assert_eq!(p.last_t(), 1.5);
@@ -1248,8 +1307,7 @@ fn cmd_migrate(
             }
             spawn_detached_daemon(socket.as_deref())?;
             // Poll for readiness up to ~3 s.
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(3);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             loop {
                 if let Ok(pair) = connect_to_daemon(socket.clone()) {
                     break pair;
@@ -1265,21 +1323,15 @@ fn cmd_migrate(
         }
     };
 
-    let existing = client.list_sessions().map_err(|e| {
-        anyhow::anyhow!("tear migrate: list_sessions failed: {e}")
-    })?;
+    let existing = client
+        .list_sessions()
+        .map_err(|e| anyhow::anyhow!("tear migrate: list_sessions failed: {e}"))?;
     let sid = if let Some(found) = existing.iter().find(|s| s.name == name) {
         found.id.to_string()
     } else {
         client
-            .new_session_with_source(
-                &name,
-                &shell,
-                tear_types::SessionSource::Human,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("tear migrate: new_session failed: {e}")
-            })?
+            .new_session_with_source(&name, &shell, tear_types::SessionSource::Human)
+            .map_err(|e| anyhow::anyhow!("tear migrate: new_session failed: {e}"))?
             .to_string()
     };
 
@@ -1302,9 +1354,8 @@ fn cmd_migrate(
 /// executable so version drift can't happen.
 fn spawn_detached_daemon(socket: Option<&std::path::Path>) -> Result<()> {
     use std::process::{Command, Stdio};
-    let exe = std::env::current_exe().map_err(|e| {
-        anyhow::anyhow!("tear migrate: cannot resolve current exe: {e}")
-    })?;
+    let exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("tear migrate: cannot resolve current exe: {e}"))?;
     let mut cmd = Command::new(exe);
     cmd.arg("daemon")
         .stdin(Stdio::null())
@@ -1368,9 +1419,8 @@ fn cmd_audit(
             std::path::PathBuf::from(tear_types::path::expand_tilde(&raw))
         }
     };
-    let content = std::fs::read_to_string(&log_path).map_err(|e| {
-        anyhow::anyhow!("read {}: {e}", log_path.display())
-    })?;
+    let content = std::fs::read_to_string(&log_path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", log_path.display()))?;
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1450,15 +1500,17 @@ fn cmd_ai(
         parse_pane_id(&p, "--pane")?
     } else {
         let sessions = client.list_sessions()?;
-        let mut all_panes: Vec<tear_types::PaneId> =
-            sessions.iter().flat_map(|s| s.panes.keys().copied()).collect();
+        let mut all_panes: Vec<tear_types::PaneId> = sessions
+            .iter()
+            .flat_map(|s| s.panes.keys().copied())
+            .collect();
         match all_panes.len() {
             0 => return Err(anyhow::anyhow!("no panes — `tear up` first")),
             1 => all_panes.pop().unwrap(),
             n => {
                 return Err(anyhow::anyhow!(
                     "{n} panes exist — pass --pane <id> explicitly"
-                ))
+                ));
             }
         }
     };
@@ -1538,7 +1590,9 @@ fn cmd_history(
                     continue;
                 }
             }
-            let blocks = client.pane_blocks_list(*pane_id, 0, 10_000).unwrap_or_default();
+            let blocks = client
+                .pane_blocks_list(*pane_id, 0, 10_000)
+                .unwrap_or_default();
             for b in blocks {
                 if b.started_at_unix_ms < cutoff_ms {
                     continue;
@@ -1619,14 +1673,15 @@ fn short_ts(ms: u64) -> String {
 }
 
 fn shorten(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
+    }
 }
 
 /// `tear top` — interactive curses dashboard.
-fn cmd_top(
-    socket: Option<std::path::PathBuf>,
-    refresh_ms: u64,
-) -> Result<()> {
+fn cmd_top(socket: Option<std::path::PathBuf>, refresh_ms: u64) -> Result<()> {
     let (client, _) = connect_to_daemon(socket)?;
     top::run(client, refresh_ms)
 }
@@ -1634,21 +1689,14 @@ fn cmd_top(
 /// `tear status` — operator visibility into the daemon's health.
 /// Exit code 0 when the daemon is reachable, 1 when it isn't, so
 /// shell prompts can branch on `if tear status --quiet; then …`.
-fn cmd_status(
-    socket: Option<std::path::PathBuf>,
-    json: bool,
-    quiet: bool,
-) -> Result<()> {
-    let raw = socket
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| {
-            tear_types::wire::default_socket_path()
-                .display()
-                .to_string()
-        });
-    let transport = tear_client::Transport::parse(&raw).map_err(|e| {
-        anyhow::anyhow!("invalid --socket value `{raw}`: {e}")
-    })?;
+fn cmd_status(socket: Option<std::path::PathBuf>, json: bool, quiet: bool) -> Result<()> {
+    let raw = socket.map(|p| p.display().to_string()).unwrap_or_else(|| {
+        tear_types::wire::default_socket_path()
+            .display()
+            .to_string()
+    });
+    let transport = tear_client::Transport::parse(&raw)
+        .map_err(|e| anyhow::anyhow!("invalid --socket value `{raw}`: {e}"))?;
     let socket_str = transport.display_string();
     // NOTE: this is the CLI binary's OWN version, and the `version`
     // key below has always carried it — never the daemon's. Two
@@ -1737,7 +1785,10 @@ fn cmd_status(
 fn cmd_config_check() -> Result<()> {
     let path = tear_config::default_config_path();
     if !path.exists() {
-        println!("note: {} does not exist — defaults will be used.", path.display());
+        println!(
+            "note: {} does not exist — defaults will be used.",
+            path.display()
+        );
         println!("ok (defaults are valid)");
         let _ = TearConfig::default();
         return Ok(());
@@ -1822,7 +1873,10 @@ fn cmd_snapshot(pane: &str, socket: Option<std::path::PathBuf>) -> Result<()> {
     for row in snap.to_text_rows() {
         println!("│{}│", row);
     }
-    println!("─ cursor: row {} col {} ─", snap.cursor_row, snap.cursor_col);
+    println!(
+        "─ cursor: row {} col {} ─",
+        snap.cursor_row, snap.cursor_col
+    );
     Ok(())
 }
 
@@ -1835,12 +1889,9 @@ fn cmd_mcp(socket: Option<std::path::PathBuf>) -> Result<()> {
     rt.block_on(mcp::run(socket))
 }
 
-fn cmd_daemon(
-    socket: Option<std::path::PathBuf>,
-    tcp: Option<std::net::SocketAddr>,
-) -> Result<()> {
-    use std::sync::atomic::{AtomicBool, Ordering};
+fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: Option<std::net::SocketAddr>) -> Result<()> {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let inproc = Arc::new(InProcess::new());
     let (handle, listen_addr) = if let Some(addr) = tcp {
@@ -1942,9 +1993,10 @@ mod main_helper_tests {
             // passed on a manifest whose real version had been pinned.
             // Measured — this scan was green against a member deliberately
             // set to 9.9.9 until it compared whole lines.
-            let inherits = toml.lines().map(str::trim).any(|l| {
-                l == "version.workspace = true" || l == "version = { workspace = true }"
-            });
+            let inherits = toml
+                .lines()
+                .map(str::trim)
+                .any(|l| l == "version.workspace = true" || l == "version = { workspace = true }");
             assert!(
                 inherits,
                 "{m}/Cargo.toml pins its own version instead of inheriting the \

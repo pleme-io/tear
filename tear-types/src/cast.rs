@@ -80,8 +80,8 @@ impl CastRow {
         if trimmed.starts_with('{') {
             return Err(CastParseError::HeaderRow);
         }
-        let v: serde_json::Value = serde_json::from_str(line)
-            .map_err(|e| CastParseError::InvalidJson(e.to_string()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| CastParseError::InvalidJson(e.to_string()))?;
         let arr = v.as_array().ok_or(CastParseError::NotAnArray)?;
         if arr.len() < 3 {
             return Err(CastParseError::TooFewElements(arr.len()));

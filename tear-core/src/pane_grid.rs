@@ -18,13 +18,13 @@
 
 use std::collections::VecDeque;
 
-use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
-use tear_types::graphics::{Graphic, GraphicProtocol, GRAPHIC_PAYLOAD_MAX};
+use tear_types::graphics::{GRAPHIC_PAYLOAD_MAX, Graphic, GraphicProtocol};
 use tear_types::host_role::{HostRole, TearCaps};
 use tear_types::modes::{
     AltScreen, AutoWrap, BracketedPaste, CursorKeys, CursorVisible, FocusReporting, ModeSet,
     MouseSgr, MouseTracking, SyncOutput,
 };
+use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
@@ -478,7 +478,6 @@ impl GridState {
         }
     }
 
-
     fn scroll_region_up(&mut self) {
         // Scroll within [scroll_top, scroll_bottom]. Bottom row
         // gets a blank; top row is pushed to scrollback (only when
@@ -550,7 +549,11 @@ impl GridState {
     fn clear_orphans_at(&mut self, row: usize, col: usize, w: usize) {
         // Left edge — we are overwriting a continuation, so its lead (one to
         // the left) loses its other half and must go.
-        if col > 0 && self.active_cell_at(row, col).is_some_and(Cell::is_continuation) {
+        if col > 0
+            && self
+                .active_cell_at(row, col)
+                .is_some_and(Cell::is_continuation)
+        {
             if let Some(lead) = self.active_cell_mut(row, col - 1) {
                 *lead = Cell::BLANK;
             }
@@ -625,7 +628,11 @@ impl GridState {
     /// If `col` holds a continuation cell the glyph's lead is at `col - 1`;
     /// otherwise `col` is already the lead.
     fn lead_col_at(&self, row: usize, col: usize) -> usize {
-        if col > 0 && self.active_cell_at(row, col).is_some_and(Cell::is_continuation) {
+        if col > 0
+            && self
+                .active_cell_at(row, col)
+                .is_some_and(Cell::is_continuation)
+        {
             col - 1
         } else {
             col
@@ -1477,19 +1484,37 @@ impl GridState {
                     self.restore_cursor();
                 }
             }
-            1 => self.cursor_keys_mode = set,     // DECCKM
-            25 => self.cursor_visible = set,      // DECTCEM
-            7 => self.autowrap = set,             // DECAWM
-            1004 => self.focus_reporting = set,   // focus in/out reporting
-            2004 => self.bracketed_paste = set,   // bracketed paste
-            2026 => self.sync_output = set,       // synchronized output
+            1 => self.cursor_keys_mode = set,   // DECCKM
+            25 => self.cursor_visible = set,    // DECTCEM
+            7 => self.autowrap = set,           // DECAWM
+            1004 => self.focus_reporting = set, // focus in/out reporting
+            2004 => self.bracketed_paste = set, // bracketed paste
+            2026 => self.sync_output = set,     // synchronized output
             // Mouse tracking levels are mutually exclusive: the LAST one
             // set wins, and resetting any of them turns tracking off. A
             // set of independent bools would let two levels be true at
             // once, which no terminal can mean.
-            1000 => self.mouse = if set { MouseTracking::Click } else { MouseTracking::Off },
-            1002 => self.mouse = if set { MouseTracking::Drag } else { MouseTracking::Off },
-            1003 => self.mouse = if set { MouseTracking::Motion } else { MouseTracking::Off },
+            1000 => {
+                self.mouse = if set {
+                    MouseTracking::Click
+                } else {
+                    MouseTracking::Off
+                }
+            }
+            1002 => {
+                self.mouse = if set {
+                    MouseTracking::Drag
+                } else {
+                    MouseTracking::Off
+                }
+            }
+            1003 => {
+                self.mouse = if set {
+                    MouseTracking::Motion
+                } else {
+                    MouseTracking::Off
+                }
+            }
             1006 => self.mouse_sgr = set, // SGR extended mouse encoding
             _ => {}
         }
@@ -1748,7 +1773,10 @@ mod width_parity {
         g.feed("你好X".as_bytes());
         let s = g.snapshot();
         assert_eq!(s.cells[0][0].ch, '你');
-        assert_eq!(s.cells[0][2].ch, '好', "second glyph starts at col 2, not 1");
+        assert_eq!(
+            s.cells[0][2].ch, '好',
+            "second glyph starts at col 2, not 1"
+        );
         assert_eq!(s.cells[0][4].ch, 'X', "ASCII lands at col 4, not 2");
         assert_eq!(s.cursor_col, 5);
     }

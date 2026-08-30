@@ -69,13 +69,21 @@ impl KeyChord {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Action {
     /// Create a new pane by splitting the active pane.
-    SplitPane { direction: crate::Direction },
+    SplitPane {
+        direction: crate::Direction,
+    },
     /// Send keys to the active pane as if typed.
-    SendKeys { keys: String },
+    SendKeys {
+        keys: String,
+    },
     /// Run a tear/tmux command, e.g. `"new-window -n logs"`.
-    Command { cmd: String },
+    Command {
+        cmd: String,
+    },
     /// Switch focus to a pane by relative direction.
-    SelectPane { direction: crate::Direction },
+    SelectPane {
+        direction: crate::Direction,
+    },
     /// Move to the next/previous window.
     NextWindow,
     PreviousWindow,
@@ -91,7 +99,9 @@ pub enum Action {
     /// in addition to the file-watcher path.
     ReloadConfig,
     /// Enter named key table — tmux's modal copy-mode etc.
-    EnterTable { table: KeyTableName },
+    EnterTable {
+        table: KeyTableName,
+    },
 }
 
 /// Single binding row in a [`KeyTable`].

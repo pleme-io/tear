@@ -385,7 +385,9 @@ mod tests {
         };
         let mut mint = |s: PaneSlot| PaneId(u64::from(s.0));
         match plan.realize(&mut mint) {
-            LayoutNode::Split { orientation, ratio, .. } => {
+            LayoutNode::Split {
+                orientation, ratio, ..
+            } => {
                 assert_eq!(orientation, SplitOrientation::Horizontal);
                 assert!((ratio.get() - 0.25).abs() < f32::EPSILON);
             }

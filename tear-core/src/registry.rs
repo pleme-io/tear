@@ -37,12 +37,24 @@ pub fn mint_session_id(name: &str) -> SessionId {
 }
 #[must_use]
 pub fn mint_window_id(parent: SessionId, name: &str) -> WindowId {
-    let seed = format!("window:{}:{}:{}:{}", parent, name, now_unix(), next_counter());
+    let seed = format!(
+        "window:{}:{}:{}:{}",
+        parent,
+        name,
+        now_unix(),
+        next_counter()
+    );
     WindowId::from_seed(&seed)
 }
 #[must_use]
 pub fn mint_pane_id(parent: WindowId, shell: &str) -> PaneId {
-    let seed = format!("pane:{}:{}:{}:{}", parent, shell, now_unix(), next_counter());
+    let seed = format!(
+        "pane:{}:{}:{}:{}",
+        parent,
+        shell,
+        now_unix(),
+        next_counter()
+    );
     PaneId::from_seed(&seed)
 }
 
@@ -179,7 +191,16 @@ mod tests {
         let mut r = Registry::new();
         let sid = r.create_session("work");
         let (wid, pid) = r
-            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24), tear_types::Yurai::Unknown)
+            .add_window(
+                sid,
+                "main",
+                "/bin/zsh",
+                &[],
+                None,
+                &[],
+                (80, 24),
+                tear_types::Yurai::Unknown,
+            )
             .unwrap();
         let s = &r.sessions[&sid];
         assert!(s.windows.contains_key(&wid));
@@ -203,7 +224,16 @@ mod tests {
         let args = vec!["-u".to_string(), "NONE".to_string()];
         let env = vec![("EDITOR".to_string(), "nvim".to_string())];
         let (_wid, pid) = r
-            .add_window(sid, "main", "/bin/nvim", &args, Some("/code"), &env, (80, 24), tear_types::Yurai::Unknown)
+            .add_window(
+                sid,
+                "main",
+                "/bin/nvim",
+                &args,
+                Some("/code"),
+                &env,
+                (80, 24),
+                tear_types::Yurai::Unknown,
+            )
             .unwrap();
         let pane = &r.sessions[&sid].panes[&pid];
         assert_eq!(pane.args, args, "seed pane must record its spawn args");
@@ -216,7 +246,16 @@ mod tests {
         let mut r = Registry::new();
         let sid = r.create_session("work");
         let (wid, pid) = r
-            .add_window(sid, "main", "/bin/zsh", &[], None, &[], (80, 24), tear_types::Yurai::Unknown)
+            .add_window(
+                sid,
+                "main",
+                "/bin/zsh",
+                &[],
+                None,
+                &[],
+                (80, 24),
+                tear_types::Yurai::Unknown,
+            )
             .unwrap();
         assert_eq!(r.locate_pane(pid), Some((sid, wid)));
     }

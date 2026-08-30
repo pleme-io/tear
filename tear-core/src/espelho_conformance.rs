@@ -194,11 +194,7 @@ fn query_wires_leave_no_residue_in_rendered_text() {
         grid.feed(q.wire());
         grid.feed(b"|after");
         let snap = grid.snapshot();
-        let row0 = snap
-            .to_text_rows()
-            .into_iter()
-            .next()
-            .unwrap_or_default();
+        let row0 = snap.to_text_rows().into_iter().next().unwrap_or_default();
         assert!(
             row0.trim_end() == "before||after",
             "query {q:?} left residue in the grid: {row0:?}"
@@ -219,7 +215,13 @@ fn query_wires_pass_through_verbatim_to_subscribers() {
     let sid = inproc
         .new_session("espelho-relay", "/bin/cat")
         .expect("new_session(/bin/cat)");
-    let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+    let pane = *inproc
+        .get_session(sid)
+        .unwrap()
+        .panes
+        .keys()
+        .next()
+        .unwrap();
     let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
 
     for q in CATALOG {

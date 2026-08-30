@@ -138,9 +138,7 @@ pub enum LayoutError<Id: LeafId> {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum LayoutNode<Id: LeafId> {
     /// A single pane filling its bounding box.
-    Leaf {
-        pane: Id,
-    },
+    Leaf { pane: Id },
     /// A split that divides its area between [`LayoutNode::Split::a`]
     /// (top/left) and [`LayoutNode::Split::b`] (bottom/right). `ratio`
     /// is a in 0.0..=1.0 — the fraction of the parent area allotted
@@ -990,7 +988,10 @@ mod tests {
     #[test]
     fn neighbor_unknown_target_is_none() {
         let n = LayoutNode::<Id>::leaf(Id(1));
-        assert_eq!(n.neighbor(Id(99), Direction::Left, Rect::sized(80, 24)), None);
+        assert_eq!(
+            n.neighbor(Id(99), Direction::Left, Rect::sized(80, 24)),
+            None
+        );
     }
 
     #[test]
@@ -1017,8 +1018,14 @@ mod tests {
             LayoutNode::<Id>::leaf(Id(3)),
         );
         let b = Rect::sized(90, 24);
-        assert_eq!(right_leaning.neighbor(Id(1), Direction::Right, b), Some(Id(2)));
-        assert_eq!(left_leaning.neighbor(Id(1), Direction::Right, b), Some(Id(2)));
+        assert_eq!(
+            right_leaning.neighbor(Id(1), Direction::Right, b),
+            Some(Id(2))
+        );
+        assert_eq!(
+            left_leaning.neighbor(Id(1), Direction::Right, b),
+            Some(Id(2))
+        );
     }
 
     // ── from_kind ────────────────────────────────────────────────
@@ -1218,10 +1225,25 @@ mod tests {
             ),
         );
         let b = Rect::sized(90, 24);
-        let w2_before = n.compute_rects(b).iter().find(|(p, _)| *p == Id(2)).unwrap().1.w;
+        let w2_before = n
+            .compute_rects(b)
+            .iter()
+            .find(|(p, _)| *p == Id(2))
+            .unwrap()
+            .1
+            .w;
         assert!(n.resize_leaf(Id(2), Direction::Left, 0.2));
-        let w2_after = n.compute_rects(b).iter().find(|(p, _)| *p == Id(2)).unwrap().1.w;
-        assert!(w2_after > w2_before, "grow-Left should enlarge pane 2: {w2_before} -> {w2_after}");
+        let w2_after = n
+            .compute_rects(b)
+            .iter()
+            .find(|(p, _)| *p == Id(2))
+            .unwrap()
+            .1
+            .w;
+        assert!(
+            w2_after > w2_before,
+            "grow-Left should enlarge pane 2: {w2_before} -> {w2_after}"
+        );
     }
 
     #[test]
@@ -1239,10 +1261,25 @@ mod tests {
             LayoutNode::<Id>::leaf(Id(3)),
         );
         let b = Rect::sized(90, 24);
-        let w2_before = n.compute_rects(b).iter().find(|(p, _)| *p == Id(2)).unwrap().1.w;
+        let w2_before = n
+            .compute_rects(b)
+            .iter()
+            .find(|(p, _)| *p == Id(2))
+            .unwrap()
+            .1
+            .w;
         assert!(n.resize_leaf(Id(2), Direction::Right, 0.2));
-        let w2_after = n.compute_rects(b).iter().find(|(p, _)| *p == Id(2)).unwrap().1.w;
-        assert!(w2_after > w2_before, "grow-Right should enlarge pane 2: {w2_before} -> {w2_after}");
+        let w2_after = n
+            .compute_rects(b)
+            .iter()
+            .find(|(p, _)| *p == Id(2))
+            .unwrap()
+            .1
+            .w;
+        assert!(
+            w2_after > w2_before,
+            "grow-Right should enlarge pane 2: {w2_before} -> {w2_after}"
+        );
     }
 
     #[test]
@@ -1283,11 +1320,35 @@ mod tests {
                 LayoutNode::<Id>::leaf(Id(2)),
             );
             let b = Rect::sized(80, 24);
-            let axis = |r: Rect| if orient == SplitOrientation::Vertical { r.w } else { r.h };
-            let before = axis(n.compute_rects(b).iter().find(|(p, _)| *p == focus).unwrap().1);
-            assert!(n.resize_leaf(focus, dir, 0.2), "{dir:?} should find a divider");
-            let after = axis(n.compute_rects(b).iter().find(|(p, _)| *p == focus).unwrap().1);
-            assert!(after > before, "focus pane should grow {dir:?}: {before} -> {after}");
+            let axis = |r: Rect| {
+                if orient == SplitOrientation::Vertical {
+                    r.w
+                } else {
+                    r.h
+                }
+            };
+            let before = axis(
+                n.compute_rects(b)
+                    .iter()
+                    .find(|(p, _)| *p == focus)
+                    .unwrap()
+                    .1,
+            );
+            assert!(
+                n.resize_leaf(focus, dir, 0.2),
+                "{dir:?} should find a divider"
+            );
+            let after = axis(
+                n.compute_rects(b)
+                    .iter()
+                    .find(|(p, _)| *p == focus)
+                    .unwrap()
+                    .1,
+            );
+            assert!(
+                after > before,
+                "focus pane should grow {dir:?}: {before} -> {after}"
+            );
             let _ = other;
         }
     }
@@ -1339,8 +1400,20 @@ mod tests {
             LayoutNode::<Id>::leaf(Id(3)),
         );
         let bounds = Rect::sized(80, 24);
-        let w1_before = n.compute_rects(bounds).iter().find(|(p, _)| *p == Id(1)).unwrap().1.w;
-        let h3_before = n.compute_rects(bounds).iter().find(|(p, _)| *p == Id(3)).unwrap().1.h;
+        let w1_before = n
+            .compute_rects(bounds)
+            .iter()
+            .find(|(p, _)| *p == Id(1))
+            .unwrap()
+            .1
+            .w;
+        let h3_before = n
+            .compute_rects(bounds)
+            .iter()
+            .find(|(p, _)| *p == Id(3))
+            .unwrap()
+            .1
+            .h;
         assert!(n.resize_leaf(Id(1), Direction::Right, 0.2));
         let after = n.compute_rects(bounds);
         let w1_after = after.iter().find(|(p, _)| *p == Id(1)).unwrap().1.w;
@@ -1422,7 +1495,10 @@ mod tests {
     #[test]
     fn a_nan_ratio_cannot_reach_the_geometry() {
         assert_eq!(SplitRatio::new(f32::NAN).get(), SplitRatio::BALANCED.get());
-        assert_eq!(SplitRatio::new(f32::INFINITY).get(), SplitRatio::BALANCED.get());
+        assert_eq!(
+            SplitRatio::new(f32::INFINITY).get(),
+            SplitRatio::BALANCED.get()
+        );
         assert_eq!(
             SplitRatio::new(f32::NEG_INFINITY).get(),
             SplitRatio::BALANCED.get()

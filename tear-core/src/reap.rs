@@ -171,7 +171,10 @@ mod tests {
                 pane(2, PaneState::Exited { code: 130 }),
             ],
         );
-        assert_eq!(AllPanesExited::witness(&s).map(AllPanesExited::session), Some(s.id));
+        assert_eq!(
+            AllPanesExited::witness(&s).map(AllPanesExited::session),
+            Some(s.id)
+        );
     }
 
     /// The defect, as a property. A session with ANY live pane is

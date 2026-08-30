@@ -265,7 +265,9 @@ pub fn rank_mixed<'a>(all: Vec<Ranked<'a>>, query: &str, now: u64) -> Vec<Ranked
     }
     let mut scored: Vec<((i32, i32), f64, Ranked<'a>)> = all
         .into_iter()
-        .filter_map(|it| best_match(q, it.searchable()).map(|m| (m, frec(it.searchable(), now), it)))
+        .filter_map(|it| {
+            best_match(q, it.searchable()).map(|m| (m, frec(it.searchable(), now), it))
+        })
         .collect();
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
@@ -524,11 +526,20 @@ mod tests {
         // rank ABOVE the running session (visits 1). This proves the two
         // states interleave by ONE order, not "live always above latent".
         let live = rec("live", "/code/live-proj", 1, 100, &[]);
-        let mut def = SessionDefinition::single_pane("/code/preset-proj", "/bin/zsh", NameStyle::Emoji, 100);
+        let mut def =
+            SessionDefinition::single_pane("/code/preset-proj", "/bin/zsh", NameStyle::Emoji, 100);
         def.visits = 50;
-        let ranked = rank_union(std::slice::from_ref(&live), std::slice::from_ref(&def), "", 100);
+        let ranked = rank_union(
+            std::slice::from_ref(&live),
+            std::slice::from_ref(&def),
+            "",
+            100,
+        );
         assert_eq!(ranked.len(), 2);
-        assert!(matches!(ranked[0], Ranked::Latent(_)), "high-frecency preset ranks first");
+        assert!(
+            matches!(ranked[0], Ranked::Latent(_)),
+            "high-frecency preset ranks first"
+        );
         assert!(matches!(ranked[1], Ranked::Live(_)));
     }
 
@@ -540,9 +551,19 @@ mod tests {
         // def's project path surfaces it through the SAME best_match the
         // record uses — a def is searchable, not invisible-until-spawned.
         let live = rec("l", "/code/alpha", 1, 100, &[]);
-        let def = SessionDefinition::single_pane("/code/bravo-substrate", "/bin/zsh", NameStyle::Emoji, 100);
+        let def = SessionDefinition::single_pane(
+            "/code/bravo-substrate",
+            "/bin/zsh",
+            NameStyle::Emoji,
+            100,
+        );
         // "bravo" matches the def's path (TIER_PATH) but not the live one.
-        let ranked = rank_union(std::slice::from_ref(&live), std::slice::from_ref(&def), "bravo", 100);
+        let ranked = rank_union(
+            std::slice::from_ref(&live),
+            std::slice::from_ref(&def),
+            "bravo",
+            100,
+        );
         assert_eq!(ranked.len(), 1);
         assert!(matches!(ranked[0], Ranked::Latent(_)));
     }
@@ -604,7 +625,10 @@ mod tests {
         let tag_tier = best_match("xkcdtag", &r).expect("tag matches").0;
         assert_eq!(name_tier, TIER_NAME);
         assert_eq!(tag_tier, TIER_TAG);
-        assert!(name_tier > tag_tier, "a name match must outrank a tag match");
+        assert!(
+            name_tier > tag_tier,
+            "a name match must outrank a tag match"
+        );
     }
 
     #[test]
@@ -654,7 +678,11 @@ mod tests {
         idx.upsert(rec("b", "/x/y/z/deeply/buried/deploy/path", 50, NOW, &[])); // buried match, high frecency
         let out = idx.search("deploy", NOW);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].id, SessionId::from_seed("a"), "tighter match ranks first");
+        assert_eq!(
+            out[0].id,
+            SessionId::from_seed("a"),
+            "tighter match ranks first"
+        );
     }
 
     #[test]
@@ -704,7 +732,10 @@ mod tests {
         // A match right after a separator beats one buried mid-word.
         let after_sep = fuzzy_score("api", "svc/api").unwrap();
         let buried = fuzzy_score("api", "svcxapi").unwrap();
-        assert!(after_sep > buried, "boundary bonus: {after_sep} vs {buried}");
+        assert!(
+            after_sep > buried,
+            "boundary bonus: {after_sep} vs {buried}"
+        );
     }
 
     #[test]
@@ -745,7 +776,10 @@ mod tests {
         let hay = "deploy-mado-service";
         let one = fuzzy_score("mado", hay).unwrap();
         let two = fuzzy_score("mado deploy", hay).unwrap();
-        assert!(two > one, "more matched terms → higher score: {two} vs {one}");
+        assert!(
+            two > one,
+            "more matched terms → higher score: {two} vs {one}"
+        );
     }
 
     #[test]
@@ -798,8 +832,14 @@ mod tests {
         assert!(fuzzy_score("pleme", "PLEME-42").is_some());
         // A term WITH an uppercase char → case-sensitive (precise).
         assert!(fuzzy_score("PLEME", "PLEME-42").is_some());
-        assert!(fuzzy_score("API", "api").is_none(), "uppercase query is precise");
-        assert!(fuzzy_score("Api", "api").is_none(), "any uppercase ⇒ sensitive");
+        assert!(
+            fuzzy_score("API", "api").is_none(),
+            "uppercase query is precise"
+        );
+        assert!(
+            fuzzy_score("Api", "api").is_none(),
+            "any uppercase ⇒ sensitive"
+        );
         // Per-term: a lowercase term stays forgiving while an uppercase term in
         // the same query is precise.
         assert!(fuzzy_score("PLEME parser", "PLEME-42 fix the parser").is_some());

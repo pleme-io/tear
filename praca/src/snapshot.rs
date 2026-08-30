@@ -16,11 +16,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::index::SessionIndex;
 use crate::AttachPolicy;
 use crate::DefinitionIndex;
 use crate::NameStyle;
 use crate::ProjectBinding;
+use crate::index::SessionIndex;
 
 /// Serde-friendly mirror of [`AttachPolicy`] (the attach enum is a
 /// pure-logic type with no serde derive). Converts losslessly both ways.
@@ -158,10 +158,12 @@ mod tests {
         // after a restart.
         let restored = Praca::from_snapshot(back);
         assert_eq!(restored.definitions.len(), 1);
-        assert!(restored
-            .definitions
-            .by_project(Path::new("/code/pleme-io/substrate"))
-            .is_some());
+        assert!(
+            restored
+                .definitions
+                .by_project(Path::new("/code/pleme-io/substrate"))
+                .is_some()
+        );
     }
 
     #[test]

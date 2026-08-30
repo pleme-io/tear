@@ -89,7 +89,9 @@ pub enum Admission {
     /// The DAEMON resolves this; `tear-core` structurally cannot, because
     /// there is no client identity at the in-process trait surface. That
     /// split is today's reality made explicit rather than commented.
-    OnlyLeader { id: u64 },
+    OnlyLeader {
+        id: u64,
+    },
 }
 
 /// Why input was refused. Distinct variants because the operator-facing
@@ -124,7 +126,9 @@ mod tests {
 
     #[test]
     fn an_engaged_brake_remembers_when() {
-        let f = Freio::Engaged { at_unix: 1_785_000_000 };
+        let f = Freio::Engaged {
+            at_unix: 1_785_000_000,
+        };
         assert!(f.is_engaged());
         assert_eq!(f.engaged_at(), Some(1_785_000_000));
     }

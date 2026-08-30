@@ -36,12 +36,12 @@
 
 use std::io::{self, Cursor, Read, Write};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use tear_core::InProcess;
-use tear_types::wire::{read_msg, Response};
+use tear_types::wire::{Response, read_msg};
 
 use crate::DaemonHandle;
 

@@ -284,7 +284,12 @@ mod tests {
             // Seed a STALE PWD in the env so the test proves the cwd
             // stamp WINS (env applied first, then the cwd-stamp guard).
             &[("PWD".into(), "/stale/parent".into())],
-            PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 },
+            PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
             Box::new(move |b| {
                 let _ = tx.send(b.to_vec());
             }),
@@ -296,7 +301,10 @@ mod tests {
         while Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
                 buf.extend_from_slice(&chunk);
-                if std::str::from_utf8(&buf).map(|s| s.contains("PWDCHK[")).unwrap_or(false) {
+                if std::str::from_utf8(&buf)
+                    .map(|s| s.contains("PWDCHK["))
+                    .unwrap_or(false)
+                {
                     break;
                 }
             }
@@ -320,10 +328,18 @@ mod tests {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let _handle = PtyHandle::spawn(
             "/bin/sh",
-            &["-c".into(), "printf 'PWDCHK[%s]\\n' \"${PWD:-UNSET}\"".into()],
+            &[
+                "-c".into(),
+                "printf 'PWDCHK[%s]\\n' \"${PWD:-UNSET}\"".into(),
+            ],
             None,
             &[("PWD".into(), "/stale/parent".into())],
-            PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 },
+            PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
             Box::new(move |b| {
                 let _ = tx.send(b.to_vec());
             }),
@@ -335,7 +351,10 @@ mod tests {
         while Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
                 buf.extend_from_slice(&chunk);
-                if std::str::from_utf8(&buf).map(|s| s.contains("PWDCHK[")).unwrap_or(false) {
+                if std::str::from_utf8(&buf)
+                    .map(|s| s.contains("PWDCHK["))
+                    .unwrap_or(false)
+                {
                     break;
                 }
             }

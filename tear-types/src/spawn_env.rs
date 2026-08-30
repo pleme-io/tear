@@ -119,7 +119,9 @@ mod tests {
         SpawnEnv::from_overrides(vec![("TERM".to_owned(), "xterm-ghostty".to_owned())])
             .apply_to(&mut env);
         assert_eq!(
-            env.iter().find(|(k, _)| k == "TERM").map(|(_, v)| v.as_str()),
+            env.iter()
+                .find(|(k, _)| k == "TERM")
+                .map(|(_, v)| v.as_str()),
             Some("xterm-ghostty"),
             "the embedder's TERM must override the backend fallback"
         );
@@ -147,7 +149,9 @@ mod tests {
             .with_cwd(Some("/real/child".to_owned()))
             .apply_to(&mut env);
         assert_eq!(
-            env.iter().find(|(k, _)| k == "PWD").map(|(_, v)| v.as_str()),
+            env.iter()
+                .find(|(k, _)| k == "PWD")
+                .map(|(_, v)| v.as_str()),
             Some("/real/child"),
             "a set cwd must overwrite a stale inherited PWD"
         );

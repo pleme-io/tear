@@ -95,7 +95,9 @@ pub enum SegmentError {
     #[error("`{0}` is a pattern wildcard, not a label")]
     WildcardToken(String),
     /// The label held a character outside the accepted charset.
-    #[error("segment `{segment}`: illegal character `{ch}` at byte {index}; allowed: a-z A-Z 0-9 `-` `_`")]
+    #[error(
+        "segment `{segment}`: illegal character `{ch}` at byte {index}; allowed: a-z A-Z 0-9 `-` `_`"
+    )]
     IllegalChar {
         /// The rejected label.
         segment: String,
@@ -105,7 +107,10 @@ pub enum SegmentError {
         index: usize,
     },
     /// The label was longer than [`SEGMENT_MAX_LEN`].
-    #[error("segment `{segment}` is {len} bytes, over the {} byte maximum", SEGMENT_MAX_LEN)]
+    #[error(
+        "segment `{segment}` is {len} bytes, over the {} byte maximum",
+        SEGMENT_MAX_LEN
+    )]
     TooLong {
         /// The rejected label.
         segment: String,
@@ -232,8 +237,8 @@ impl Address {
         }
         let mut segments = Vec::new();
         for (index, part) in s.split(SEPARATOR).enumerate() {
-            let seg = Segment::parse(part)
-                .map_err(|source| AddressError::Segment { index, source })?;
+            let seg =
+                Segment::parse(part).map_err(|source| AddressError::Segment { index, source })?;
             segments.push(seg);
         }
         Ok(Self(segments))
@@ -371,7 +376,9 @@ pub enum PatternError {
     /// A `>` appeared somewhere other than the final position. This is
     /// a *parse* error, which is why [`Pattern::matches`] never has to
     /// consider the case.
-    #[error("`{WILDCARD_TAIL}` at token {index} is not final; the tail wildcard is legal only last")]
+    #[error(
+        "`{WILDCARD_TAIL}` at token {index} is not final; the tail wildcard is legal only last"
+    )]
     TailNotFinal {
         /// Zero-based position of the offending `>`.
         index: usize,
@@ -551,7 +558,10 @@ mod tests {
     fn segment_rejects_whitespace() {
         for bad in ["a b", " a", "a ", "a\tb", "a\nb", "\u{a0}a"] {
             assert!(
-                matches!(Segment::parse(bad), Err(SegmentError::ContainsWhitespace(_))),
+                matches!(
+                    Segment::parse(bad),
+                    Err(SegmentError::ContainsWhitespace(_))
+                ),
                 "expected whitespace rejection for {bad:?}"
             );
         }

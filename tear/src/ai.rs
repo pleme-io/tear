@@ -31,7 +31,7 @@
 //! …
 //! ```
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use tear_config::AiConfig;
@@ -98,9 +98,8 @@ pub fn provider_from_config(cfg: &AiConfig) -> Result<Box<dyn LlmProvider>> {
 fn resolve_api_key(env_name: Option<&str>) -> Result<String> {
     let name = env_name
         .ok_or_else(|| anyhow!("ai.api_key_env must be set for openai-compatible providers"))?;
-    std::env::var(name).map_err(|_| {
-        anyhow!("env var `{name}` not set (configured via ai.api_key_env)")
-    })
+    std::env::var(name)
+        .map_err(|_| anyhow!("env var `{name}` not set (configured via ai.api_key_env)"))
 }
 
 // ── Ollama ──────────────────────────────────────────────────────
@@ -143,8 +142,8 @@ impl LlmProvider for OllamaProvider {
             .body_mut()
             .read_to_string()
             .map_err(|e| anyhow!("ollama read body: {e}"))?;
-        let parsed: OllamaResponse = serde_json::from_str(&resp)
-            .map_err(|e| anyhow!("ollama parse: {e}\nraw: {resp}"))?;
+        let parsed: OllamaResponse =
+            serde_json::from_str(&resp).map_err(|e| anyhow!("ollama parse: {e}\nraw: {resp}"))?;
         Ok(parsed.response)
     }
 }
@@ -160,7 +159,11 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     #[must_use]
     pub fn new(endpoint: String, model: String, api_key: String) -> Self {
-        Self { endpoint, model, api_key }
+        Self {
+            endpoint,
+            model,
+            api_key,
+        }
     }
 }
 
@@ -213,8 +216,8 @@ impl LlmProvider for OpenAiProvider {
             .body_mut()
             .read_to_string()
             .map_err(|e| anyhow!("openai read body: {e}"))?;
-        let parsed: OaiResponse = serde_json::from_str(&resp)
-            .map_err(|e| anyhow!("openai parse: {e}\nraw: {resp}"))?;
+        let parsed: OaiResponse =
+            serde_json::from_str(&resp).map_err(|e| anyhow!("openai parse: {e}\nraw: {resp}"))?;
         Ok(parsed
             .choices
             .into_iter()
@@ -239,7 +242,6 @@ mod tests {
             Ok(self.canned.clone())
         }
     }
-
 
     fn sample_block(cwd: Option<&str>) -> Block {
         Block {
@@ -309,8 +311,8 @@ mod tests {
         let cfg = AiConfig::default();
         let p = provider_from_config(&cfg).unwrap();
         let _ = p; // Provider trait object; can't introspect type
-                   // safely without downcast. Just verify it
-                   // resolves without error.
+        // safely without downcast. Just verify it
+        // resolves without error.
     }
 
     #[test]

@@ -111,10 +111,7 @@ impl Capability {
     /// and must stay a quiet miss rather than an error.
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
-        Capability::ALL
-            .iter()
-            .copied()
-            .find(|c| c.wire_name() == s)
+        Capability::ALL.iter().copied().find(|c| c.wire_name() == s)
     }
 
     /// Does **this build of the daemon** implement the capability?
@@ -309,7 +306,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Capability::ALL.len(), 3, "update this count with the vocabulary");
+        assert_eq!(
+            Capability::ALL.len(),
+            3,
+            "update this count with the vocabulary"
+        );
     }
 
     #[test]

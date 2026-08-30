@@ -142,6 +142,9 @@ mod tests {
         idx.upsert(def("/code/mado", 100, 1));
         let ranked = idx.search("subst", 100);
         assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].project_root.as_path(), Path::new("/code/substrate"));
+        assert_eq!(
+            ranked[0].project_root.as_path(),
+            Path::new("/code/substrate")
+        );
     }
 }

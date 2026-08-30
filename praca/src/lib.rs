@@ -67,16 +67,18 @@ pub mod picker;
 pub mod project;
 pub mod record;
 
-pub use attach::{decide, decide_with_root, AttachAction, AttachDecision, AttachPolicy};
+pub use attach::{AttachAction, AttachDecision, AttachPolicy, decide, decide_with_root};
 pub use binding::ProjectBinding;
 pub use definition::{DefinitionError, SessionDefinition, SessionOrigin};
 pub use definition_index::DefinitionIndex;
-pub use index::{best_match, rank, rank_mixed, rank_union, Ranked, Searchable, SessionIndex};
-pub use picker::{union_view, UnionRow};
+pub use index::{Ranked, Searchable, SessionIndex, best_match, rank, rank_mixed, rank_union};
 pub use instance_registry::InstanceRegistry;
-pub use instantiate::{instantiate, reinstantiate, InstantiateError};
+pub use instantiate::{InstantiateError, instantiate, reinstantiate};
+pub use picker::{UnionRow, union_view};
 pub use project::{find_project_root, find_project_root_with, project_root, project_root_with};
-pub use record::{display_name_for, identity_for, NameStyle, SessionRecord, SessionState, ThemeMirror};
+pub use record::{
+    NameStyle, SessionRecord, SessionState, ThemeMirror, display_name_for, identity_for,
+};
 pub use snapshot::{PolicyMirror, PracaSnapshot};
 
 // Re-export the ishou name primitives so consumers (tear-daemon, mado) can
@@ -262,10 +264,15 @@ mod tests {
     #[test]
     fn on_cwd_change_switches_to_bound_session() {
         let mut p = Praca::new();
-        let rec =
-            SessionRecord::for_project(sid("tear-sess"), PathBuf::from("/code/tear"), SessionNameStyle::Emoji, 0);
+        let rec = SessionRecord::for_project(
+            sid("tear-sess"),
+            PathBuf::from("/code/tear"),
+            SessionNameStyle::Emoji,
+            0,
+        );
         p.index.upsert(rec);
-        p.binding.bind(PathBuf::from("/code/tear"), sid("tear-sess"));
+        p.binding
+            .bind(PathBuf::from("/code/tear"), sid("tear-sess"));
         let d = p.on_cwd_change(None, Path::new("/code/tear"), 100);
         assert_eq!(d, AttachDecision::SwitchTo(sid("tear-sess")));
     }
@@ -273,7 +280,8 @@ mod tests {
     #[test]
     fn record_visit_bumps_and_stamps() {
         let mut p = Praca::new();
-        let rec = SessionRecord::for_project(sid("s"), PathBuf::from("/x"), SessionNameStyle::Emoji, 10);
+        let rec =
+            SessionRecord::for_project(sid("s"), PathBuf::from("/x"), SessionNameStyle::Emoji, 10);
         p.index.upsert(rec);
         let before = p.index.get(sid("s")).unwrap().visits;
         assert!(p.record_visit(sid("s"), 999));

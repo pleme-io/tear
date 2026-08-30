@@ -25,7 +25,9 @@
 
 use std::path::PathBuf;
 
-use ishou_tokens::{FleetSessionNames, SessionIdentity, SessionName, SessionNameStyle, SessionTheme};
+use ishou_tokens::{
+    FleetSessionNames, SessionIdentity, SessionName, SessionNameStyle, SessionTheme,
+};
 use serde::{Deserialize, Serialize};
 use tear_types::id::SessionId;
 
@@ -249,7 +251,12 @@ impl SessionRecord {
     /// the rendered themed emoji name (`🌊 tide`).
     #[must_use]
     pub fn display_name(&self) -> String {
-        display_name_for(self.name_seed, self.name_style, self.theme, self.custom_name.as_deref())
+        display_name_for(
+            self.name_seed,
+            self.name_style,
+            self.theme,
+            self.custom_name.as_deref(),
+        )
     }
 
     /// Rename the session (operator jumped in and gave it a human name).
@@ -271,7 +278,10 @@ impl SessionRecord {
     /// `(seed, style)` pair. Pure + deterministic.
     #[must_use]
     pub fn name(&self) -> SessionName {
-        SessionName { identity: self.identity(), style: self.name_style.into() }
+        SessionName {
+            identity: self.identity(),
+            style: self.name_style.into(),
+        }
     }
 
     /// The session's name *word* (`"tide"`, `"frost"`, …) — the stable,
@@ -309,7 +319,10 @@ mod tests {
         assert_eq!(a.name_seed, b.name_seed);
         assert_eq!(a.name_word(), b.name_word());
         // Matches what the atlas would have produced directly.
-        let direct = FleetSessionNames::from_project_path(Path::new("/code/pleme-io/mado"), SessionNameStyle::Emoji);
+        let direct = FleetSessionNames::from_project_path(
+            Path::new("/code/pleme-io/mado"),
+            SessionNameStyle::Emoji,
+        );
         assert_eq!(a.name().to_string(), direct.to_string());
     }
 
@@ -367,7 +380,11 @@ mod tests {
             SessionNameStyle::Emoji,
             1,
         );
-        assert_eq!(r.identity().theme, SessionTheme::Brazil, "ad-hoc name stays in theme");
+        assert_eq!(
+            r.identity().theme,
+            SessionTheme::Brazil,
+            "ad-hoc name stays in theme"
+        );
         assert!(!r.name_word().is_empty());
         // Stable for this session (same seed+theme → same name).
         let again = SessionRecord::for_adhoc(

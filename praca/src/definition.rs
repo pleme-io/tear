@@ -27,7 +27,7 @@ use tear_types::{
 };
 
 use crate::index::Searchable;
-use crate::record::{display_name_for, identity_for, NameStyle, ThemeMirror};
+use crate::record::{NameStyle, ThemeMirror, display_name_for, identity_for};
 
 /// Where a session definition came from — a typed third arm, so the
 /// ad-hoc path is exhaustively matched rather than a silent `for_adhoc`
@@ -310,12 +310,16 @@ mod tests {
 
     #[test]
     fn single_pane_definition_validates() {
-        let d = SessionDefinition::single_pane("/code/pleme-io/mado", "/bin/zsh", NameStyle::Emoji, 0);
+        let d =
+            SessionDefinition::single_pane("/code/pleme-io/mado", "/bin/zsh", NameStyle::Emoji, 0);
         d.validate().unwrap();
         assert_eq!(d.slot_count(), 1);
         // Identity is the project seed (illegal state #1) — matches the id
         // a SessionRecord for the same project would carry.
-        assert_eq!(d.def_id, DefinitionId::from_project(std::path::Path::new("/code/pleme-io/mado")));
+        assert_eq!(
+            d.def_id,
+            DefinitionId::from_project(std::path::Path::new("/code/pleme-io/mado"))
+        );
         assert_eq!(d.name_seed, d.def_id.0);
     }
 
@@ -330,10 +334,14 @@ mod tests {
     #[test]
     fn validate_rejects_active_slot_not_in_window() {
         let mut d = SessionDefinition::single_pane("/x", "/bin/zsh", NameStyle::Emoji, 0);
-        d.pane_specs.insert(PaneSlot(1), SpawnSpec::shell(PaneSlot(1), "/bin/sh"));
+        d.pane_specs
+            .insert(PaneSlot(1), SpawnSpec::shell(PaneSlot(1), "/bin/sh"));
         // Window over slot 0, but active_slot points at 1 (not in it).
         d.windows[0].active_slot = PaneSlot(1);
-        assert_eq!(d.validate(), Err(DefinitionError::ActiveSlotNotInWindow(PaneSlot(1))));
+        assert_eq!(
+            d.validate(),
+            Err(DefinitionError::ActiveSlotNotInWindow(PaneSlot(1)))
+        );
     }
 
     #[test]
@@ -371,7 +379,10 @@ mod tests {
     #[test]
     fn origin_adhoc_is_a_typed_arm() {
         // The ad-hoc path is now an exhaustively-matchable value.
-        let o = SessionOrigin::Adhoc { theme: ThemeMirror::Brazil, seed: 42 };
+        let o = SessionOrigin::Adhoc {
+            theme: ThemeMirror::Brazil,
+            seed: 42,
+        };
         match o {
             SessionOrigin::Project | SessionOrigin::Authored => panic!("wrong arm"),
             SessionOrigin::Adhoc { theme, seed } => {
@@ -399,7 +410,9 @@ mod tests {
         let s0 = inproc.get_session(sid).unwrap();
         let wid = s0.active_window;
         let p0 = s0.windows[&wid].active_pane;
-        inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
+        inproc
+            .split_pane(p0, Direction::Right, "/bin/sh", &[])
+            .unwrap();
         let session = inproc.get_session(sid).unwrap();
 
         let def = SessionDefinition::from_live(&session, "/code/captured", 0);

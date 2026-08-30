@@ -685,10 +685,16 @@ mod tests {
         )]);
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&old, &mut bytes).unwrap();
-        let got: Request = ciborium::de::from_reader(&bytes[..])
-            .expect("a pre-args frame must still decode");
+        let got: Request =
+            ciborium::de::from_reader(&bytes[..]).expect("a pre-args frame must still decode");
         match got {
-            Request::NewSession { name, shell, source, size_cells, args } => {
+            Request::NewSession {
+                name,
+                shell,
+                source,
+                size_cells,
+                args,
+            } => {
                 assert_eq!(name, "work");
                 assert_eq!(shell, "/bin/sh");
                 assert!(source.is_none());

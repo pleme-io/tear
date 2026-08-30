@@ -200,10 +200,7 @@ impl Write for TearStream {
 /// length-prefixed CBOR frames + forwards each as a WS binary
 /// message; the main thread reads WS binary messages + writes
 /// them verbatim (already length-prefixed) to the daemon.
-fn pump(
-    mut ws: tungstenite::WebSocket<TcpStream>,
-    mut backend: TearStream,
-) -> Result<()> {
+fn pump(mut ws: tungstenite::WebSocket<TcpStream>, mut backend: TearStream) -> Result<()> {
     // ── daemon → ws thread ───────────────────────────────────
     let backend_for_reader = backend
         .try_clone()
@@ -276,7 +273,7 @@ mod tests {
     #[test]
     fn end_to_end_ws_bridge_pipes_request_response() {
         use std::net::TcpStream as StdTcpStream;
-        use tear_types::wire::{read_msg, write_msg, Request, Response};
+        use tear_types::wire::{Request, Response, read_msg, write_msg};
 
         // Spin up a real tear-daemon on UDS in this process.
         let sock = {

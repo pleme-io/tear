@@ -240,7 +240,11 @@ mod freio_rows {
     #[test]
     fn an_explicitly_free_automation_pane_cannot_escape_the_brake() {
         let s = session(
-            vec![pane(1, Yurai::Automation { label: None }, InputPolicy::Free)],
+            vec![pane(
+                1,
+                Yurai::Automation { label: None },
+                InputPolicy::Free,
+            )],
             ON,
         );
         assert_eq!(
@@ -256,7 +260,11 @@ mod freio_rows {
     #[test]
     fn a_braked_pane_reports_freio_not_policy() {
         let s = session(
-            vec![pane(1, Yurai::Automation { label: None }, InputPolicy::Locked)],
+            vec![pane(
+                1,
+                Yurai::Automation { label: None },
+                InputPolicy::Locked,
+            )],
             ON,
         );
         assert_eq!(
@@ -276,7 +284,11 @@ mod freio_rows {
         let panes = || {
             vec![
                 pane(1, Yurai::Automation { label: None }, InputPolicy::Locked),
-                pane(2, Yurai::Automation { label: None }, InputPolicy::Leader { id: 7 }),
+                pane(
+                    2,
+                    Yurai::Automation { label: None },
+                    InputPolicy::Leader { id: 7 },
+                ),
                 pane(3, Yurai::Automation { label: None }, InputPolicy::Free),
             ]
         };
@@ -315,7 +327,11 @@ mod freio_rows {
     #[test]
     fn a_released_session_admits_exactly_as_before_freio_existed() {
         let s = session(
-            vec![pane(1, Yurai::Automation { label: None }, InputPolicy::Free)],
+            vec![pane(
+                1,
+                Yurai::Automation { label: None },
+                InputPolicy::Free,
+            )],
             Freio::Released,
         );
         assert_eq!(s.admits(PaneId(1)), Some(Admission::Accept));

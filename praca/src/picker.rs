@@ -16,7 +16,7 @@
 
 use crate::attach::AttachAction;
 use crate::definition::SessionDefinition;
-use crate::index::{rank_mixed, Ranked};
+use crate::index::{Ranked, rank_mixed};
 use crate::instance_registry::InstanceRegistry;
 use crate::record::SessionRecord;
 
@@ -101,7 +101,13 @@ mod tests {
         let live = rec("live", "/code/running", 1, 100);
         let p = preset("/code/preset", 100);
         let registry = InstanceRegistry::new(); // the preset is NOT running
-        let rows = union_view(std::slice::from_ref(&live), std::slice::from_ref(&p), &registry, "", 100);
+        let rows = union_view(
+            std::slice::from_ref(&live),
+            std::slice::from_ref(&p),
+            &registry,
+            "",
+            100,
+        );
         assert_eq!(rows.len(), 2);
         // The running session is a ● Switch; the preset a ○ Instantiate.
         let live_row = rows.iter().find(|r| r.live).unwrap();
@@ -128,7 +134,13 @@ mod tests {
         let mut p = preset("/code/preset", 100);
         p.visits = 50;
         let registry = InstanceRegistry::new();
-        let rows = union_view(std::slice::from_ref(&live), std::slice::from_ref(&p), &registry, "", 100);
+        let rows = union_view(
+            std::slice::from_ref(&live),
+            std::slice::from_ref(&p),
+            &registry,
+            "",
+            100,
+        );
         assert_eq!(rows.len(), 2);
         assert!(!rows[0].live, "high-frecency latent preset ranks first");
         assert!(rows[1].live);

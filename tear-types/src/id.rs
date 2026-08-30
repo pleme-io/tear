@@ -161,9 +161,8 @@ mod tests {
         // to a definition with its identity == its existing name_seed —
         // the name never changes across the migration.
         let root = std::path::Path::new("/code/pleme-io/mado");
-        let expected = ishou_tokens::fleet_session_names::stable_seed(
-            root.to_string_lossy().as_bytes(),
-        );
+        let expected =
+            ishou_tokens::fleet_session_names::stable_seed(root.to_string_lossy().as_bytes());
         assert_eq!(DefinitionId::from_project(root).0, expected);
     }
 
@@ -173,7 +172,10 @@ mod tests {
         // yields the same DefinitionId — that's the whole point of the
         // durable-vs-ephemeral split.
         let root = std::path::Path::new("/x/y/z");
-        assert_eq!(DefinitionId::from_project(root), DefinitionId::from_project(root));
+        assert_eq!(
+            DefinitionId::from_project(root),
+            DefinitionId::from_project(root)
+        );
     }
 
     #[test]

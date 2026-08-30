@@ -50,10 +50,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_returns_input_when_home_missing() {
-        assert_eq!(
-            expand_tilde_with_home("~/something", None),
-            "~/something"
-        );
+        assert_eq!(expand_tilde_with_home("~/something", None), "~/something");
     }
 
     #[test]

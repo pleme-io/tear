@@ -43,11 +43,11 @@ pub mod block;
 pub mod capability;
 pub mod cast;
 pub mod control;
-pub mod genesis;
+pub mod direction;
 #[cfg(feature = "engate")]
 pub mod engate_wrap;
-pub mod direction;
 pub mod freio;
+pub mod genesis;
 pub mod geometry;
 pub mod graphics;
 pub mod host_role;
@@ -57,9 +57,9 @@ pub mod layout;
 pub mod live;
 pub mod modes;
 pub mod pane;
-pub mod plan;
-pub mod path;
 pub mod pane_snapshot;
+pub mod path;
+pub mod plan;
 pub mod session;
 pub mod shutai;
 pub mod spawn_env;
@@ -73,32 +73,32 @@ pub mod yurai;
 // already binds `Segment` to the status-bar widget. Reach the address
 // label as `tear_types::address::Segment`.
 pub use address::{Address, AddressError, Pattern, PatternError, PatternToken, SegmentError};
+pub use block::Block;
 pub use capability::{Capability, DaemonHello, DaemonIdentity};
+pub use cast::{CastParseError, CastRow, CastRowKind};
 pub use control::{ControlError, ControlResult, MultiplexerControl};
-pub use genesis::{Genesis, Guid};
 pub use direction::{Direction, SplitOrientation};
-pub use geometry::Rect;
 pub use freio::{Admission, Freio, RefusalReason};
-pub use graphics::{Graphic, GraphicProtocol, GRAPHIC_PAYLOAD_MAX};
+pub use genesis::{Genesis, Guid};
+pub use geometry::Rect;
+pub use graphics::{GRAPHIC_PAYLOAD_MAX, Graphic, GraphicProtocol};
 pub use host_role::{HostRole, TearCaps};
-pub use modes::{ModeSet, MouseTracking};
-pub use shutai::{Attested, Declared, Shutai};
-pub use yurai::Yurai;
 pub use id::{DefinitionId, InstanceId, PaneId, SessionId, WindowId};
 pub use keybind::{Action, KeyBind, KeyChord, KeyTable, KeyTableName};
-pub use layout::{LayoutError, LayoutKind, LayoutNode, LeafRemoval, Size, MIN_RATIO};
+pub use layout::{LayoutError, LayoutKind, LayoutNode, LeafRemoval, MIN_RATIO, Size};
 pub use live::{Durability, LiveSession};
-pub use plan::{LayoutPlan, PaneSlot, PlanError, SpawnSpec, WindowPlan};
-pub use block::Block;
-pub use cast::{CastParseError, CastRow, CastRowKind};
+pub use modes::{ModeSet, MouseTracking};
 pub use pane::{InputPolicy, PaneState, PaneStats, TearPane};
 pub use pane_snapshot::{
-    ansi_256_color, default_ansi_palette, Cell, CellAttrs, Color, PaneSnapshot, ANSI_BRIGHT_COLORS,
-    ANSI_COLORS,
+    ANSI_BRIGHT_COLORS, ANSI_COLORS, Cell, CellAttrs, Color, PaneSnapshot, ansi_256_color,
+    default_ansi_palette,
 };
+pub use plan::{LayoutPlan, PaneSlot, PlanError, SpawnSpec, WindowPlan};
 pub use session::{SessionSource, SessionState, TearSession};
+pub use shutai::{Attested, Declared, Shutai};
 pub use spawn_env::SpawnEnv;
 pub use statusbar::{Segment, SegmentAlignment, SignalRenderMode, StatusBar, TearSignalKind};
 pub use theme::HexColor;
 pub use theme::TearTheme;
 pub use window::{TearWindow, WindowState};
+pub use yurai::Yurai;

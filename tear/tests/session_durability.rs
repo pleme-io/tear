@@ -65,7 +65,12 @@ fn every_provenance() -> Vec<(&'static str, SessionSource)> {
 }
 
 /// Poll a pane's rendered grid until it contains `needle`.
-fn wait_for_text(client: &Client, pane: tear_types::PaneId, needle: &str, within: Duration) -> bool {
+fn wait_for_text(
+    client: &Client,
+    pane: tear_types::PaneId,
+    needle: &str,
+    within: Duration,
+) -> bool {
     let deadline = Instant::now() + within;
     while Instant::now() < deadline {
         if let Ok(snap) = client.pane_snapshot(pane) {

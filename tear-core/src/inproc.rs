@@ -260,13 +260,11 @@ impl InProcess {
                 .ok_or(ControlError::NoSuchPane(pane_id))?
         };
         let grid = grid_arc.lock();
-        grid.state
-            .blocks
-            .get(index)
-            .cloned()
-            .ok_or_else(|| ControlError::Rejected(format!(
+        grid.state.blocks.get(index).cloned().ok_or_else(|| {
+            ControlError::Rejected(format!(
                 "no block at index {index} (oldest evicted or never existed)"
-            )))
+            ))
+        })
     }
 
     /// `(total_completed_blocks, current_in_progress)` — useful
@@ -303,10 +301,7 @@ impl InProcess {
     /// sender push happen under the same lock, so a `subscribe` that
     /// races with the pane's exit can't leak a sender that never
     /// disconnects.
-    pub fn subscribe_pane_bytes(
-        &self,
-        pane: PaneId,
-    ) -> ControlResult<mpsc::Receiver<Vec<u8>>> {
+    pub fn subscribe_pane_bytes(&self, pane: PaneId) -> ControlResult<mpsc::Receiver<Vec<u8>>> {
         // Confirm the pane exists; we don't actually need the
         // grid here (the sender is registered regardless), but
         // subscribing to a phantom pane silently is a footgun.
@@ -454,7 +449,11 @@ impl InProcess {
         // We prepend the operator's home-manager + nix-profile
         // bin dirs to whatever PATH was inherited so the shell
         // can find the same binaries the user sees outside tear.
-        if let Some(home) = env.iter().find(|(k, _)| k == "HOME").map(|(_, v)| v.clone()) {
+        if let Some(home) = env
+            .iter()
+            .find(|(k, _)| k == "HOME")
+            .map(|(_, v)| v.clone())
+        {
             let user = env
                 .iter()
                 .find(|(k, _)| k == "USER")
@@ -478,10 +477,7 @@ impl InProcess {
             // so we don't bloat PATH on every nested spawn).
             let mut new_path = String::new();
             for p in &extra_paths {
-                if !existing_path
-                    .split(':')
-                    .any(|seg| seg == p.as_str())
-                {
+                if !existing_path.split(':').any(|seg| seg == p.as_str()) {
                     if !new_path.is_empty() {
                         new_path.push(':');
                     }
@@ -606,9 +602,10 @@ impl InProcess {
                             code: code.unwrap_or(-1),
                         };
                         found = true;
-                        if s.panes.values().all(|p| {
-                            matches!(p.state, tear_types::PaneState::Exited { .. })
-                        }) {
+                        if s.panes
+                            .values()
+                            .all(|p| matches!(p.state, tear_types::PaneState::Exited { .. }))
+                        {
                             fully = Some(s.id);
                         }
                         break;
@@ -637,12 +634,16 @@ impl InProcess {
                 };
                 this_pane_watched
                     || fully_exited.is_some_and(|sid| {
-                        registry_for_exit.read().sessions.get(&sid).is_some_and(|s| {
-                            s.panes.keys().any(|p| {
-                                *p != pane_id
-                                    && subs.get(p).is_some_and(|ps| !ps.senders.is_empty())
+                        registry_for_exit
+                            .read()
+                            .sessions
+                            .get(&sid)
+                            .is_some_and(|s| {
+                                s.panes.keys().any(|p| {
+                                    *p != pane_id
+                                        && subs.get(p).is_some_and(|ps| !ps.senders.is_empty())
+                                })
                             })
-                        })
                     })
             };
             debug!(pane_id = %pane_id, ?code, "tear-core: pane child exited — marked Exited + disconnected subscribers");
@@ -899,12 +900,23 @@ impl MultiplexerControl for InProcess {
         source: tear_types::SessionSource,
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId> {
-        self.new_session_yurai(name, shell, args, source, size_cells, tear_types::Yurai::Unknown)
+        self.new_session_yurai(
+            name,
+            shell,
+            args,
+            source,
+            size_cells,
+            tear_types::Yurai::Unknown,
+        )
     }
 
-    fn new_window(&self, session: SessionId, name: &str, shell: &str, args: &[String])
-        -> ControlResult<WindowId>
-    {
+    fn new_window(
+        &self,
+        session: SessionId,
+        name: &str,
+        shell: &str,
+        args: &[String],
+    ) -> ControlResult<WindowId> {
         self.new_window_yurai(session, name, shell, args, tear_types::Yurai::Unknown)
     }
 
@@ -918,10 +930,12 @@ impl MultiplexerControl for InProcess {
         self.split_pane_yurai(origin, direction, shell, args, tear_types::Yurai::Unknown)
     }
 
-
     fn rename_session(&self, id: SessionId, new_name: &str) -> ControlResult<()> {
         let mut r = self.registry.write();
-        let s = r.sessions.get_mut(&id).ok_or(ControlError::NoSuchSession(id))?;
+        let s = r
+            .sessions
+            .get_mut(&id)
+            .ok_or(ControlError::NoSuchSession(id))?;
         s.name = new_name.into();
         Ok(())
     }
@@ -941,7 +955,6 @@ impl MultiplexerControl for InProcess {
         info!(session = %id, "tear-core: killed session");
         Ok(())
     }
-
 
     fn kill_window(&self, id: WindowId) -> ControlResult<()> {
         let panes_to_kill: Vec<PaneId> = {
@@ -995,7 +1008,6 @@ impl MultiplexerControl for InProcess {
         }
         Err(ControlError::NoSuchWindow(id))
     }
-
 
     fn kill_pane(&self, id: PaneId) -> ControlResult<()> {
         // NOTE pre-fix this was `self.ptys.lock().remove(&id);` — the
@@ -1058,7 +1070,8 @@ impl MultiplexerControl for InProcess {
                     s.panes.remove(&id);
                     s.windows.remove(&wid);
                     if s.active_window == wid {
-                        s.active_window = s.windows.keys().next().copied().unwrap_or(WindowId::NULL);
+                        s.active_window =
+                            s.windows.keys().next().copied().unwrap_or(WindowId::NULL);
                     }
                     false
                 }
@@ -1086,12 +1099,7 @@ impl MultiplexerControl for InProcess {
         Ok(())
     }
 
-    fn resize_pane(
-        &self,
-        id: PaneId,
-        direction: Direction,
-        delta_cells: i16,
-    ) -> ControlResult<()> {
+    fn resize_pane(&self, id: PaneId, direction: Direction, delta_cells: i16) -> ControlResult<()> {
         // Slide the divider of the split governing `id` along `direction`.
         // delta_cells is converted to a fraction of the window's span on
         // the relevant axis, then resize_leaf clamps + applies it. If the
@@ -1213,11 +1221,7 @@ impl MultiplexerControl for InProcess {
         Ok(count)
     }
 
-    fn set_input_policy(
-        &self,
-        id: PaneId,
-        policy: tear_types::InputPolicy,
-    ) -> ControlResult<()> {
+    fn set_input_policy(&self, id: PaneId, policy: tear_types::InputPolicy) -> ControlResult<()> {
         let mut r = self.registry.write();
         // Walk the session→panes maps to find the target. Mirrors
         // locate_pane's address logic but with mutable access.
@@ -1248,12 +1252,7 @@ impl MultiplexerControl for InProcess {
     /// Phase-3.1 override — resize the underlying PTY (fires
     /// SIGWINCH at the child) AND resize the per-pane PaneGrid
     /// so subsequent snapshots reflect the new geometry.
-    fn pane_resize_absolute(
-        &self,
-        id: PaneId,
-        cols: u16,
-        rows: u16,
-    ) -> ControlResult<()> {
+    fn pane_resize_absolute(&self, id: PaneId, cols: u16, rows: u16) -> ControlResult<()> {
         use portable_pty::PtySize;
         let pty_size = PtySize {
             rows,
@@ -1383,7 +1382,13 @@ mod tests {
     fn kill_pane_refuses_when_tree_and_pane_map_have_diverged() {
         let inproc = InProcess::new();
         let sid = inproc.new_session("divergence", "/bin/sh").unwrap();
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         // Break the invariant behind the API's back: evict the pane from the
         // layout tree while leaving its record in `s.panes`, so `locate_pane`
@@ -1432,12 +1437,26 @@ mod tests {
         // home-manager binaries resolve.
         let inproc = Arc::new(InProcess::new());
         let sid = inproc.new_session("path-test", "/bin/sh").unwrap();
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
+        inproc
+            .subscribers
+            .lock()
+            .entry(pane)
+            .or_default()
+            .senders
+            .push(tx);
 
-        inproc.send_keys(pane, b"printf 'PATH=[%s]\\n' \"$PATH\"\n").expect("send_keys");
+        inproc
+            .send_keys(pane, b"printf 'PATH=[%s]\\n' \"$PATH\"\n")
+            .expect("send_keys");
 
         let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
         let mut buf = Vec::<u8>::new();
@@ -1445,7 +1464,9 @@ mod tests {
             if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 buf.extend_from_slice(&chunk);
                 if let Ok(s) = std::str::from_utf8(&buf) {
-                    if s.contains("PATH=[") && s.contains("]\n") { break; }
+                    if s.contains("PATH=[") && s.contains("]\n") {
+                        break;
+                    }
                 }
             }
         }
@@ -1469,10 +1490,22 @@ mod tests {
         // assert TERM is always non-empty in the spawned child.
         let inproc = Arc::new(InProcess::new());
         let sid = inproc.new_session("term-test", "/bin/sh").unwrap();
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
+        inproc
+            .subscribers
+            .lock()
+            .entry(pane)
+            .or_default()
+            .senders
+            .push(tx);
 
         inproc
             .send_keys(pane, b"printf 'TERM=[%s]\\n' \"${TERM:-MISSING}\"\n")
@@ -1511,10 +1544,22 @@ mod tests {
         let sid = inproc
             .new_session("env-test", "/bin/sh")
             .expect("new_session");
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
+        inproc
+            .subscribers
+            .lock()
+            .entry(pane)
+            .or_default()
+            .senders
+            .push(tx);
 
         inproc
             .send_keys(
@@ -1542,10 +1587,19 @@ mod tests {
             }
         }
         let text = String::from_utf8_lossy(&buf);
-        assert!(text.contains("SENTINEL["), "no sentinel in output: {text:?}");
+        assert!(
+            text.contains("SENTINEL["),
+            "no sentinel in output: {text:?}"
+        );
         assert!(text.contains("T=1"), "TEAR=1 not present: {text:?}");
-        assert!(text.contains("S=env-test"), "TEAR_SESSION_NAME wrong: {text:?}");
-        assert!(text.contains("SOCK=/tmp/tear-test-env.sock"), "TEAR_SOCKET wrong: {text:?}");
+        assert!(
+            text.contains("S=env-test"),
+            "TEAR_SESSION_NAME wrong: {text:?}"
+        );
+        assert!(
+            text.contains("SOCK=/tmp/tear-test-env.sock"),
+            "TEAR_SOCKET wrong: {text:?}"
+        );
     }
 
     /// **`SpawnEnv` override reaches the child + wins over the
@@ -1565,10 +1619,22 @@ mod tests {
             ("COLORTERM".into(), "truecolor".into()),
         ]));
         let sid = inproc.new_session("spawnenv-test", "/bin/sh").unwrap();
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        inproc.subscribers.lock().entry(pane).or_default().senders.push(tx);
+        inproc
+            .subscribers
+            .lock()
+            .entry(pane)
+            .or_default()
+            .senders
+            .push(tx);
         inproc
             .send_keys(
                 pane,
@@ -1632,7 +1698,13 @@ mod tests {
         let sid = inproc
             .new_session("exit-test", "/bin/sh")
             .expect("new_session");
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         // Subscribe while the pane is alive (mirrors mado's attach).
         let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
@@ -1692,7 +1764,13 @@ mod tests {
         let sid = inproc
             .new_session("reap-test", "/bin/sh")
             .expect("new_session");
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         // No subscriber attaches. Exit the shell.
         inproc.send_keys(pane, b"exit\n").expect("send_keys");
@@ -1710,7 +1788,10 @@ mod tests {
         );
         // Runtime artifacts must be gone too — a reaped session that
         // strands a PtyHandle/grid/subscriber entry is a slow leak.
-        assert!(inproc.ptys.lock().is_empty(), "reap left a PtyHandle behind");
+        assert!(
+            inproc.ptys.lock().is_empty(),
+            "reap left a PtyHandle behind"
+        );
         assert!(inproc.grids.lock().is_empty(), "reap left a grid behind");
         assert!(
             inproc.subscribers.lock().is_empty(),
@@ -1728,7 +1809,13 @@ mod tests {
         let sid = inproc
             .new_session("remain-test", "/bin/sh")
             .expect("new_session");
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
         inproc.send_keys(pane, b"exit\n").expect("send_keys");
@@ -1812,7 +1899,13 @@ mod tests {
         let sid = inproc
             .new_session("kill-fast", "/bin/cat")
             .expect("new_session");
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         // Active subscriber (mirrors mado's attach_live).
         let rx = inproc.subscribe_pane_bytes(pane).expect("subscribe");
@@ -1878,7 +1971,13 @@ mod tests {
         // so a later subscribe to the dead pane errors cleanly.
         let inproc = InProcess::new();
         let sid = inproc.new_session("temp", "/bin/sh").unwrap();
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         inproc.kill_session(sid).unwrap();
         let err = inproc.subscribe_pane_bytes(pane).unwrap_err();
         assert!(matches!(err, ControlError::NoSuchPane(_)));
@@ -1897,7 +1996,13 @@ mod tests {
         // ptys. Recordings were simply missing from that list.
         let inproc = InProcess::new();
         let sid = inproc.new_session("rec-leak", "/bin/sh").unwrap();
-        let pane = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         inproc.enable_pane_recording(pane).unwrap();
         assert_eq!(
             inproc.recordings.lock().len(),
@@ -1944,7 +2049,10 @@ mod tests {
     fn set_input_policy_on_nonexistent_pane_returns_nosuch() {
         let inproc = InProcess::new();
         let err = inproc
-            .set_input_policy(tear_types::PaneId(0xdead_beef), tear_types::InputPolicy::Locked)
+            .set_input_policy(
+                tear_types::PaneId(0xdead_beef),
+                tear_types::InputPolicy::Locked,
+            )
             .unwrap_err();
         assert!(matches!(err, tear_types::ControlError::NoSuchPane(_)));
     }
@@ -1953,11 +2061,25 @@ mod tests {
     fn set_input_policy_is_idempotent() {
         let inproc = InProcess::new();
         let sid = inproc.new_session("idem", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
-        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Locked).unwrap();
-        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Locked).unwrap();
-        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Free).unwrap();
-        inproc.set_input_policy(pane_id, tear_types::InputPolicy::Free).unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::Locked)
+            .unwrap();
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::Locked)
+            .unwrap();
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::Free)
+            .unwrap();
+        inproc
+            .set_input_policy(pane_id, tear_types::InputPolicy::Free)
+            .unwrap();
         // No assertion needed — the test is that none of these panic
         // or return Err on duplicate state.
     }
@@ -1971,7 +2093,13 @@ mod tests {
         // so future refactors don't accidentally start rejecting.
         let inproc = InProcess::new();
         let sid = inproc.new_session("leader-inproc", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         inproc
             .set_input_policy(pane_id, tear_types::InputPolicy::leader(7))
             .unwrap();
@@ -1986,7 +2114,13 @@ mod tests {
         // policy gate's no-op path.
         let inproc = InProcess::new();
         let sid = inproc.new_session("free-default", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         inproc.send_keys(pane_id, b"hello").unwrap();
     }
 
@@ -1996,7 +2130,13 @@ mod tests {
         // accept input.
         let inproc = InProcess::new();
         let sid = inproc.new_session("rt", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         for round in 0..2 {
             inproc
                 .set_input_policy(pane_id, tear_types::InputPolicy::Locked)
@@ -2020,7 +2160,13 @@ mod tests {
     fn pane_blocks_captures_osc_133_round_trip() {
         let inproc = InProcess::new();
         let sid = inproc.new_session("blocks-test", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         // Drive a full OSC 133 cycle through the PTY by sending
         // the bytes via send_keys. The shell's echo back loops
@@ -2095,7 +2241,13 @@ mod tests {
                 },
             )
             .unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
 
         let grid_arc = {
             let map = inproc.grids.lock();
@@ -2124,7 +2276,13 @@ mod tests {
     fn an_undeclared_session_produces_unknown_blocks_not_human() {
         let inproc = InProcess::new();
         let sid = inproc.new_session("undeclared", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         let grid_arc = {
             let map = inproc.grids.lock();
             map.get(&pane_id).cloned().unwrap()
@@ -2147,7 +2305,13 @@ mod tests {
     fn pane_block_at_on_missing_index_returns_rejected() {
         let inproc = InProcess::new();
         let sid = inproc.new_session("missing-block", "/bin/sh").unwrap();
-        let pane_id = *inproc.get_session(sid).unwrap().panes.keys().next().unwrap();
+        let pane_id = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
         let err = inproc.pane_block_at(pane_id, 99).unwrap_err();
         assert!(matches!(err, ControlError::Rejected(_)));
     }
@@ -2172,8 +2336,7 @@ mod tests {
         let mut names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["alpha", "beta", "gamma"]);
-        let ids: std::collections::HashSet<_> =
-            sessions.iter().map(|s| s.id).collect();
+        let ids: std::collections::HashSet<_> = sessions.iter().map(|s| s.id).collect();
         for id in [a, b, c] {
             assert!(ids.contains(&id));
         }
@@ -2195,7 +2358,9 @@ mod tests {
         let inproc = InProcess::new();
         let sid = inproc.new_session("split", "/bin/sh").unwrap();
         let origin = active_pane(&inproc, sid);
-        let new = inproc.split_pane(origin, Direction::Right, "/bin/sh", &[]).unwrap();
+        let new = inproc
+            .split_pane(origin, Direction::Right, "/bin/sh", &[])
+            .unwrap();
 
         let s = inproc.get_session(sid).unwrap();
         let w = &s.windows[&s.active_window];
@@ -2214,7 +2379,9 @@ mod tests {
         let inproc = InProcess::new();
         let sid = inproc.new_session("kill", "/bin/sh").unwrap();
         let origin = active_pane(&inproc, sid);
-        let new = inproc.split_pane(origin, Direction::Below, "/bin/sh", &[]).unwrap();
+        let new = inproc
+            .split_pane(origin, Direction::Below, "/bin/sh", &[])
+            .unwrap();
 
         inproc.kill_pane(new).unwrap();
         let s = inproc.get_session(sid).unwrap();
@@ -2270,7 +2437,9 @@ mod tests {
         let inproc = InProcess::new();
         let sid = inproc.new_session("resize", "/bin/sh").unwrap();
         let origin = active_pane(&inproc, sid);
-        let _new = inproc.split_pane(origin, Direction::Right, "/bin/sh", &[]).unwrap();
+        let _new = inproc
+            .split_pane(origin, Direction::Right, "/bin/sh", &[])
+            .unwrap();
 
         let w_before = {
             let s = inproc.get_session(sid).unwrap();
@@ -2296,17 +2465,28 @@ mod tests {
         let wid = s0.active_window;
         let p0 = s0.windows[&wid].active_pane;
         // Build an arbitrary 3-pane shape: p0 | (p1 / p2).
-        let p1 = inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
-        let _p2 = inproc.split_pane(p1, Direction::Below, "/bin/sh", &[]).unwrap();
-        let before: std::collections::BTreeSet<PaneId> =
-            inproc.get_window(wid).unwrap().1.layout.panes().into_iter().collect();
+        let p1 = inproc
+            .split_pane(p0, Direction::Right, "/bin/sh", &[])
+            .unwrap();
+        let _p2 = inproc
+            .split_pane(p1, Direction::Below, "/bin/sh", &[])
+            .unwrap();
+        let before: std::collections::BTreeSet<PaneId> = inproc
+            .get_window(wid)
+            .unwrap()
+            .1
+            .layout
+            .panes()
+            .into_iter()
+            .collect();
 
         // Re-tile into an even horizontal row — panes keep their PTYs.
-        inproc.apply_layout(wid, LayoutKind::EvenHorizontal).unwrap();
+        inproc
+            .apply_layout(wid, LayoutKind::EvenHorizontal)
+            .unwrap();
 
         let w = inproc.get_window(wid).unwrap().1;
-        let after: std::collections::BTreeSet<PaneId> =
-            w.layout.panes().into_iter().collect();
+        let after: std::collections::BTreeSet<PaneId> = w.layout.panes().into_iter().collect();
         assert_eq!(before, after, "the same panes are preserved (PTYs kept)");
         w.layout.validate().unwrap();
         // EvenHorizontal of 3 = three equal thirds (the even-ratio refinement).
@@ -2322,7 +2502,9 @@ mod tests {
         let sid = inproc.new_session("custom", "/bin/sh").unwrap();
         let wid = inproc.get_session(sid).unwrap().active_window;
         let p0 = inproc.get_session(sid).unwrap().windows[&wid].active_pane;
-        inproc.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
+        inproc
+            .split_pane(p0, Direction::Right, "/bin/sh", &[])
+            .unwrap();
         let before = inproc.get_window(wid).unwrap().1.layout.clone();
         // Custom has no canonical arrangement → no-op.
         inproc.apply_layout(wid, LayoutKind::Custom).unwrap();
@@ -2357,7 +2539,11 @@ impl InProcess {
         &self,
         session: Option<SessionId>,
         engaged: bool,
-    ) -> (Vec<(SessionId, tear_types::Freio)>, Vec<PaneId>, Vec<PaneId>) {
+    ) -> (
+        Vec<(SessionId, tear_types::Freio)>,
+        Vec<PaneId>,
+        Vec<PaneId>,
+    ) {
         let at_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -2408,7 +2594,6 @@ impl InProcess {
 /// and widening the trait would force them to carry a concept they cannot
 /// honour. The trait verbs delegate here with `Yurai::Unknown`.
 impl InProcess {
-
     /// Spawn a session, recording WHO asked. See [`tear_types::yurai`].
     pub fn new_session_yurai(
         &self,
@@ -2433,9 +2618,16 @@ impl InProcess {
         if let Some(s) = r.sessions.get_mut(&sid) {
             s.source = source.clone();
         }
-        let Some((_wid, pane_id)) =
-            r.add_window(sid, "main", shell, args, cwd.as_deref(), &[], size, yurai.clone())
-        else {
+        let Some((_wid, pane_id)) = r.add_window(
+            sid,
+            "main",
+            shell,
+            args,
+            cwd.as_deref(),
+            &[],
+            size,
+            yurai.clone(),
+        ) else {
             return Err(ControlError::Internal(anyhow::anyhow!(
                 "registry.add_window returned None after fresh create_session"
             )));
@@ -2459,7 +2651,6 @@ impl InProcess {
         Ok(sid)
     }
 
-
     /// Open a window, recording WHO asked.
     pub fn new_window_yurai(
         &self,
@@ -2473,8 +2664,17 @@ impl InProcess {
         let cwd = self.spawn_env.read().cwd.clone();
         let (wid, pid) = {
             let mut r = self.registry.write();
-            r.add_window(session, name, shell, args, cwd.as_deref(), &[], size, yurai.clone())
-                .ok_or(ControlError::NoSuchSession(session))?
+            r.add_window(
+                session,
+                name,
+                shell,
+                args,
+                cwd.as_deref(),
+                &[],
+                size,
+                yurai.clone(),
+            )
+            .ok_or(ControlError::NoSuchSession(session))?
         };
         if let Err(e) = self.spawn_pty_for(pid, shell, args, size, yurai.clone()) {
             return Err(ControlError::Internal(e));
@@ -2482,7 +2682,6 @@ impl InProcess {
         info!(session = %session, window = %wid, name, "tear-core: new window");
         Ok(wid)
     }
-
 
     /// Split a pane, recording WHO asked.
     ///

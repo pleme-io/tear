@@ -159,7 +159,13 @@ fn realize_window(
     // of the whole plan — it holds the leftmost slot.
     let first_pane = backend.get_window(wid)?.1.active_pane;
     let mut slot_to_pane = BTreeMap::new();
-    realize_into(&window.layout, first_pane, specs, backend, &mut slot_to_pane)?;
+    realize_into(
+        &window.layout,
+        first_pane,
+        specs,
+        backend,
+        &mut slot_to_pane,
+    )?;
     // Focus the window's declared active slot.
     if let Some(&active) = slot_to_pane.get(&window.active_slot) {
         backend.select_pane(active)?;
@@ -359,7 +365,8 @@ mod tests {
     #[test]
     fn instantiate_single_pane_definition_spawns_one_pane_linked_to_its_def() {
         let backend = InProcess::new();
-        let def = SessionDefinition::single_pane("/code/pleme-io/mado", "/bin/sh", NameStyle::Emoji, 0);
+        let def =
+            SessionDefinition::single_pane("/code/pleme-io/mado", "/bin/sh", NameStyle::Emoji, 0);
         let live = instantiate(&def, &backend).unwrap();
         // The live session links back to the definition (illegal state #1/#5).
         assert_eq!(live.definition, def.def_id);
@@ -453,7 +460,10 @@ mod tests {
                 assert_eq!(*orientation, SplitOrientation::Vertical);
                 assert!(matches!(
                     b.as_ref(),
-                    tear_types::LayoutNode::Split { orientation: SplitOrientation::Horizontal, .. }
+                    tear_types::LayoutNode::Split {
+                        orientation: SplitOrientation::Horizontal,
+                        ..
+                    }
                 ));
             }
             tear_types::LayoutNode::Leaf { .. } => panic!("expected a split"),
@@ -464,7 +474,8 @@ mod tests {
     #[test]
     fn reinstantiate_yields_a_fresh_incarnation_of_the_same_definition() {
         let backend = InProcess::new();
-        let def = SessionDefinition::single_pane("/code/pleme-io/tear", "/bin/sh", NameStyle::Emoji, 0);
+        let def =
+            SessionDefinition::single_pane("/code/pleme-io/tear", "/bin/sh", NameStyle::Emoji, 0);
         let first = instantiate(&def, &backend).unwrap();
         let second = reinstantiate(&def, &backend).unwrap();
         // Same definition…
@@ -479,7 +490,9 @@ mod tests {
     fn shape(n: &tear_types::LayoutNode, out: &mut String) {
         match n {
             tear_types::LayoutNode::Leaf { .. } => out.push('L'),
-            tear_types::LayoutNode::Split { orientation, a, b, .. } => {
+            tear_types::LayoutNode::Split {
+                orientation, a, b, ..
+            } => {
                 out.push('(');
                 out.push(if *orientation == SplitOrientation::Vertical {
                     'V'
@@ -501,8 +514,12 @@ mod tests {
         let sid = backend.new_session("orig", "/bin/sh").unwrap();
         let w = backend.get_session(sid).unwrap().active_window;
         let p0 = backend.get_session(sid).unwrap().windows[&w].active_pane;
-        let p1 = backend.split_pane(p0, Direction::Right, "/bin/sh", &[]).unwrap();
-        backend.split_pane(p1, Direction::Below, "/bin/sh", &[]).unwrap();
+        let p1 = backend
+            .split_pane(p0, Direction::Right, "/bin/sh", &[])
+            .unwrap();
+        backend
+            .split_pane(p1, Direction::Below, "/bin/sh", &[])
+            .unwrap();
         let original = backend.get_session(sid).unwrap();
         let mut orig_shape = String::new();
         shape(&original.windows[&w].layout, &mut orig_shape);
@@ -574,8 +591,11 @@ mod tests {
         // And the round-trip closes: re-capturing the live session
         // recovers the same args, so capture→replay→capture is stable.
         let recaptured = SessionDefinition::from_live(&live.session, "/args", 0);
-        let mut seen: Vec<Vec<String>> =
-            recaptured.pane_specs.values().map(|s| s.args.clone()).collect();
+        let mut seen: Vec<Vec<String>> = recaptured
+            .pane_specs
+            .values()
+            .map(|s| s.args.clone())
+            .collect();
         seen.sort();
         let mut want = vec![left.args.clone(), right.args.clone()];
         want.sort();
@@ -589,7 +609,10 @@ mod tests {
         // Reference a slot with no spec → validate() fails → no spawn.
         def.windows.push(WindowPlan::single("orphan", PaneSlot(42)));
         let err = instantiate(&def, &backend).unwrap_err();
-        assert!(matches!(err, InstantiateError::Invalid(DefinitionError::MissingSpec(_))));
+        assert!(matches!(
+            err,
+            InstantiateError::Invalid(DefinitionError::MissingSpec(_))
+        ));
         // Nothing was spawned.
         assert!(backend.list_sessions().unwrap().is_empty());
     }

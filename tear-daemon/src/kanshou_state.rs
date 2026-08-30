@@ -38,26 +38,25 @@ impl Introspect for TearDaemonState {
         };
         match first {
             "sessions" => {
-                let summaries: Vec<serde_json::Value> =
-                    self.inproc.with_registry(|reg| {
-                        reg.sessions
-                            .iter()
-                            .map(|(sid, session)| {
-                                let pane_count: usize = session
-                                    .windows
-                                    .values()
-                                    .map(|w| w.layout.pane_count())
-                                    .sum();
-                                let window_count = session.windows.len();
-                                serde_json::json!({
-                                    "id": sid.to_string(),
-                                    "name": &session.name,
-                                    "window_count": window_count,
-                                    "pane_count": pane_count,
-                                })
+                let summaries: Vec<serde_json::Value> = self.inproc.with_registry(|reg| {
+                    reg.sessions
+                        .iter()
+                        .map(|(sid, session)| {
+                            let pane_count: usize = session
+                                .windows
+                                .values()
+                                .map(|w| w.layout.pane_count())
+                                .sum();
+                            let window_count = session.windows.len();
+                            serde_json::json!({
+                                "id": sid.to_string(),
+                                "name": &session.name,
+                                "window_count": window_count,
+                                "pane_count": pane_count,
                             })
-                            .collect()
-                    });
+                        })
+                        .collect()
+                });
                 Ok(serde_json::json!({
                     "count": summaries.len(),
                     "sessions": summaries,

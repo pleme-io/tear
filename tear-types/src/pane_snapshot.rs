@@ -23,7 +23,11 @@ pub struct Color {
 }
 
 impl Color {
-    pub const WHITE: Self = Self { r: 255, g: 255, b: 255 };
+    pub const WHITE: Self = Self {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
     pub const BLACK: Self = Self { r: 0, g: 0, b: 0 };
 
     #[must_use]
@@ -85,9 +89,7 @@ pub fn ansi_256_color(idx: u16, palette: &[Color; 16]) -> Color {
             let r_idx = idx / 36;
             let g_idx = (idx % 36) / 6;
             let b_idx = idx % 6;
-            let to_byte = |i: u16| -> u8 {
-                if i == 0 { 0 } else { (55 + 40 * i) as u8 }
-            };
+            let to_byte = |i: u16| -> u8 { if i == 0 { 0 } else { (55 + 40 * i) as u8 } };
             Color::new(to_byte(r_idx), to_byte(g_idx), to_byte(b_idx))
         }
         232..=255 => {
@@ -468,12 +470,7 @@ impl PaneSnapshot {
         // not touch DECTCEM, but ordering it this way removes the question).
         buf.extend_from_slice(b"\x1b[0m");
         // Position cursor (CSI is 1-based).
-        let _ = write!(
-            buf,
-            "\x1b[{};{}H",
-            self.cursor_row + 1,
-            self.cursor_col + 1
-        );
+        let _ = write!(buf, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
         // Cursor visibility.
         if !self.cursor_visible {
             buf.extend_from_slice(b"\x1b[?25l");
@@ -606,7 +603,10 @@ mod to_ansi_tests {
         hist[0].ch = 'Z';
         s.scrollback = vec![hist];
         let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
-        assert!(!text.contains('Z'), "alt-screen must not emit scrollback: {text:?}");
+        assert!(
+            !text.contains('Z'),
+            "alt-screen must not emit scrollback: {text:?}"
+        );
     }
 
     #[test]
@@ -668,13 +668,13 @@ mod to_ansi_tests {
     #[test]
     fn each_cellattr_flag_emits_matching_sgr() {
         let cases: &[(CellAttrs, &str)] = &[
-            (CellAttrs::BOLD,          "\x1b[1m"),
-            (CellAttrs::DIM,           "\x1b[2m"),
-            (CellAttrs::ITALIC,        "\x1b[3m"),
-            (CellAttrs::UNDERLINE,     "\x1b[4m"),
-            (CellAttrs::BLINK,         "\x1b[5m"),
-            (CellAttrs::INVERSE,       "\x1b[7m"),
-            (CellAttrs::HIDDEN,        "\x1b[8m"),
+            (CellAttrs::BOLD, "\x1b[1m"),
+            (CellAttrs::DIM, "\x1b[2m"),
+            (CellAttrs::ITALIC, "\x1b[3m"),
+            (CellAttrs::UNDERLINE, "\x1b[4m"),
+            (CellAttrs::BLINK, "\x1b[5m"),
+            (CellAttrs::INVERSE, "\x1b[7m"),
+            (CellAttrs::HIDDEN, "\x1b[8m"),
             (CellAttrs::STRIKETHROUGH, "\x1b[9m"),
         ];
         for (attr, expected_sgr) in cases {
@@ -779,7 +779,11 @@ mod to_ansi_tests {
         // don't accidentally truncate or omit rows.
         let s = snap_with(24, 80, '*');
         let bytes = s.to_ansi();
-        assert!(bytes.len() >= 1920, "expected >=1920 bytes, got {}", bytes.len());
+        assert!(
+            bytes.len() >= 1920,
+            "expected >=1920 bytes, got {}",
+            bytes.len()
+        );
         // All 24 row-position CSI sequences present.
         let text = String::from_utf8_lossy(&bytes);
         for row in 1..=24 {
@@ -839,12 +843,28 @@ fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell], combining: &[Vec<char>]
 }
 
 fn write_sgr_attrs(buf: &mut Vec<u8>, attrs: CellAttrs) {
-    if attrs.contains(CellAttrs::BOLD)          { buf.extend_from_slice(b"\x1b[1m"); }
-    if attrs.contains(CellAttrs::DIM)           { buf.extend_from_slice(b"\x1b[2m"); }
-    if attrs.contains(CellAttrs::ITALIC)        { buf.extend_from_slice(b"\x1b[3m"); }
-    if attrs.contains(CellAttrs::UNDERLINE)     { buf.extend_from_slice(b"\x1b[4m"); }
-    if attrs.contains(CellAttrs::BLINK)         { buf.extend_from_slice(b"\x1b[5m"); }
-    if attrs.contains(CellAttrs::INVERSE)       { buf.extend_from_slice(b"\x1b[7m"); }
-    if attrs.contains(CellAttrs::HIDDEN)        { buf.extend_from_slice(b"\x1b[8m"); }
-    if attrs.contains(CellAttrs::STRIKETHROUGH) { buf.extend_from_slice(b"\x1b[9m"); }
+    if attrs.contains(CellAttrs::BOLD) {
+        buf.extend_from_slice(b"\x1b[1m");
+    }
+    if attrs.contains(CellAttrs::DIM) {
+        buf.extend_from_slice(b"\x1b[2m");
+    }
+    if attrs.contains(CellAttrs::ITALIC) {
+        buf.extend_from_slice(b"\x1b[3m");
+    }
+    if attrs.contains(CellAttrs::UNDERLINE) {
+        buf.extend_from_slice(b"\x1b[4m");
+    }
+    if attrs.contains(CellAttrs::BLINK) {
+        buf.extend_from_slice(b"\x1b[5m");
+    }
+    if attrs.contains(CellAttrs::INVERSE) {
+        buf.extend_from_slice(b"\x1b[7m");
+    }
+    if attrs.contains(CellAttrs::HIDDEN) {
+        buf.extend_from_slice(b"\x1b[8m");
+    }
+    if attrs.contains(CellAttrs::STRIKETHROUGH) {
+        buf.extend_from_slice(b"\x1b[9m");
+    }
 }

@@ -25,7 +25,7 @@ use std::thread;
 use serde::Deserialize;
 
 use tear_client::Client;
-use tear_types::wire::{read_msg, write_msg, Response};
+use tear_types::wire::{Response, read_msg, write_msg};
 use tear_types::{Capability, ControlError, MultiplexerControl, SessionId, WindowId};
 
 // ── The pre-capability daemon, reconstructed ─────────────────────
@@ -219,8 +219,14 @@ fn spawn_args_is_refused_at_the_call_site_and_only_there() {
     match err {
         ControlError::Unsupported { capability, detail } => {
             assert_eq!(capability, "spawn-args");
-            assert!(detail.contains("new_window was given 1 argument(s)"), "{detail}");
-            assert!(detail.contains("predates capability negotiation"), "{detail}");
+            assert!(
+                detail.contains("new_window was given 1 argument(s)"),
+                "{detail}"
+            );
+            assert!(
+                detail.contains("predates capability negotiation"),
+                "{detail}"
+            );
         }
         other => panic!("expected ControlError::Unsupported, got: {other:?}"),
     }
@@ -257,7 +263,13 @@ fn spawn_args_is_refused_at_the_call_site_and_only_there() {
             .unwrap_err(),
     ] {
         assert!(
-            matches!(err, ControlError::Unsupported { capability: "spawn-args", .. }),
+            matches!(
+                err,
+                ControlError::Unsupported {
+                    capability: "spawn-args",
+                    ..
+                }
+            ),
             "got: {err:?}"
         );
     }

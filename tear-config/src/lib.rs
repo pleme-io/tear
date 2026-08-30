@@ -46,8 +46,8 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -451,17 +451,11 @@ fn default_status() -> StatusBar {
                 signal: TearSignalKind::SessionActive,
                 mode: SignalRenderMode::Emoji,
             },
-            Segment::Text {
-                value: " [".into(),
-            },
+            Segment::Text { value: " [".into() },
             Segment::SessionName,
-            Segment::Text {
-                value: ":".into(),
-            },
+            Segment::Text { value: ":".into() },
             Segment::WindowName,
-            Segment::Text {
-                value: "] ".into(),
-            },
+            Segment::Text { value: "] ".into() },
         ],
         center: vec![],
         right: vec![
@@ -624,10 +618,12 @@ impl Default for LiveConfig {
                     std::path::Path::new("/dev/null/tear-defaults-missing"),
                     "TEAR_",
                 )
-                .unwrap_or_else(|_| panic!(
-                    "shikumi defaults-only load failed (both real path \
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "shikumi defaults-only load failed (both real path \
                      and synthetic path errored); please file a bug"
-                ))
+                    )
+                })
             }
         };
         Self {
@@ -653,7 +649,10 @@ impl LiveConfig {
     /// unsubscribe — the next broadcast prunes the dead sender.
     pub fn subscribe(&self) -> mpsc::Receiver<Arc<TearConfig>> {
         let (tx, rx) = mpsc::channel();
-        self.subscribers.lock().expect("subscribers poisoned").push(tx);
+        self.subscribers
+            .lock()
+            .expect("subscribers poisoned")
+            .push(tx);
         rx
     }
 
@@ -712,30 +711,31 @@ impl LiveConfig {
         let debounce_ms = self.load().reload_debounce_ms;
         let last_reload = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(ev) = res else {
-                return;
-            };
-            // Only react to writes / creates — ignore access events.
-            if !matches!(
-                ev.kind,
-                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-            ) {
-                return;
-            }
-            // Debounce — coalesce bursts (operator saving in vim
-            // commonly emits 3-4 events back to back).
-            {
-                let mut last = last_reload.lock().unwrap();
-                if last.elapsed() < Duration::from_millis(debounce_ms) {
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                let Ok(ev) = res else {
+                    return;
+                };
+                // Only react to writes / creates — ignore access events.
+                if !matches!(
+                    ev.kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                ) {
                     return;
                 }
-                *last = std::time::Instant::now();
-            }
-            if let Err(e) = live.reload() {
-                warn!(error = %e, "tear-config reload failed; keeping previous config");
-            }
-        })?;
+                // Debounce — coalesce bursts (operator saving in vim
+                // commonly emits 3-4 events back to back).
+                {
+                    let mut last = last_reload.lock().unwrap();
+                    if last.elapsed() < Duration::from_millis(debounce_ms) {
+                        return;
+                    }
+                    *last = std::time::Instant::now();
+                }
+                if let Err(e) = live.reload() {
+                    warn!(error = %e, "tear-config reload failed; keeping previous config");
+                }
+            })?;
         watcher.watch(&parent, RecursiveMode::NonRecursive)?;
         info!(?parent, "tear-config: watching for changes");
         Ok(watcher)
@@ -979,7 +979,10 @@ mod tests {
     #[test]
     fn valid_values_resolve_exactly_where_they_did_before() {
         assert_eq!(
-            config_path_from(Some("/etc/tear/custom.yaml".into()), &places(&[("HOME", "/h")])),
+            config_path_from(
+                Some("/etc/tear/custom.yaml".into()),
+                &places(&[("HOME", "/h")])
+            ),
             PathBuf::from("/etc/tear/custom.yaml"),
             "an absolute TEAR_CONFIG_FILE still wins outright",
         );
@@ -1017,11 +1020,15 @@ mod tests {
         use tear_types::Action;
         let cfg = TearConfig::default();
         assert!(
-            cfg.keys.iter().any(|k| matches!(k.action, Action::SplitPane { .. })),
+            cfg.keys
+                .iter()
+                .any(|k| matches!(k.action, Action::SplitPane { .. })),
             "default keys should include a split-pane binding"
         );
         assert!(
-            cfg.keys.iter().any(|k| matches!(k.action, Action::ReloadConfig)),
+            cfg.keys
+                .iter()
+                .any(|k| matches!(k.action, Action::ReloadConfig)),
             "default keys should include a reload-config binding"
         );
     }
@@ -1055,7 +1062,10 @@ mod tests {
         cfg.audit_log = Some("~/.local/share/tear/audit.log".into());
         let y = serde_yaml_ng::to_string(&cfg).unwrap();
         let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
-        assert_eq!(back.audit_log.as_deref(), Some("~/.local/share/tear/audit.log"));
+        assert_eq!(
+            back.audit_log.as_deref(),
+            Some("~/.local/share/tear/audit.log")
+        );
     }
 
     #[test]

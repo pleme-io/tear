@@ -133,7 +133,10 @@ mod tests {
         reg.register(def, SessionId(3));
         // The shape the old 1:1 ProjectBinding could not represent.
         assert_eq!(reg.instance_count(def), 3);
-        assert_eq!(reg.instances_of(def).collect::<Vec<_>>(), vec![SessionId(1), SessionId(2), SessionId(3)]);
+        assert_eq!(
+            reg.instances_of(def).collect::<Vec<_>>(),
+            vec![SessionId(1), SessionId(2), SessionId(3)]
+        );
         assert_eq!(reg.first_instance(def), Some(SessionId(1)));
     }
 
@@ -182,8 +185,14 @@ mod tests {
             (Path::new("/b"), SessionId(2)),
         ];
         let reg = InstanceRegistry::from_project_bindings(bindings);
-        assert_eq!(reg.def_for(SessionId(1)), Some(DefinitionId::from_project(Path::new("/a"))));
-        assert_eq!(reg.def_for(SessionId(2)), Some(DefinitionId::from_project(Path::new("/b"))));
+        assert_eq!(
+            reg.def_for(SessionId(1)),
+            Some(DefinitionId::from_project(Path::new("/a")))
+        );
+        assert_eq!(
+            reg.def_for(SessionId(2)),
+            Some(DefinitionId::from_project(Path::new("/b")))
+        );
         assert_eq!(reg.total_instances(), 2);
     }
 }

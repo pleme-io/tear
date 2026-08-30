@@ -41,6 +41,6 @@ mod espelho_conformance;
 
 pub use blocks::{Block, BlockExtractor};
 pub use inproc::InProcess;
-pub use reap::AllPanesExited;
 pub use pane_grid::{Cell, PaneGrid, PaneSnapshot};
+pub use reap::AllPanesExited;
 pub use recording::{PaneEvent, PaneRecording};

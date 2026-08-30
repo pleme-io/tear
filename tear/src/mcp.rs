@@ -71,7 +71,9 @@ impl TearMcp {
 
 #[tool_router]
 impl TearMcp {
-    #[tool(description = "Daemon status: uptime_s, rss_bytes, cpu_pct (over the last sample window), socket path, total_panes, total_subscribers, total_bytes_consumed (sum across all panes from start). Reports the daemon's resource footprint at a glance so the agent can spot 'is tear leaking RSS over a long session?' or 'is the daemon spinning a CPU?' without leaving the conversation.")]
+    #[tool(
+        description = "Daemon status: uptime_s, rss_bytes, cpu_pct (over the last sample window), socket path, total_panes, total_subscribers, total_bytes_consumed (sum across all panes from start). Reports the daemon's resource footprint at a glance so the agent can spot 'is tear leaking RSS over a long session?' or 'is the daemon spinning a CPU?' without leaving the conversation."
+    )]
     async fn daemon_status(&self) -> String {
         // Open client to resolve daemon pid via socket peer
         // metadata. portable_pty/UnixStream doesn't expose peer
@@ -84,8 +86,14 @@ impl TearMcp {
         let mut sys = System::new();
         sys.refresh_all();
         let daemon_pid = sys.processes().iter().find_map(|(pid, p)| {
-            let cmd: Vec<String> = p.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect();
-            if cmd.iter().any(|s| s == "daemon") && cmd.iter().any(|s| s.ends_with("/tear") || s == "tear") {
+            let cmd: Vec<String> = p
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().to_string())
+                .collect();
+            if cmd.iter().any(|s| s == "daemon")
+                && cmd.iter().any(|s| s.ends_with("/tear") || s == "tear")
+            {
                 Some((pid.as_u32(), p.memory(), p.cpu_usage()))
             } else {
                 None
@@ -141,7 +149,9 @@ impl TearMcp {
         kotae::Answer::found(&st).render()
     }
 
-    #[tool(description = "System-wide resource snapshot: total_mem_bytes, used_mem_bytes, available_mem_bytes, cpu_count, load_avg (1m/5m/15m on unix; null on windows). Use alongside daemon_status to answer 'is tear the bottleneck or is the host saturated?' Pure read of /proc-style sysinfo — no daemon round-trip.")]
+    #[tool(
+        description = "System-wide resource snapshot: total_mem_bytes, used_mem_bytes, available_mem_bytes, cpu_count, load_avg (1m/5m/15m on unix; null on windows). Use alongside daemon_status to answer 'is tear the bottleneck or is the host saturated?' Pure read of /proc-style sysinfo — no daemon round-trip."
+    )]
     async fn system_resources(&self) -> String {
         let mut sys = System::new();
         sys.refresh_memory();
@@ -169,7 +179,9 @@ impl TearMcp {
         kotae::Answer::found(&s).render()
     }
 
-    #[tool(description = "List every live session with summary: id, name, source (human/agent/named/<label>), window_count, pane_count, state (active/detached). Sorted by creation time (oldest first). For pane-level detail call `pane_stats` with a specific pane id.")]
+    #[tool(
+        description = "List every live session with summary: id, name, source (human/agent/named/<label>), window_count, pane_count, state (active/detached). Sorted by creation time (oldest first). For pane-level detail call `pane_stats` with a specific pane id."
+    )]
     async fn list_sessions(&self) -> String {
         let c = match self.client() {
             Ok(c) => c,
@@ -202,12 +214,22 @@ impl TearMcp {
         kotae::Answer::found(&rows).render()
     }
 
-    #[tool(description = "Per-pane metrics: subscriber_count (number of byte-stream consumers attached — mado windows, recording sinks, etc.), input_policy (Free/Locked/Leader), size_cells. Use to investigate 'which pane is being watched the most' or 'why isn't my mado seeing output' (subscriber_count = 0 means nothing's listening).")]
-    async fn pane_stats(&self, params: rmcp::handler::server::wrapper::Parameters<PaneIdInput>) -> String {
+    #[tool(
+        description = "Per-pane metrics: subscriber_count (number of byte-stream consumers attached — mado windows, recording sinks, etc.), input_policy (Free/Locked/Leader), size_cells. Use to investigate 'which pane is being watched the most' or 'why isn't my mado seeing output' (subscriber_count = 0 means nothing's listening)."
+    )]
+    async fn pane_stats(
+        &self,
+        params: rmcp::handler::server::wrapper::Parameters<PaneIdInput>,
+    ) -> String {
         let pane_id_str = &params.0.pane_id;
         let pane_id: tear_types::PaneId = match pane_id_str.parse() {
             Ok(p) => p,
-            Err(e) => return kotae::Answer::refused_flatly(format!("invalid pane_id `{pane_id_str}`: {e}")).render(),
+            Err(e) => {
+                return kotae::Answer::refused_flatly(format!(
+                    "invalid pane_id `{pane_id_str}`: {e}"
+                ))
+                .render();
+            }
         };
         let c = match self.client() {
             Ok(c) => c,
@@ -238,8 +260,13 @@ impl TearMcp {
         kotae::Answer::found(&s).render()
     }
 
-    #[tool(description = "Top panes by subscriber count (descending). Surfaces 'which pane is fanning out to the most consumers right now.' Returns up to `limit` rows (default 10) with id, name (session), shell, subscriber_count.")]
-    async fn top_panes(&self, params: rmcp::handler::server::wrapper::Parameters<TopPanesInput>) -> String {
+    #[tool(
+        description = "Top panes by subscriber count (descending). Surfaces 'which pane is fanning out to the most consumers right now.' Returns up to `limit` rows (default 10) with id, name (session), shell, subscriber_count."
+    )]
+    async fn top_panes(
+        &self,
+        params: rmcp::handler::server::wrapper::Parameters<TopPanesInput>,
+    ) -> String {
         let limit = params.0.limit.unwrap_or(10).max(1) as usize;
         let c = match self.client() {
             Ok(c) => c,
@@ -273,7 +300,9 @@ impl TearMcp {
         kotae::Answer::found(&rows).render()
     }
 
-    #[tool(description = "Capture a pane's currently-rendered cell grid as text. Returns rows × cols of unicode (one string per row), plus cursor_row / cursor_col / cursor_visible and pane size. The 'what does the screen look like RIGHT NOW' tool — use to verify a TUI is rendering correctly, see what prompt is showing, confirm a command output landed, or debug 'mado shows X but tear says Y' divergence. Strips color/attrs (use mado's snapshot_grid for those). Returns {error} if pane id is invalid or daemon refuses (passthrough backends like tear-tmux-backend can't snapshot).")]
+    #[tool(
+        description = "Capture a pane's currently-rendered cell grid as text. Returns rows × cols of unicode (one string per row), plus cursor_row / cursor_col / cursor_visible and pane size. The 'what does the screen look like RIGHT NOW' tool — use to verify a TUI is rendering correctly, see what prompt is showing, confirm a command output landed, or debug 'mado shows X but tear says Y' divergence. Strips color/attrs (use mado's snapshot_grid for those). Returns {error} if pane id is invalid or daemon refuses (passthrough backends like tear-tmux-backend can't snapshot)."
+    )]
     async fn pane_snapshot_text(
         &self,
         params: rmcp::handler::server::wrapper::Parameters<PaneIdInput>,
@@ -281,7 +310,12 @@ impl TearMcp {
         let pane_id_str = &params.0.pane_id;
         let pane_id: tear_types::PaneId = match pane_id_str.parse() {
             Ok(p) => p,
-            Err(e) => return kotae::Answer::refused_flatly(format!("invalid pane_id `{pane_id_str}`: {e}")).render(),
+            Err(e) => {
+                return kotae::Answer::refused_flatly(format!(
+                    "invalid pane_id `{pane_id_str}`: {e}"
+                ))
+                .render();
+            }
         };
         let c = match self.client() {
             Ok(c) => c,
@@ -298,7 +332,8 @@ impl TearMcp {
                 let s: String = row.iter().map(|c| c.ch).collect();
                 // Trim trailing blanks (NULs and spaces) for compact output;
                 // cursor_col is still authoritative for cursor position.
-                s.trim_end_matches(|c: char| c == ' ' || c == '\0').to_string()
+                s.trim_end_matches(|c: char| c == ' ' || c == '\0')
+                    .to_string()
             })
             .collect();
         #[derive(Serialize)]
@@ -323,7 +358,9 @@ impl TearMcp {
         kotae::Answer::found(&s).render()
     }
 
-    #[tool(description = "Full session detail: id, name, source, state, windows (with their panes), creation time. Drills past list_sessions' summary into the full tree so an agent can walk a session's full structure in one call. Returns {error} if session id is invalid.")]
+    #[tool(
+        description = "Full session detail: id, name, source, state, windows (with their panes), creation time. Drills past list_sessions' summary into the full tree so an agent can walk a session's full structure in one call. Returns {error} if session id is invalid."
+    )]
     async fn session_detail(
         &self,
         params: rmcp::handler::server::wrapper::Parameters<SessionIdInput>,
@@ -332,7 +369,10 @@ impl TearMcp {
         let session_id: tear_types::SessionId = match session_id_str.parse() {
             Ok(s) => s,
             Err(e) => {
-                return kotae::Answer::refused_flatly(format!("invalid session_id `{session_id_str}`: {e}")).render();
+                return kotae::Answer::refused_flatly(format!(
+                    "invalid session_id `{session_id_str}`: {e}"
+                ))
+                .render();
             }
         };
         let c = match self.client() {
@@ -347,7 +387,9 @@ impl TearMcp {
         kotae::Answer::found(&s).render()
     }
 
-    #[tool(description = "Flat list of every pane across every session: pane_id, session_id, session_name, shell, size_cells, subscriber_count, input_policy, state. Cheaper than calling list_sessions + N × pane_stats; the canonical 'show me everything live' surface. Sorted by session_name then pane creation order.")]
+    #[tool(
+        description = "Flat list of every pane across every session: pane_id, session_id, session_name, shell, size_cells, subscriber_count, input_policy, state. Cheaper than calling list_sessions + N × pane_stats; the canonical 'show me everything live' surface. Sorted by session_name then pane creation order."
+    )]
     async fn list_panes(&self) -> String {
         let c = match self.client() {
             Ok(c) => c,
@@ -388,7 +430,9 @@ impl TearMcp {
         kotae::Answer::found(&rows).render()
     }
 
-    #[tool(description = "Daemon socket + connectivity surface: socket_path, exists, can_connect, peer_metadata_supported. Use first when diagnosing 'is the daemon reachable at all' — separates 'socket file missing' from 'socket exists but daemon dead' from 'daemon alive but rejecting our user'.")]
+    #[tool(
+        description = "Daemon socket + connectivity surface: socket_path, exists, can_connect, peer_metadata_supported. Use first when diagnosing 'is the daemon reachable at all' — separates 'socket file missing' from 'socket exists but daemon dead' from 'daemon alive but rejecting our user'."
+    )]
     async fn socket_info(&self) -> String {
         let socket_path = self.socket_path.clone();
         let exists = socket_path.exists();
@@ -401,7 +445,9 @@ impl TearMcp {
         .to_string()
     }
 
-    #[tool(description = "Round-trip a connect + list_sessions call to the daemon and report wall-time. Use to confirm the daemon's accept loop is responding (catches the 'looks alive but RPCs stall' class of bug). Returns {ok: bool, latency_ms: f64, error: Option<str>}.")]
+    #[tool(
+        description = "Round-trip a connect + list_sessions call to the daemon and report wall-time. Use to confirm the daemon's accept loop is responding (catches the 'looks alive but RPCs stall' class of bug). Returns {ok: bool, latency_ms: f64, error: Option<str>}."
+    )]
     async fn ping(&self) -> String {
         let start = Instant::now();
         let (ok, err) = match self.client() {

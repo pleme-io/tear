@@ -136,8 +136,7 @@ mod tests {
     /// touching `FleetDefaults::prescribed()` moves tear and mado together.
     #[test]
     fn default_equals_from_fleet_prescribed() {
-        let prescribed =
-            TearTheme::from_fleet(&ishou_tokens::FleetDefaults::prescribed());
+        let prescribed = TearTheme::from_fleet(&ishou_tokens::FleetDefaults::prescribed());
         assert_eq!(TearTheme::default(), prescribed);
     }
 
@@ -157,18 +156,43 @@ mod tests {
         assert_eq!(theme.active_bg.0, resolved.ansi_16[14]);
         assert_eq!(theme.border_active.0, resolved.ansi_16[14]);
         assert_eq!(theme.message_bg.0, resolved.ansi_16[3]);
-        // Today the fleet prescribed theme is Vellum (warm Nord-matte) —
-        // NOT classic Nord. Tear converges onto the fleet truth.
-        assert_eq!(resolved.name, "vellum");
+        // ★ CORRECTED 2026-08-30. This asserted "vellum" and had been RED on
+        // main. The fact moved under it: ishou `395c331 feat(fleet-theme):
+        // Nord dark is the prescribed fleet default` changed what
+        // `FleetDefaults::prescribed()` resolves to. The test was right and
+        // its expectation was stale — which is the drift it exists to catch,
+        // caught. Tear converges onto the fleet truth, whatever that is.
+        assert_eq!(resolved.name, "pleme_dark");
     }
 
-    /// The explicit `"nord"` named theme stays classic Nord (distinct
-    /// from the Vellum default) and still sources its hex from ishou.
+    /// The explicit `"nord"` named theme sources every hex from ishou rather
+    /// than hardcoding it.
+    ///
+    /// ★ REWRITTEN 2026-08-30, premise-first rather than expectation-first.
+    /// This test used to assert `nord.bg != default().bg` — that classic Nord
+    /// is DISTINCT from the fleet default. Since ishou `395c331` made Nord
+    /// dark the prescribed default, `nord()` and `default()` both resolve
+    /// `FleetTheme::PlemeDark` and differ only in `name`, so the old
+    /// assertion asserted something the fleet had deliberately made false. It
+    /// failed printing two identical values — `#2E3440` on both sides — which
+    /// reads as a broken test rather than a stale premise.
+    ///
+    /// Re-pointing the expectation at today's colours would have been the
+    /// weaker fix: it would go red again the next time the fleet default
+    /// moves, for a reason that is not tear's business. What IS tear's
+    /// business, and what the old test was really protecting, is that
+    /// `nord()` never drifts into hardcoded hex. That invariant holds
+    /// whatever the fleet default becomes.
     #[test]
-    fn nord_is_classic_nord_distinct_from_default() {
+    fn nord_sources_every_hex_from_ishou() {
         let nord = TearTheme::nord();
-        assert_eq!(nord.name, "nord");
-        // Classic Nord background differs from the Vellum default.
-        assert_ne!(nord.bg, TearTheme::default().bg);
+        let resolved = ishou_tokens::FleetTheme::PlemeDark.resolve();
+        assert_eq!(nord.name, "nord", "the NAME is tear's, the colours are not");
+        assert_eq!(nord.fg.0, resolved.foreground);
+        assert_eq!(nord.bg.0, resolved.background);
+        assert_eq!(nord.active_bg.0, resolved.ansi_16[14]);
+        assert_eq!(nord.border_active.0, resolved.ansi_16[14]);
+        assert_eq!(nord.border_inactive.0, resolved.ansi_16[8]);
+        assert_eq!(nord.message_bg.0, resolved.ansi_16[3]);
     }
 }
