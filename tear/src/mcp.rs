@@ -86,6 +86,26 @@ impl TearMcp {
         let mut sys = System::new();
         sys.refresh_all();
         let daemon_pid = sys.processes().iter().find_map(|(pid, p)| {
+            // ★ SKIP THREADS. On Linux `sys.processes()` also yields TASKS,
+            // and a thread INHERITS its process's argv — so the cmdline match
+            // below cannot tell one from the other, and `find_map` returns
+            // whichever the map iterates first.
+            //
+            // Measured on plo 2026-09-02: `daemon_status` reported
+            // `daemon_pid: 774217` while the daemon was 774204.
+            // `ps -p 774217` says no such process; `/proc/774204/task` lists
+            // 774204 774214 774215 774216 774217 — the reported number was
+            // this crate's own kanshou sidecar thread. An operator who checks
+            // the pid we hand them concludes the daemon is DEAD while it is
+            // serving normally, which is the worst direction for a field
+            // named `daemon_pid` to be wrong in.
+            //
+            // `thread_kind()` is `None` exactly for real processes, and is
+            // always `None` on macOS, so this is a no-op there rather than a
+            // platform fork.
+            if p.thread_kind().is_some() {
+                return None;
+            }
             let cmd: Vec<String> = p
                 .cmd()
                 .iter()
