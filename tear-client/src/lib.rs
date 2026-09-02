@@ -11,8 +11,17 @@
 //! `MultiplexerControl` call:
 //!
 //! 1. Acquires the mutex.
-//! 2. Writes a length-prefixed bincode [`Request`].
-//! 3. Reads a length-prefixed bincode [`Response`].
+//! 2. Writes a length-prefixed CBOR [`Request`].
+//! 3. Reads a length-prefixed CBOR [`Response`].
+//!
+//! The framing is 4-byte big-endian length-prefixed CBOR (RFC 8949)
+//! via `ciborium` — see [`tear_types::wire`], which owns the codec
+//! and the reasoning. This paragraph said "bincode" until 2026-09-02;
+//! bincode was evaluated and REJECTED (it cannot encode
+//! `LayoutNode`'s internally-tagged enum) and never shipped. The
+//! distinction is not cosmetic: CBOR is platform-independent, so a
+//! darwin client and a linux daemon share one wire, and a
+//! cross-platform connection failure is never explained by the codec.
 //! 4. Decodes the response variant into the trait's return type.
 //!
 //! The mutex serialises requests within one `Client`. Multiple
