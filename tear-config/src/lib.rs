@@ -266,8 +266,6 @@ pub struct ScrollbackConfig {
 pub fn unimplemented_scrollback_knobs(c: &ScrollbackConfig) -> Vec<&'static str> {
     let d = ScrollbackConfig::default();
     let mut out = Vec::new();
-    // `rows` is deliberately absent: it is the one knob with a consumer
-    // (`PaneGrid::with_scrollback`) — see the note on wiring it through.
     if c.max_bytes != d.max_bytes {
         out.push("scrollback.max_bytes");
     }
@@ -283,13 +281,10 @@ pub fn unimplemented_scrollback_knobs(c: &ScrollbackConfig) -> Vec<&'static str>
     if c.reflow_on_resize != d.reflow_on_resize {
         out.push("scrollback.reflow_on_resize");
     }
-    if c.rows != d.rows {
-        // Honest until the thread from the daemon's live config into
-        // `spawn_pty_for` lands: `InProcess` does not hold a `TearConfig`
-        // today, so this one is inert too — it is simply the one whose
-        // consumer already exists.
-        out.push("scrollback.rows");
-    }
+    // `rows` is NOT listed: `InProcess::set_scrollback_rows` is its consumer
+    // as of 2026-09-20, called by the daemon on start, on `ReloadConfig` and
+    // on `SetConfig`. This list shrank by one, which is the only way it is
+    // supposed to move.
     out
 }
 
@@ -999,9 +994,18 @@ mod tests {
             ..ScrollbackConfig::default()
         };
         let named = unimplemented_scrollback_knobs(&c);
-        assert!(named.contains(&"scrollback.rows"), "{named:?}");
         assert!(named.contains(&"scrollback.max_bytes"), "{named:?}");
-        assert_eq!(named.len(), 2, "only what was actually set: {named:?}");
+        // ★ `rows` LEFT THIS LIST ON 2026-09-20, when
+        // `InProcess::set_scrollback_rows` became its consumer — the daemon
+        // calls it on start, on `ReloadConfig` and on `SetConfig`. The
+        // assertion is kept pointing AT the absence rather than deleted: this
+        // list is only supposed to shrink, and a knob quietly reappearing in
+        // it would mean a consumer was removed.
+        assert!(
+            !named.contains(&"scrollback.rows"),
+            "rows has a consumer — it must not be reported as inert: {named:?}"
+        );
+        assert_eq!(named.len(), 1, "only what was actually set: {named:?}");
 
         // Every boolean is covered, both directions from its own default.
         c = ScrollbackConfig {

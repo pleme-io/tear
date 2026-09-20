@@ -98,6 +98,20 @@ pub struct InProcess {
     /// is the fix for "vim grey + wrong font in the embedded-tear
     /// window" (operator report 2026-06-12).
     spawn_env: Arc<RwLock<tear_types::SpawnEnv>>,
+    /// Scrollback rows a NEW pane's grid is built with.
+    ///
+    /// ── ★ THREADED FROM THE DAEMON'S LIVE CONFIG (2026-09-20) ───────────
+    /// `spawn_pty_for` used `PaneGrid::new`, which takes
+    /// `DEFAULT_SCROLLBACK_ROWS` and never saw a `TearConfig` — so
+    /// `scrollback.rows` was parsed, stored, hot-reloaded, round-tripped
+    /// through `GetConfig`/`SetConfig`, and read by nothing.
+    ///
+    /// A plain `usize` behind the same `RwLock` shape `spawn_env` uses, NOT a
+    /// `TearConfig`: tear-core must not depend on tear-config, and the value
+    /// this layer needs is one number. Existing panes keep the depth they
+    /// were built with — a live change applies to the next pane, which is the
+    /// honest contract for a per-grid allocation.
+    scrollback_rows: Arc<RwLock<usize>>,
 }
 
 impl Default for InProcess {
@@ -117,7 +131,18 @@ impl InProcess {
             recordings: Arc::new(Mutex::new(BTreeMap::new())),
             socket_path: Arc::new(RwLock::new(None)),
             spawn_env: Arc::new(RwLock::new(tear_types::SpawnEnv::none())),
+            scrollback_rows: Arc::new(RwLock::new(crate::pane_grid::DEFAULT_SCROLLBACK_ROWS)),
         }
+    }
+
+    /// How many scrollback rows the NEXT pane's grid is built with.
+    ///
+    /// Called by the daemon from its live config — on start, on
+    /// `ReloadConfig`, and on `SetConfig` — so `scrollback.rows` has a
+    /// consumer. Idempotent; the last write wins, exactly like
+    /// [`Self::set_spawn_env`].
+    pub fn set_scrollback_rows(&self, rows: usize) {
+        *self.scrollback_rows.write() = rows;
     }
 
     /// Set the embedder's typed env + cwd override, applied to every
@@ -507,7 +532,11 @@ impl InProcess {
         // Allocate the per-pane grid and register it BEFORE spawning
         // the PTY — the reader thread starts immediately on spawn,
         // and we want the first bytes to find their grid.
-        let grid = Arc::new(Mutex::new(PaneGrid::new(size.0 as usize, size.1 as usize)));
+        let grid = Arc::new(Mutex::new(PaneGrid::with_scrollback(
+            size.0 as usize,
+            size.1 as usize,
+            *self.scrollback_rows.read(),
+        )));
         // Stamp provenance BEFORE the grid is registered, so the
         // first byte the reader thread feeds already lands in an
         // attributed extractor. Registering first would leave a

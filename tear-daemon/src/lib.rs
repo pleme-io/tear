@@ -423,6 +423,13 @@ pub fn start_with_config(
     }
     let listener = UnixListener::bind(&socket_path)?;
 
+    // ★ THE CONFIG'S FIRST CONSUMER, AT START. `scrollback.rows` was parsed,
+    // stored, hot-reloaded and round-tripped through `GetConfig`/`SetConfig`
+    // while `spawn_pty_for` built every grid with `PaneGrid::new`'s
+    // `DEFAULT_SCROLLBACK_ROWS`. Applied here, on `ReloadConfig`, and on
+    // `SetConfig` — the three places the live config can change.
+    inproc.set_scrollback_rows(live_config.load().scrollback.rows);
+
     // ── Socket sovereignty ──────────────────────────────────────
     //
     // Connecting to a Unix socket requires the WRITE bit, so 0600
@@ -1279,7 +1286,10 @@ pub fn dispatch_with_shutai(
             }
         }
         Request::ReloadConfig => match config.reload() {
-            Ok(()) => Response::Ok,
+            Ok(()) => {
+                inproc.set_scrollback_rows(config.load().scrollback.rows);
+                Response::Ok
+            }
             Err(e) => Response::Err(WireError::Internal(format!("config reload failed: {e}"))),
         },
         Request::SetConfig(yaml) => {
@@ -1300,6 +1310,7 @@ pub fn dispatch_with_shutai(
                         );
                     }
                     let hash = hash_str(&yaml);
+                    inproc.set_scrollback_rows(cfg.scrollback.rows);
                     config.replace(cfg);
                     if let Some(a) = audit {
                         a.emit(&AuditEvent::SetConfig {
