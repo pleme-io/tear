@@ -249,6 +249,7 @@ mod tests {
             prompt: "$ ".into(),
             command: "cargo test".into(),
             output: "thread 'main' panicked at lib.rs:42\n".into(),
+            output_dropped_bytes: 0,
             exit_code: Some(101),
             started_at_unix_ms: 1_000,
             ended_at_unix_ms: Some(2_000),

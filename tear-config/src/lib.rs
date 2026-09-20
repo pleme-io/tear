@@ -243,6 +243,56 @@ pub struct ScrollbackConfig {
     pub reflow_on_resize: bool,
 }
 
+/// Which of `scrollback`'s knobs are set to a non-default value AND read by
+/// nothing.
+///
+/// ── ★ WHY THIS EXISTS (2026-09-20) ──────────────────────────────────────
+/// Every field of [`ScrollbackConfig`] is serialized, hot-reloaded and
+/// round-tripped through `GetConfig`/`SetConfig` — and read by nothing.
+/// `spawn_pty_for` builds every pane with `PaneGrid::new(cols, rows)`, which
+/// takes `DEFAULT_SCROLLBACK_ROWS` and never consults the config, and a
+/// workspace-wide grep for `max_bytes`, `keep_on_clear`, `on_alt_screen`,
+/// `skip_blank_rows` and `reflow_on_resize` finds hits only inside this file.
+///
+/// So `SetConfig` answered `Ok` and nothing changed. That is the defect — not
+/// that the features are unbuilt, which is a roadmap, but that the surface
+/// claimed to have accepted them.
+///
+/// Returns the field names an operator set and will not get. Empty is the
+/// normal case, and this list SHRINKS as each knob is wired — an entry here
+/// is a promise the daemon is refusing to make, in the one place a reader can
+/// find them all.
+#[must_use]
+pub fn unimplemented_scrollback_knobs(c: &ScrollbackConfig) -> Vec<&'static str> {
+    let d = ScrollbackConfig::default();
+    let mut out = Vec::new();
+    // `rows` is deliberately absent: it is the one knob with a consumer
+    // (`PaneGrid::with_scrollback`) — see the note on wiring it through.
+    if c.max_bytes != d.max_bytes {
+        out.push("scrollback.max_bytes");
+    }
+    if c.keep_on_clear != d.keep_on_clear {
+        out.push("scrollback.keep_on_clear");
+    }
+    if c.on_alt_screen != d.on_alt_screen {
+        out.push("scrollback.on_alt_screen");
+    }
+    if c.skip_blank_rows != d.skip_blank_rows {
+        out.push("scrollback.skip_blank_rows");
+    }
+    if c.reflow_on_resize != d.reflow_on_resize {
+        out.push("scrollback.reflow_on_resize");
+    }
+    if c.rows != d.rows {
+        // Honest until the thread from the daemon's live config into
+        // `spawn_pty_for` lands: `InProcess` does not hold a `TearConfig`
+        // today, so this one is inert too — it is simply the one whose
+        // consumer already exists.
+        out.push("scrollback.rows");
+    }
+    out
+}
+
 impl Default for ScrollbackConfig {
     fn default() -> Self {
         Self {
@@ -929,6 +979,41 @@ mod tiered_tests {
 
 #[cfg(test)]
 mod tests {
+    /// ★ A SETTING NOTHING READS MUST NOT ANSWER `Ok`.
+    ///
+    /// Every `scrollback` knob is parsed, stored, hot-reloaded and round-tripped
+    /// through `GetConfig`/`SetConfig` — and read by nothing. This is the list
+    /// `SetConfig` reports, and it SHRINKS as each knob gets a consumer: an
+    /// entry here is a promise the daemon is refusing to make.
+    #[test]
+    fn the_inert_scrollback_knobs_are_named_and_defaults_are_silent() {
+        let d = ScrollbackConfig::default();
+        assert!(
+            unimplemented_scrollback_knobs(&d).is_empty(),
+            "an untouched config must not warn about anything"
+        );
+
+        let mut c = ScrollbackConfig {
+            rows: 10_000,
+            max_bytes: Some(1 << 20),
+            ..ScrollbackConfig::default()
+        };
+        let named = unimplemented_scrollback_knobs(&c);
+        assert!(named.contains(&"scrollback.rows"), "{named:?}");
+        assert!(named.contains(&"scrollback.max_bytes"), "{named:?}");
+        assert_eq!(named.len(), 2, "only what was actually set: {named:?}");
+
+        // Every boolean is covered, both directions from its own default.
+        c = ScrollbackConfig {
+            keep_on_clear: !d.keep_on_clear,
+            on_alt_screen: !d.on_alt_screen,
+            skip_blank_rows: !d.skip_blank_rows,
+            reflow_on_resize: !d.reflow_on_resize,
+            ..ScrollbackConfig::default()
+        };
+        assert_eq!(unimplemented_scrollback_knobs(&c).len(), 4);
+    }
+
     use super::*;
 
     /// Build a resolver over an explicit environment — no `std::env`, so

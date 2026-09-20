@@ -41,6 +41,24 @@
 //! ring-buffer shape `PaneRecording` uses.
 
 use std::collections::VecDeque;
+
+/// Append `c` to `out` while it fits, counting what does not into `dropped`.
+///
+/// ★ ONE APPEND FOR BOTH CALLERS — `on_print` and `on_raw_byte` both feed the
+/// output phase, and a cap enforced in one of them is not a cap.
+///
+/// Truncates at the FRONT of the overflow rather than evicting from the head:
+/// the beginning of a command's output is the part a reader wants (the
+/// invocation, the first error), and a ring would keep the tail of a
+/// `journalctl -f` and throw the useful part away.
+fn push_bounded(out: &mut String, dropped: &mut usize, cap: usize, c: char) {
+    let n = c.len_utf8();
+    if out.len() + n <= cap {
+        out.push(c);
+    } else {
+        *dropped += n;
+    }
+}
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Re-export the wire shape so callers don't have to choose
@@ -63,9 +81,24 @@ enum Phase {
     Output,
 }
 
+/// How many bytes of ONE block's output are kept.
+///
+/// ★ THE BOUND THE MODULE HEADER CLAIMED AND DID NOT HAVE. The ring buffer
+/// caps the block COUNT; nothing capped a single block's `output`, and
+/// nothing capped the in-flight block at all. A `journalctl -f` or a large
+/// build grew the daemon's heap in lockstep with its stdout and kept it.
+///
+/// 1 MiB: enough that no interactive command is ever truncated, small enough
+/// that 10 000 blocks at the worst case is bounded rather than unbounded.
+/// The pane's own scrollback is where a reader goes for more, and
+/// `output_dropped_bytes` tells them to.
+pub const DEFAULT_BLOCK_OUTPUT_BYTES: usize = 1024 * 1024;
+
 pub struct BlockExtractor {
     blocks: VecDeque<Block>,
     cap: usize,
+    /// Bytes of output kept per block. See [`DEFAULT_BLOCK_OUTPUT_BYTES`].
+    output_cap: usize,
     current: Option<Block>,
     phase: Phase,
     next_index: u64,
@@ -87,9 +120,20 @@ impl Default for BlockExtractor {
 impl BlockExtractor {
     #[must_use]
     pub fn new(cap: usize) -> Self {
+        Self::with_output_cap(cap, DEFAULT_BLOCK_OUTPUT_BYTES)
+    }
+
+    /// [`Self::new`] with an explicit per-block output byte cap.
+    ///
+    /// A parameter rather than a hidden constant so whoever wires
+    /// `ScrollbackConfig` has one place to reach, instead of a second
+    /// unread knob.
+    #[must_use]
+    pub fn with_output_cap(cap: usize, output_cap: usize) -> Self {
         Self {
             blocks: VecDeque::new(),
             cap,
+            output_cap,
             current: None,
             phase: Phase::Idle,
             next_index: 0,
@@ -201,13 +245,19 @@ impl BlockExtractor {
     /// Append a printable char to whatever phase we're in.
     /// No-op when Idle. Called from the vte Perform::print hook.
     pub fn on_print(&mut self, c: char) {
+        let cap = self.output_cap;
         let Some(block) = self.current.as_mut() else {
             return;
         };
         match self.phase {
             Phase::Prompt => block.prompt.push(c),
             Phase::Command => block.command.push(c),
-            Phase::Output => block.output.push(c),
+            // ★ BOUNDED. `prompt` and `command` are not: a prompt is one line
+            // and a command is what the operator typed, both bounded by the
+            // shell. Output is the stream of an arbitrary program.
+            Phase::Output => {
+                push_bounded(&mut block.output, &mut block.output_dropped_bytes, cap, c)
+            }
             Phase::Idle => {}
         }
     }
@@ -218,13 +268,19 @@ impl BlockExtractor {
     /// keep only printable chars (escapes there are usually
     /// terminal-renderer concerns).
     pub fn on_raw_byte(&mut self, b: u8) {
+        let cap = self.output_cap;
         let Some(block) = self.current.as_mut() else {
             return;
         };
         if matches!(self.phase, Phase::Output) {
             // Push as UTF-8 — \r\n stays as-is, escape bytes
             // become control chars in the String.
-            block.output.push(b as char);
+            push_bounded(
+                &mut block.output,
+                &mut block.output_dropped_bytes,
+                cap,
+                b as char,
+            );
         }
     }
 
@@ -253,6 +309,7 @@ impl BlockExtractor {
             prompt: String::new(),
             command: String::new(),
             output: String::new(),
+            output_dropped_bytes: 0,
             exit_code: None,
             started_at_unix_ms: now,
             ended_at_unix_ms: None,
@@ -312,6 +369,40 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ ONE BLOCK'S OUTPUT WAS UNBOUNDED (2026-09-20).
+    ///
+    /// The module header presents the ring buffer as the storage bound, and it
+    /// bounds the block COUNT. Nothing bounded a single block's `output`, and
+    /// nothing bounded the in-flight block at all, so a `journalctl -f` grew
+    /// the daemon's heap in lockstep with its stdout — and kept it.
+    #[test]
+    fn a_blocks_output_is_capped_and_says_how_much_it_dropped() {
+        let mut bx = BlockExtractor::with_output_cap(8, 4);
+        bx.on_osc_133("A");
+        bx.on_osc_133("B");
+        bx.on_osc_133("C");
+        for c in "abcdefgh".chars() {
+            bx.on_print(c);
+        }
+        let b = bx.current().expect("a block is in flight");
+        assert_eq!(
+            b.output, "abcd",
+            "kept the FRONT — the invocation and the first error"
+        );
+        assert_eq!(b.output_dropped_bytes, 4, "and said how much went");
+
+        // ★ BOTH APPEND PATHS. `on_raw_byte` feeds the same phase, and a cap
+        // enforced in one of them is not a cap.
+        bx.on_raw_byte(b'z');
+        let b = bx.current().expect("still in flight");
+        assert_eq!(b.output, "abcd");
+        assert_eq!(b.output_dropped_bytes, 5);
+
+        // The other two phases are NOT capped, deliberately: a prompt is one
+        // line and a command is what the operator typed.
+        assert_eq!(b.prompt, "");
+    }
 
     #[test]
     fn idle_extractor_drops_prints() {

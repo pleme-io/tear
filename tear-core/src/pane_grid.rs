@@ -1706,6 +1706,26 @@ impl PaneGrid {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // ── ★ A RESIZE TO THE SAME SIZE IS NOT A RESIZE ─────────────────
+        //
+        // The tail of this function sets `scroll_top = 0` and
+        // `scroll_bottom = rows - 1`, so a redundant call silently RESETS the
+        // DECSTBM scroll region out from under a running TUI. mado's own
+        // `Terminal::resize` has carried exactly this guard for exactly this
+        // reason ("a redundant resize — e.g. an event-loop reconciler
+        // re-confirming the grid — silently resets DECSTBM scroll regions, tab
+        // stops, and wrap_pending"), and tear, which mirrors that grid, did
+        // not.
+        //
+        // It is reachable from production and not only in theory: mado's
+        // redraw tick gates `push_grid` on the PIXEL signature, so dragging a
+        // window edge by less than one cell leaves (cols, rows) unchanged —
+        // mado's mirror short-circuits on its own guard and `pane_resize_absolute`
+        // still reaches here. Run `less` or `vim`, nudge the window edge, and
+        // the scroll region is gone.
+        if self.state.cols == cols && self.state.rows == rows {
+            return;
+        }
         // Naive resize: preserve top-left, truncate / pad rest. The
         // full reflow algorithm (mado's grid-reflow.rs) lands when
         // we port the rest of the terminal state machine.
@@ -2359,6 +2379,35 @@ mod perf_measurements {
 mod tests {
     use super::*;
     use tear_types::pane_snapshot::{CellAttrs, Color};
+
+    /// ★ A REDUNDANT RESIZE SILENTLY RESET DECSTBM (2026-09-20).
+    ///
+    /// `resize`'s tail sets `scroll_top = 0` / `scroll_bottom = rows - 1`, and
+    /// nothing stopped a same-dimensions call from reaching it. mado's own
+    /// `Terminal::resize` has carried that guard from the start, for exactly
+    /// this reason; tear, which mirrors that grid, did not. Reachable from
+    /// production: mado's redraw tick gates on the PIXEL signature, so
+    /// dragging a window edge by less than one cell leaves (cols, rows)
+    /// unchanged and `pane_resize_absolute` still calls through.
+    #[test]
+    fn a_same_size_resize_does_not_reset_the_scroll_region() {
+        let mut g = PaneGrid::new(20, 24);
+        g.feed(b"\x1b[1;5r"); // DECSTBM rows 1-5
+        let (top, bottom) = (g.state.scroll_top, g.state.scroll_bottom);
+        assert_eq!((top, bottom), (0, 4), "DECSTBM must have taken");
+
+        g.resize(20, 24);
+        assert_eq!(
+            (g.state.scroll_top, g.state.scroll_bottom),
+            (top, bottom),
+            "a resize to the same size must leave the scroll region alone"
+        );
+
+        // …and a REAL resize still resets it, or the guard is just a disabled
+        // resize.
+        g.resize(20, 30);
+        assert_eq!((g.state.scroll_top, g.state.scroll_bottom), (0, 29));
+    }
 
     #[test]
     fn print_plain_text() {

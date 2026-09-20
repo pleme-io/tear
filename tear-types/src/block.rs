@@ -16,6 +16,21 @@ pub struct Block {
     pub prompt: String,
     pub command: String,
     pub output: String,
+    /// Bytes of output DROPPED because the block hit its byte cap.
+    ///
+    /// ── ★ THE CAP EXISTS BECAUSE THIS FIELD WAS UNBOUNDED ───────────────
+    /// `blocks.rs`'s own header presents the ring buffer as the storage
+    /// bound — "a configurable cap (default 10 000 blocks)… oldest blocks
+    /// evict first". That bounds the COUNT. Nothing bounded one block's
+    /// output, and nothing bounded the IN-FLIGHT block at all, so a single
+    /// `journalctl -f` or a large build grew the tear daemon's heap in
+    /// lockstep with its stdout and kept it afterwards.
+    ///
+    /// A COUNT and not a flag: a reader that has to decide whether to go to
+    /// the pane's scrollback instead needs to know how much is missing, and
+    /// a `usize` costs the same as a `bool`. Zero is the normal case.
+    #[serde(default)]
+    pub output_dropped_bytes: usize,
     pub exit_code: Option<i32>,
     pub started_at_unix_ms: u64,
     pub ended_at_unix_ms: Option<u64>,

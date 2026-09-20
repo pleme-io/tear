@@ -1285,6 +1285,20 @@ pub fn dispatch_with_shutai(
         Request::SetConfig(yaml) => {
             match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
                 Ok(cfg) => {
+                    // ★ SAY WHAT WAS NOT APPLIED. Every `scrollback` knob is
+                    // parsed, stored, hot-reloaded and read by NOTHING, and
+                    // this arm answered `Ok` — so an operator who set
+                    // `scrollback: { rows: 10000 }` got an acknowledgement and
+                    // an unchanged daemon, with nowhere to find out. A
+                    // rejection would be wrong (the YAML is valid and the
+                    // value IS stored); silence is worse.
+                    let inert = tear_config::unimplemented_scrollback_knobs(&cfg.scrollback);
+                    if !inert.is_empty() {
+                        tracing::warn!(
+                            knobs = ?inert,
+                            "SetConfig stored settings that NOTHING READS — they will not                              take effect"
+                        );
+                    }
                     let hash = hash_str(&yaml);
                     config.replace(cfg);
                     if let Some(a) = audit {
@@ -1293,7 +1307,14 @@ pub fn dispatch_with_shutai(
                             config_hash: hash,
                         });
                     }
-                    Response::Ok
+                    if inert.is_empty() {
+                        Response::Ok
+                    } else {
+                        Response::Err(WireError::Rejected(format!(
+                            "stored, but these settings are read by nothing and will not take                              effect: {}",
+                            inert.join(", ")
+                        )))
+                    }
                 }
                 Err(e) => Response::Err(WireError::Rejected(format!(
                     "SetConfig payload did not parse as TearConfig YAML: {e}"
