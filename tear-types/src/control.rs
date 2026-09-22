@@ -174,6 +174,35 @@ pub trait MultiplexerControl: Send + Sync {
         size_cells: (u16, u16),
     ) -> ControlResult<SessionId>;
 
+    /// [`Self::new_session_with_source_and_size`], with THIS spawn's child
+    /// env + cwd carried on the call rather than read from backend-global
+    /// state.
+    ///
+    /// The global form (`InProcess::set_spawn_env`, `Request::SetSpawnEnv`)
+    /// is last-write-wins: two callers creating sessions at the same moment
+    /// can each spawn in the OTHER's directory, and nothing reports it. A
+    /// session picker or MCP tool that creates sessions on behalf of
+    /// different windows needs the env to belong to the request.
+    ///
+    /// The default REFUSES with [`ControlError::Unsupported`] rather than
+    /// falling back to the global env: a backend that cannot honour a
+    /// per-spawn cwd would otherwise open the session in whatever directory
+    /// it happens to be in, which reads as success.
+    fn new_session_in(
+        &self,
+        _name: &str,
+        _shell: &str,
+        _args: &[String],
+        _source: crate::session::SessionSource,
+        _size_cells: (u16, u16),
+        _env: &crate::SpawnEnv,
+    ) -> ControlResult<SessionId> {
+        Err(ControlError::Unsupported {
+            capability: "spawn-env",
+            detail: "this backend cannot carry a per-spawn env/cwd".into(),
+        })
+    }
+
     /// Rename a session. Idempotent — renaming to the current name
     /// returns Ok(()) without side effects.
     fn rename_session(&self, id: SessionId, new_name: &str) -> ControlResult<()>;

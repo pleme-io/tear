@@ -315,7 +315,7 @@ fn a_current_daemon_answers_the_probe_and_accepts_args() {
     // what this assert pins.
     assert_eq!(
         client.daemon().capability_names(),
-        vec!["freio", "pane-yurai", "spawn-args"]
+        vec!["freio", "pane-yurai", "spawn-args", "spawn-env"]
     );
 
     // And the trait-level view agrees, so a consumer holding a

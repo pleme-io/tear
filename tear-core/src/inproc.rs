@@ -397,6 +397,8 @@ impl InProcess {
     /// unconstructible at the call site. A post-spawn stamp would be
     /// a step someone can forget, and the failure would be silent —
     /// blocks quietly reading `Unknown` forever.
+    /// Spawn with the backend-global spawn env (the `set_spawn_env` value),
+    /// snapshotted ONCE here so the whole spawn sees one env.
     fn spawn_pty_for(
         &self,
         pane_id: PaneId,
@@ -404,6 +406,22 @@ impl InProcess {
         args: &[String],
         size: (u16, u16),
         yurai: tear_types::Yurai,
+    ) -> anyhow::Result<()> {
+        let spawn_env = self.spawn_env.read().clone();
+        self.spawn_pty_with(pane_id, shell, args, size, yurai, &spawn_env)
+    }
+
+    /// Spawn with an explicit env + cwd — the per-request form
+    /// (`MultiplexerControl::new_session_in`). The global env is not
+    /// consulted, so a concurrent `set_spawn_env` cannot redirect it.
+    fn spawn_pty_with(
+        &self,
+        pane_id: PaneId,
+        shell: &str,
+        args: &[String],
+        size: (u16, u16),
+        yurai: tear_types::Yurai,
+        spawn_env: &tear_types::SpawnEnv,
     ) -> anyhow::Result<()> {
         // Typed cross-tool env-var names (the SAME source seki's prompt
         // reads) — hoisted to the top of the fn so it's an item, not a
@@ -526,7 +544,6 @@ impl InProcess {
         // applied LAST so its TERM=xterm-ghostty + TERMINFO + COLORTERM
         // win over the xterm-256color fallback above (the "vim grey"
         // fix), and PWD is stamped to match the cwd. Empty pre-seam.
-        let spawn_env = self.spawn_env.read().clone();
         spawn_env.apply_to(&mut env);
         let cwd = spawn_env.cwd.clone();
         // Allocate the per-pane grid and register it BEFORE spawning
@@ -936,6 +953,26 @@ impl MultiplexerControl for InProcess {
             source,
             size_cells,
             tear_types::Yurai::Unknown,
+        )
+    }
+
+    fn new_session_in(
+        &self,
+        name: &str,
+        shell: &str,
+        args: &[String],
+        source: tear_types::SessionSource,
+        size_cells: (u16, u16),
+        env: &tear_types::SpawnEnv,
+    ) -> ControlResult<SessionId> {
+        self.new_session_yurai_in(
+            name,
+            shell,
+            args,
+            source,
+            size_cells,
+            tear_types::Yurai::Unknown,
+            env,
         )
     }
 
@@ -1697,6 +1734,81 @@ mod tests {
             text.contains("C=truecolor"),
             "embedder COLORTERM override did not reach the child: {text:?}"
         );
+    }
+
+    /// `new_session_in` spawns in ITS OWN cwd even while the backend-global
+    /// env names a different one — the property that lets two windows
+    /// create sessions concurrently without swapping directories. Red-run:
+    /// make `new_session_yurai_in` read `self.spawn_env` again and both
+    /// children land in `global`.
+    #[test]
+    fn new_session_in_uses_the_request_cwd_not_the_global_one() {
+        let base = std::env::temp_dir().join(format!("tear-spawn-in-{}", std::process::id()));
+        let (global, a, b) = (base.join("global"), base.join("a"), base.join("b"));
+        for d in [&global, &a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let canon = |p: &std::path::Path| p.canonicalize().unwrap().to_string_lossy().into_owned();
+        let inproc = Arc::new(InProcess::new());
+        inproc.set_spawn_env(tear_types::SpawnEnv::none().with_cwd(Some(canon(&global))));
+
+        let pwd_of = |dir: &std::path::Path| -> String {
+            let env = tear_types::SpawnEnv::none().with_cwd(Some(canon(dir)));
+            let sid = inproc
+                .new_session_in(
+                    "spawn-in",
+                    "/bin/sh",
+                    &[],
+                    tear_types::SessionSource::Human,
+                    (80, 24),
+                    &env,
+                )
+                .expect("new_session_in");
+            let pane = *inproc
+                .get_session(sid)
+                .unwrap()
+                .panes
+                .keys()
+                .next()
+                .unwrap();
+            let (tx, rx) = mpsc::channel::<Vec<u8>>();
+            inproc
+                .subscribers
+                .lock()
+                .entry(pane)
+                .or_default()
+                .senders
+                .push(tx);
+            inproc
+                .send_keys(pane, b"printf 'PWDX[%s]\\n' \"$(pwd -P)\"\n")
+                .expect("send_keys");
+            let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
+            let mut buf = Vec::<u8>::new();
+            while std::time::Instant::now() < deadline {
+                if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    buf.extend_from_slice(&chunk);
+                    let s = String::from_utf8_lossy(&buf);
+                    if let Some(start) = s.find("PWDX[/") {
+                        if let Some(end) = s[start..].find(']') {
+                            return s[start + 5..start + end].to_owned();
+                        }
+                    }
+                }
+            }
+            panic!("no PWDX sentinel: {:?}", String::from_utf8_lossy(&buf));
+        };
+
+        assert_eq!(
+            pwd_of(&a),
+            canon(&a),
+            "session A spawned outside its requested cwd"
+        );
+        assert_eq!(
+            pwd_of(&b),
+            canon(&b),
+            "session B spawned outside its requested cwd"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -2633,11 +2745,30 @@ impl InProcess {
         size_cells: (u16, u16),
         yurai: tear_types::Yurai,
     ) -> ControlResult<SessionId> {
+        // ONE snapshot of the global env for the whole spawn — the pane
+        // record's cwd and the child's cwd come from the same value even
+        // if `set_spawn_env` races this call.
+        let spawn_env = self.spawn_env.read().clone();
+        self.new_session_yurai_in(name, shell, args, source, size_cells, yurai, &spawn_env)
+    }
+
+    /// Spawn a session with an explicit env + cwd, recording WHO asked.
+    /// The per-request form behind `MultiplexerControl::new_session_in`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_session_yurai_in(
+        &self,
+        name: &str,
+        shell: &str,
+        args: &[String],
+        source: tear_types::SessionSource,
+        size_cells: (u16, u16),
+        yurai: tear_types::Yurai,
+        spawn_env: &tear_types::SpawnEnv,
+    ) -> ControlResult<SessionId> {
         let size = (size_cells.0.max(1), size_cells.1.max(1));
-        // The embedder's cwd projection is the same value
-        // `spawn_pty_for` will apply, so recording it here keeps the
-        // typed pane record and the real child in agreement.
-        let cwd = self.spawn_env.read().cwd.clone();
+        // The cwd the child spawns in, recorded on the typed pane so the
+        // record and the real child agree.
+        let cwd = spawn_env.cwd.clone();
         let mut r = self.registry.write();
         let sid = r.create_session(name);
         // Stamp provenance on the typed session entry. The
@@ -2662,7 +2793,7 @@ impl InProcess {
             )));
         };
         drop(r); // release write lock before spawning PTY
-        if let Err(e) = self.spawn_pty_for(pane_id, shell, args, size, yurai.clone()) {
+        if let Err(e) = self.spawn_pty_with(pane_id, shell, args, size, yurai.clone(), spawn_env) {
             // Roll back the session — registry is small, easier to
             // remove than to leave a sessionless typed entry.
             self.registry.write().sessions.remove(&sid);

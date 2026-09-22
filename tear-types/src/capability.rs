@@ -83,6 +83,16 @@ pub enum Capability {
     /// so the operator sees a typed refusal rather than a wire error on
     /// the one command where "nothing happened" is unacceptable.
     Freio,
+    /// The daemon reads the `spawn_env` field on `Request::NewSession`
+    /// and gives THAT request's child exactly that capability env + cwd.
+    ///
+    /// The per-request form of `Request::SetSpawnEnv`, which is
+    /// daemon-global and last-write-wins: two clients creating sessions
+    /// at the same moment could each spawn in the OTHER's directory. A
+    /// daemon without this drops the field (`#[serde(default)]`) and
+    /// spawns in its own cwd — the silent wrong-directory session this
+    /// capability exists to refuse legibly instead.
+    SpawnEnv,
 }
 
 impl Capability {
@@ -93,6 +103,7 @@ impl Capability {
         Capability::SpawnArgs,
         Capability::PaneYurai,
         Capability::Freio,
+        Capability::SpawnEnv,
     ];
 
     /// The on-wire name. Kebab-case, names the field or behaviour.
@@ -102,6 +113,7 @@ impl Capability {
             Capability::SpawnArgs => "spawn-args",
             Capability::PaneYurai => "pane-yurai",
             Capability::Freio => "freio",
+            Capability::SpawnEnv => "spawn-env",
         }
     }
 
@@ -122,7 +134,10 @@ impl Capability {
     #[must_use]
     pub fn advertised(self) -> bool {
         match self {
-            Capability::SpawnArgs | Capability::PaneYurai | Capability::Freio => true,
+            Capability::SpawnArgs
+            | Capability::PaneYurai
+            | Capability::Freio
+            | Capability::SpawnEnv => true,
         }
     }
 }
@@ -304,11 +319,14 @@ mod tests {
                 Capability::Freio => {
                     assert!(Capability::ALL.contains(&Capability::Freio));
                 }
+                Capability::SpawnEnv => {
+                    assert!(Capability::ALL.contains(&Capability::SpawnEnv));
+                }
             }
         }
         assert_eq!(
             Capability::ALL.len(),
-            3,
+            4,
             "update this count with the vocabulary"
         );
     }
@@ -326,6 +344,7 @@ mod tests {
                 "spawn-args".to_owned(),
                 "pane-yurai".to_owned(),
                 "freio".to_owned(),
+                "spawn-env".to_owned(),
             ]
         );
     }

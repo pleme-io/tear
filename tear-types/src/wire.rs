@@ -113,6 +113,15 @@ pub enum Request {
         /// ignored", so restart the daemon after upgrading.
         #[serde(default)]
         args: Vec<String>,
+        /// THIS request's child env + cwd ([`crate::SpawnEnv`]), applied
+        /// to this spawn alone. `None` falls back to the daemon-global
+        /// `SetSpawnEnv` value (the pre-field behaviour). Gated by
+        /// [`crate::capability::Capability::SpawnEnv`]: a daemon that
+        /// drops the key would spawn in its own cwd, so the client
+        /// refuses before sending rather than creating a session in the
+        /// wrong directory.
+        #[serde(default)]
+        spawn_env: Option<crate::SpawnEnv>,
     },
     RenameSession {
         id: SessionId,
@@ -694,12 +703,17 @@ mod tests {
                 source,
                 size_cells,
                 args,
+                spawn_env,
             } => {
                 assert_eq!(name, "work");
                 assert_eq!(shell, "/bin/sh");
                 assert!(source.is_none());
                 assert!(size_cells.is_none());
                 assert!(args.is_empty(), "missing args must default to empty");
+                assert!(
+                    spawn_env.is_none(),
+                    "a pre-spawn-env frame must decode to the global-env fallback"
+                );
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -764,6 +778,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: args.clone(),
+                spawn_env: None,
             },
             Request::NewWindow {
                 session: SessionId::from_seed("s"),
@@ -799,6 +814,30 @@ mod tests {
         let we: WireError = ce.into();
         let ce2: ControlError = we.into();
         assert!(matches!(ce2, ControlError::NoSuchPane(p) if p == pane));
+    }
+
+    /// The per-request spawn env survives the wire exactly — cwd included.
+    /// A lossy cwd here is the whole defect the field exists to end: the
+    /// session would open in the daemon's directory, silently.
+    #[test]
+    fn new_session_spawn_env_roundtrips() {
+        let env = crate::SpawnEnv::from_overrides(vec![("TERM".into(), "xterm-ghostty".into())])
+            .with_cwd(Some("/code/pleme-io/tear".to_owned()));
+        let req = Request::NewSession {
+            name: "w".into(),
+            shell: "/bin/sh".into(),
+            source: None,
+            size_cells: Some((120, 40)),
+            args: vec![],
+            spawn_env: Some(env.clone()),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        let got: Request = read_msg(&mut Cursor::new(&buf)).unwrap();
+        match got {
+            Request::NewSession { spawn_env, .. } => assert_eq!(spawn_env, Some(env)),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

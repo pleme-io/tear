@@ -745,6 +745,38 @@ impl MultiplexerControl for Client {
             source: Some(source),
             size_cells: Some(size_cells),
             args: args.to_vec(),
+            spawn_env: None,
+        })? {
+            Response::SessionId(id) => Ok(id),
+            other => Err(unexpected("SessionId", other)),
+        }
+    }
+
+    /// Refuses BEFORE sending when the daemon does not advertise
+    /// `spawn-env`: an older daemon would drop the field and spawn in its
+    /// own cwd, and the caller would see a session that looks fine and
+    /// sits in the wrong directory.
+    fn new_session_in(
+        &self,
+        name: &str,
+        shell: &str,
+        args: &[String],
+        source: tear_types::SessionSource,
+        size_cells: (u16, u16),
+        env: &tear_types::SpawnEnv,
+    ) -> ControlResult<SessionId> {
+        self.require_spawn_args(args, "new_session_in")?;
+        self.daemon.require(
+            Capability::SpawnEnv,
+            "new_session_in carries a per-spawn env/cwd",
+        )?;
+        match self.rpc(Request::NewSession {
+            name: name.to_owned(),
+            shell: shell.to_owned(),
+            source: Some(source),
+            size_cells: Some(size_cells),
+            args: args.to_vec(),
+            spawn_env: Some(env.clone()),
         })? {
             Response::SessionId(id) => Ok(id),
             other => Err(unexpected("SessionId", other)),

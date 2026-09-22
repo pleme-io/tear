@@ -1087,13 +1087,15 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
             source,
             size_cells,
             args,
+            spawn_env,
         } => {
             let src = source.unwrap_or_default();
             let size = size_cells.unwrap_or((80, 24));
-            map_result(
-                inproc.new_session_with_source_and_size(&name, &shell, &args, src, size),
-                Response::SessionId,
-            )
+            let created = match spawn_env {
+                Some(env) => inproc.new_session_in(&name, &shell, &args, src, size, &env),
+                None => inproc.new_session_with_source_and_size(&name, &shell, &args, src, size),
+            };
+            map_result(created, Response::SessionId)
         }
         Request::RenameSession { id, new_name } => map_unit(inproc.rename_session(id, &new_name)),
         Request::KillSession(id) => map_unit(inproc.kill_session(id)),
@@ -1363,6 +1365,7 @@ pub fn dispatch_with_shutai(
             source,
             size_cells,
             args,
+            spawn_env,
         } => {
             let src = derive_session_source(source, shutai);
             let size = size_cells.unwrap_or((80, 24));
@@ -1379,7 +1382,15 @@ pub fn dispatch_with_shutai(
             let yurai = shutai
                 .map(tear_types::Yurai::from_shutai)
                 .unwrap_or_default();
-            let result = inproc.new_session_yurai(&name, &shell, &args, src.clone(), size, yurai);
+            // A request-carried env is THIS spawn's env alone; without one
+            // the daemon-global `SetSpawnEnv` value applies (pre-field
+            // behaviour, kept for older clients).
+            let result = match &spawn_env {
+                Some(env) => {
+                    inproc.new_session_yurai_in(&name, &shell, &args, src.clone(), size, yurai, env)
+                }
+                None => inproc.new_session_yurai(&name, &shell, &args, src.clone(), size, yurai),
+            };
             if let Ok(sid) = &result {
                 if let Some(a) = audit {
                     a.emit(&AuditEvent::SessionCreate {
@@ -1751,6 +1762,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: vec![],
+                spawn_env: None,
             },
             None,
             None,
@@ -2081,6 +2093,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: Vec::new(),
+                spawn_env: None,
             },
         );
         let session_id = match resp {
@@ -2183,6 +2196,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: Vec::new(),
+                spawn_env: None,
             },
         ) {
             Response::SessionId(s) => s,
@@ -2520,6 +2534,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: Vec::new(),
+                spawn_env: None,
             },
             None,
             Some(&store),
@@ -2576,6 +2591,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: Vec::new(),
+                spawn_env: None,
             },
             None,
             Some(&store),
@@ -2632,6 +2648,7 @@ mod tests {
                 source: None,
                 size_cells: None,
                 args: Vec::new(),
+                spawn_env: None,
             },
             None,
             Some(&store),
