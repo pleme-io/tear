@@ -1905,7 +1905,15 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: Option<std::net::SocketAd
         (h, disp)
     } else {
         let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
-        let h = tear_daemon::start(socket_path.clone(), inproc).map_err(|e| {
+        let live = Arc::new(tear_config::LiveConfig::default());
+        inproc.set_socket_path(socket_path.clone());
+        tear_daemon::durability::enable_and_restore(
+            &inproc,
+            &live.load().sessions,
+            Some(&socket_path),
+            tamotsu::HoldProgram::current_exe_subcommand(tear_daemon::durability::HOLD_SUBCOMMAND),
+        );
+        let h = tear_daemon::start_with_config(socket_path.clone(), inproc, live).map_err(|e| {
             anyhow::anyhow!(
                 "tear-daemon failed to bind {}: {}",
                 socket_path.display(),

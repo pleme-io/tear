@@ -12,6 +12,7 @@ pub const HOLD_SUBCOMMAND: &str = "hold";
 pub fn durable_from_config(
     sessions: &SessionsConfig,
     socket_path: Option<&Path>,
+    default_program: Option<HoldProgram>,
 ) -> io::Result<Option<Durable>> {
     if sessions.durability != SessionDurability::Held {
         return Ok(None);
@@ -32,14 +33,15 @@ pub fn durable_from_config(
             program: PathBuf::from(program),
             prefix: prefix.to_vec(),
         },
-        Some([]) | None => {
-            HoldProgram::current_exe_subcommand(HOLD_SUBCOMMAND).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "cannot resolve the running tear binary to launch holders from",
-                )
-            })?
-        }
+        Some([]) | None => match default_program {
+            Some(p) => p,
+            None => {
+                info!(
+                    "sessions.durability is held but this daemon has no holder program; sessions stay process-bound"
+                );
+                return Ok(None);
+            }
+        },
     };
     let j = &sessions.journal;
     Ok(Some(Durable {
@@ -64,8 +66,9 @@ pub fn enable_and_restore(
     inproc: &InProcess,
     sessions: &SessionsConfig,
     socket_path: Option<&Path>,
+    default_program: Option<HoldProgram>,
 ) -> Option<RestoreReport> {
-    match durable_from_config(sessions, socket_path) {
+    match durable_from_config(sessions, socket_path, default_program) {
         Ok(Some(durable)) => {
             info!(
                 store = %durable.store.root().display(),
@@ -90,7 +93,7 @@ mod tests {
     #[test]
     fn process_bound_config_builds_nothing() {
         assert!(
-            durable_from_config(&SessionsConfig::default(), None)
+            durable_from_config(&SessionsConfig::default(), None, None)
                 .unwrap()
                 .is_none()
         );
@@ -105,7 +108,7 @@ mod tests {
             store_dir: Some(root.to_string_lossy().into_owned()),
             ..SessionsConfig::default()
         };
-        let d = durable_from_config(&sessions, Some(Path::new("/run/u/tear.sock")))
+        let d = durable_from_config(&sessions, Some(Path::new("/run/u/tear.sock")), None)
             .unwrap()
             .unwrap();
         assert_eq!(d.store.root(), root.as_path());

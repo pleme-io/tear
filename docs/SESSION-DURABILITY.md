@@ -240,6 +240,16 @@ untouched, and the fleet turns both on together through the
 - **The holder is `tear hold`**, the same binary as the daemon, so no
   second package has to be installed or kept in step. The `tamotsu` binary
   exists for that crate's own tests.
+- **Only the `tear daemon` binary may hold sessions.** `start_with_config`
+  (the library entry every embedded and test daemon uses) never enables
+  durability; `tear daemon` does, passing its own exe as the holder program.
+  The first cut enabled it inside the library from the operator's
+  `tear.yaml`, so once a workstation set `durability: held`, every test that
+  started an in-process daemon (mado's suite, `DaemonHarness`) wrote into the
+  operator's real store and spawned its test binary as `tear hold`
+  (receipt: 10 junk sessions, `resurrections: 17`, holder logs reading
+  `Unrecognized option: 'pane-dir'`). Sealed by
+  `held_sessions::a_library_started_daemon_never_turns_durable_from_ambient_config`.
 - **A daemon stopping hands its holders off explicitly.**
   `DaemonHandle::stop` calls `InProcess::release_durable`, which detaches
   every held pane and parks the persister. Without it an in-process daemon

@@ -462,8 +462,6 @@ pub fn start_with_config(
     // and starship rely on it for prompt visibility + re-discovery.
     inproc.set_socket_path(socket_path.clone());
 
-    durability::enable_and_restore(&inproc, &live_config.load().sessions, Some(&socket_path));
-
     // ── Kanshou introspection server ─────────────────────────────
     // Expose the daemon's live Registry (sessions, panes, socket,
     // process metadata) over a kanshou Unix socket so operator

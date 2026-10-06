@@ -44,6 +44,13 @@ impl Place {
             ..TearConfig::default()
         });
         let inproc = Arc::new(InProcess::new());
+        inproc.set_socket_path(self.socket());
+        tear_daemon::durability::enable_and_restore(
+            &inproc,
+            &live.load().sessions,
+            Some(&self.socket()),
+            None,
+        );
         let handle = tear_daemon::start_with_config(self.socket(), Arc::clone(&inproc), live)
             .expect("daemon start");
         std::thread::sleep(Duration::from_millis(50));
@@ -259,6 +266,37 @@ fn a_shell_that_exits_on_its_own_is_not_revived() {
     let (handle, inproc) = place.start();
     let c = Client::connect(place.socket()).unwrap();
     assert!(c.list_sessions().unwrap().is_empty());
+    drop(c);
+    stop(handle, inproc);
+}
+
+#[test]
+fn a_library_started_daemon_never_turns_durable_from_ambient_config() {
+    let place = Place::new("library");
+    let live = Arc::new(LiveConfig::default());
+    live.replace(TearConfig {
+        sessions: SessionsConfig {
+            durability: SessionDurability::Held,
+            store_dir: Some(place.store().to_string_lossy().into_owned()),
+            ..SessionsConfig::default()
+        },
+        ..TearConfig::default()
+    });
+    let inproc = Arc::new(InProcess::new());
+    let handle = tear_daemon::start_with_config(place.socket(), Arc::clone(&inproc), live)
+        .expect("daemon start");
+    assert!(
+        inproc.durability().is_none(),
+        "only the tear binary, which knows its own exe answers `hold`, may hold sessions"
+    );
+    let c = Client::connect(place.socket()).unwrap();
+    let (sid, _) = new_session(&c, "embedded");
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        !place.store().join("sessions").exists(),
+        "a test or embedded daemon must never write into a session store"
+    );
+    c.kill_session(sid).unwrap();
     drop(c);
     stop(handle, inproc);
 }
