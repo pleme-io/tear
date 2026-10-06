@@ -1,0 +1,26 @@
+[package]
+name = "tamotsu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "tamotsu (保つ, to keep) — the per-pane PTY holder for tear: a small process outside the daemon that owns one pane's PTY and child, journals every byte to makimono, and lets a restarted daemon re-adopt the live shell."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tamotsu"
+path = "src/main.rs"
+
+[dependencies]
+makimono = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+ciborium = { workspace = true }
+portable-pty = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+nix = { workspace = true, features = ["process", "signal"] }

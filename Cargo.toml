@@ -11,6 +11,8 @@ members = [
     "tear-ws-bridge",
     "tear",
     "praca",
+    "makimono",
+    "tamotsu",
 ]
 
 [workspace.package]
@@ -37,6 +39,8 @@ tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.27" }
 tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.27" }
 tear = { path = "tear", version = "0.1.27" }
 praca = { path = "praca", version = "0.1.27" }
+makimono = { path = "makimono", version = "0.1.27" }
+tamotsu = { path = "tamotsu", version = "0.1.27" }
 
 # ── pleme-io shared libraries — same versions mado pins ────────────
 # Live configuration with hot-reload. Operators learn the shikumi
