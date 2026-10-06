@@ -52,7 +52,12 @@ fn revival(dir: &Path) -> Revival {
 
 type Seen = Arc<Mutex<Vec<u8>>>;
 
-fn sinks() -> (Seen, tamotsu::OnBytes, mpsc::Receiver<Option<i32>>, tamotsu::OnExit) {
+fn sinks() -> (
+    Seen,
+    tamotsu::OnBytes,
+    mpsc::Receiver<Option<i32>>,
+    tamotsu::OnExit,
+) {
     let seen: Seen = Arc::default();
     let s = Arc::clone(&seen);
     let (tx, rx) = mpsc::channel();
@@ -106,12 +111,19 @@ fn a_detached_session_keeps_its_process_and_replays_its_history_on_adoption() {
     let pid_before = child_pid(&rv.args.socket).expect("holder answers");
     drop(held);
     std::thread::sleep(Duration::from_millis(200));
-    assert!(HeldPty::probe(&rv.args.socket), "detaching must not end the holder");
+    assert!(
+        HeldPty::probe(&rv.args.socket),
+        "detaching must not end the holder"
+    );
 
     let (seen2, on_bytes2, exit2, on_exit2) = sinks();
     let adopted = HeldPty::adopt(rv.clone(), on_bytes2, on_exit2).unwrap();
     assert!(wait_for(&seen2, "first-42"), "adoption replays the journal");
-    assert_eq!(child_pid(&rv.args.socket), Some(pid_before), "the same shell survived");
+    assert_eq!(
+        child_pid(&rv.args.socket),
+        Some(pid_before),
+        "the same shell survived"
+    );
     adopted.write(b"echo second-$((1+1))\n").unwrap();
     assert!(wait_for(&seen2, "second-2"));
 
@@ -146,8 +158,15 @@ fn a_killed_holder_is_revived_in_place_with_a_new_shell_and_its_scrollback() {
     assert!(wait_for(&seen, "before-9"));
     let old_shell = child_pid(&rv.args.socket).unwrap();
     let hp = holder_pid(&rv.args.socket).unwrap();
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(hp), nix::sys::signal::Signal::SIGKILL).unwrap();
-    assert!(wait_for(&seen, "session resurrected"), "the revival is visible in the stream");
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(hp),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
+    assert!(
+        wait_for(&seen, "session resurrected"),
+        "the revival is visible in the stream"
+    );
     let until = Instant::now() + Duration::from_secs(10);
     let mut wrote = false;
     while Instant::now() < until && !wrote {
@@ -157,13 +176,19 @@ fn a_killed_holder_is_revived_in_place_with_a_new_shell_and_its_scrollback() {
     assert!(wrote);
     assert!(wait_for(&seen, "after-25"));
     let new_shell = child_pid(&rv.args.socket).unwrap();
-    assert_ne!(new_shell, old_shell, "a revival is a new incarnation, never a claimed survivor");
+    assert_ne!(
+        new_shell, old_shell,
+        "a revival is a new incarnation, never a claimed survivor"
+    );
     let journal = PaneDir::at(&rv.args.pane_dir)
         .open_journal(JournalBounds::default())
         .unwrap()
         .read_all()
         .unwrap();
     let text = String::from_utf8_lossy(&journal);
-    assert!(text.contains("before-9") && text.contains("after-25"), "{text}");
+    assert!(
+        text.contains("before-9") && text.contains("after-25"),
+        "{text}"
+    );
     held.end();
 }

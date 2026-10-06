@@ -167,9 +167,13 @@ pub fn read_from_holder<R: Read>(r: &mut R) -> io::Result<FromHolder> {
 fn write_frame<W: Write>(w: &mut W, tag: u8, parts: &[&[u8]]) -> io::Result<()> {
     let len: usize = 1 + parts.iter().map(|p| p.len()).sum::<usize>();
     if len > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame too large",
+        ));
     }
-    let len = u32::try_from(len).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
+    let len = u32::try_from(len)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
     let mut buf = Vec::with_capacity(4 + len as usize);
     buf.extend_from_slice(&len.to_be_bytes());
     buf.push(tag);
@@ -198,16 +202,21 @@ fn read_frame<R: Read>(r: &mut R) -> io::Result<(u8, Vec<u8>)> {
 
 fn cbor<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
-    ciborium::into_writer(value, &mut out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    ciborium::into_writer(value, &mut out)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     Ok(out)
 }
 
 fn uncbor<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> io::Result<T> {
-    ciborium::from_reader(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    ciborium::from_reader(bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
 fn bad_tag(tag: u8) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("unknown frame tag {tag}"))
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("unknown frame tag {tag}"),
+    )
 }
 
 #[cfg(test)]
@@ -221,7 +230,10 @@ mod tests {
             ToHolder::Attach { from: 42 },
             ToHolder::Write(b"ls -la\r".to_vec()),
             ToHolder::Write(Vec::new()),
-            ToHolder::Resize { cols: 120, rows: 40 },
+            ToHolder::Resize {
+                cols: 120,
+                rows: 40,
+            },
             ToHolder::End,
             ToHolder::Status,
         ];

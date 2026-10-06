@@ -1821,7 +1821,8 @@ mod tests {
     /// the cleanup-on-drop story.
     #[test]
     fn a_client_outlives_a_daemon_restart_on_the_same_socket() {
-        let socket = std::env::temp_dir().join(format!("tear-client-restart-{}.sock", std::process::id()));
+        let socket =
+            std::env::temp_dir().join(format!("tear-client-restart-{}.sock", std::process::id()));
         let first = tear_daemon::start(socket.clone(), Arc::new(tear_core::InProcess::new()))
             .expect("first daemon");
         std::thread::sleep(std::time::Duration::from_millis(50));

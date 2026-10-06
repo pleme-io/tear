@@ -7,7 +7,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
 }
 
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -70,7 +73,11 @@ mod tests {
         assert!(!tmp_path(&p).exists());
         let mode = fs::metadata(&p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        let dmode = fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        let dmode = fs::metadata(p.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(dmode, 0o700);
     }
 

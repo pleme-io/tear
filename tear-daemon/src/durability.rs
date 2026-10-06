@@ -32,12 +32,14 @@ pub fn durable_from_config(
             program: PathBuf::from(program),
             prefix: prefix.to_vec(),
         },
-        Some([]) | None => HoldProgram::current_exe_subcommand(HOLD_SUBCOMMAND).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "cannot resolve the running tear binary to launch holders from",
-            )
-        })?,
+        Some([]) | None => {
+            HoldProgram::current_exe_subcommand(HOLD_SUBCOMMAND).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "cannot resolve the running tear binary to launch holders from",
+                )
+            })?
+        }
     };
     let j = &sessions.journal;
     Ok(Some(Durable {
@@ -53,7 +55,9 @@ pub fn durable_from_config(
 }
 
 pub fn default_store_root() -> PathBuf {
-    crate::praca_store::state_dir().join("tear").join("makimono")
+    crate::praca_store::state_dir()
+        .join("tear")
+        .join("makimono")
 }
 
 pub fn enable_and_restore(
@@ -85,7 +89,11 @@ mod tests {
 
     #[test]
     fn process_bound_config_builds_nothing() {
-        assert!(durable_from_config(&SessionsConfig::default(), None).unwrap().is_none());
+        assert!(
+            durable_from_config(&SessionsConfig::default(), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -107,12 +107,18 @@ fn shell_pid(client: &Client, pane: PaneId, tag: &str) -> String {
                 .map(str::trim)
                 .find(|l| l.starts_with(&format!("{tag}-")) && l.ends_with("-end"))
             {
-                return line.trim_start_matches(&format!("{tag}-")).trim_end_matches("-end").to_string();
+                return line
+                    .trim_start_matches(&format!("{tag}-"))
+                    .trim_end_matches("-end")
+                    .to_string();
             }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let screen = client.pane_snapshot(pane).map(|s| s.to_text()).unwrap_or_default();
+    let screen = client
+        .pane_snapshot(pane)
+        .map(|s| s.to_text())
+        .unwrap_or_default();
     panic!("{tag}: the shell never reported its pid; screen:\n{screen}");
 }
 
@@ -120,7 +126,13 @@ fn new_session(client: &Client, name: &str) -> (SessionId, PaneId) {
     let sid = client
         .new_session_with_source_and_size(name, "/bin/sh", &[], SessionSource::Human, (80, 24))
         .unwrap();
-    let pane = *client.get_session(sid).unwrap().panes.keys().next().unwrap();
+    let pane = *client
+        .get_session(sid)
+        .unwrap()
+        .panes
+        .keys()
+        .next()
+        .unwrap();
     (sid, pane)
 }
 
@@ -146,21 +158,38 @@ fn a_daemon_restart_reattaches_the_same_shell_with_its_screen() {
         shell_pid(&c, pane, "before")
     };
     stop(handle, inproc);
-    assert!(holder_pid(&place.holder_socket(pane)).is_some(), "the holder outlives the daemon");
+    assert!(
+        holder_pid(&place.holder_socket(pane)).is_some(),
+        "the holder outlives the daemon"
+    );
 
     let (handle, inproc) = place.start();
     let c = Client::connect(place.socket()).unwrap();
     let sessions = c.list_sessions().unwrap();
-    assert_eq!(sessions.iter().map(|s| s.id).collect::<Vec<_>>(), vec![sid], "the same session id comes back");
-    assert!(screen_has(&c, pane, "marker-42"), "the screen is rebuilt from the journal");
-    assert_eq!(shell_pid(&c, pane, "after"), before, "the very same shell process is still running");
+    assert_eq!(
+        sessions.iter().map(|s| s.id).collect::<Vec<_>>(),
+        vec![sid],
+        "the same session id comes back"
+    );
+    assert!(
+        screen_has(&c, pane, "marker-42"),
+        "the screen is rebuilt from the journal"
+    );
+    assert_eq!(
+        shell_pid(&c, pane, "after"),
+        before,
+        "the very same shell process is still running"
+    );
 
     c.kill_session(sid).unwrap();
     drop(c);
     stop(handle, inproc);
     let (handle, inproc) = place.start();
     let c = Client::connect(place.socket()).unwrap();
-    assert!(c.list_sessions().unwrap().is_empty(), "a human end stays ended across a restart");
+    assert!(
+        c.list_sessions().unwrap().is_empty(),
+        "a human end stays ended across a restart"
+    );
     drop(c);
     stop(handle, inproc);
 }
@@ -179,7 +208,11 @@ fn a_lost_holder_is_resurrected_in_place_on_the_next_start() {
     };
     stop(handle, inproc);
     let hp = holder_pid(&place.holder_socket(pane)).expect("holder alive after daemon stop");
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(hp), nix::sys::signal::Signal::SIGKILL).unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(hp),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(300));
 
     let (handle, inproc) = place.start();
@@ -187,9 +220,19 @@ fn a_lost_holder_is_resurrected_in_place_on_the_next_start() {
     let sessions = c.list_sessions().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, sid);
-    assert!(screen_has(&c, pane, "old-life-4"), "scrollback survives the lost processes");
-    assert!(screen_has(&c, pane, "session resurrected"), "the new incarnation is announced");
-    assert_ne!(shell_pid(&c, pane, "after"), before, "a resurrection never claims the old process");
+    assert!(
+        screen_has(&c, pane, "old-life-4"),
+        "scrollback survives the lost processes"
+    );
+    assert!(
+        screen_has(&c, pane, "session resurrected"),
+        "the new incarnation is announced"
+    );
+    assert_ne!(
+        shell_pid(&c, pane, "after"),
+        before,
+        "a resurrection never claims the old process"
+    );
     c.kill_session(sid).unwrap();
     drop(c);
     stop(handle, inproc);
@@ -207,7 +250,10 @@ fn a_shell_that_exits_on_its_own_is_not_revived() {
         while Instant::now() < until && !c.list_sessions().unwrap().is_empty() {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(c.list_sessions().unwrap().is_empty(), "an unwatched exited session is reaped");
+        assert!(
+            c.list_sessions().unwrap().is_empty(),
+            "an unwatched exited session is reaped"
+        );
     }
     stop(handle, inproc);
     let (handle, inproc) = place.start();

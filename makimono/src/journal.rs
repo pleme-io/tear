@@ -150,7 +150,8 @@ impl Journal {
         if self.unsynced == 0 {
             return Ok(());
         }
-        if self.unsynced >= 1024 * 1024 || self.last_sync.elapsed() >= self.bounds.fsync_interval() {
+        if self.unsynced >= 1024 * 1024 || self.last_sync.elapsed() >= self.bounds.fsync_interval()
+        {
             self.sync()?;
         }
         Ok(())
@@ -181,7 +182,9 @@ impl Journal {
         let at = at.max(seg.start);
         let mut f = File::open(self.segment_path(seg.start))?;
         f.seek(SeekFrom::Start(at - seg.start))?;
-        let want = usize::try_from(seg.end() - at).unwrap_or(usize::MAX).min(max);
+        let want = usize::try_from(seg.end() - at)
+            .unwrap_or(usize::MAX)
+            .min(max);
         let mut data = vec![0u8; want];
         let mut filled = 0;
         while filled < want {
@@ -301,7 +304,11 @@ mod tests {
         let tail = j.read_all().unwrap();
         assert_eq!(tail.len() as u64, j.end() - j.start());
         let first = j.read_from(0, 10).unwrap().unwrap();
-        assert_eq!(first.at, j.start(), "a read below the horizon starts at the oldest byte");
+        assert_eq!(
+            first.at,
+            j.start(),
+            "a read below the horizon starts at the oldest byte"
+        );
     }
 
     #[test]
@@ -315,7 +322,13 @@ mod tests {
         j.append(b"world").unwrap();
         assert_eq!(j.read_all().unwrap(), b"hello world");
         let mid = j.read_from(6, 100).unwrap().unwrap();
-        assert_eq!(mid, Chunk { at: 6, data: b"world".to_vec() });
+        assert_eq!(
+            mid,
+            Chunk {
+                at: 6,
+                data: b"world".to_vec()
+            }
+        );
         assert!(j.read_from(11, 100).unwrap().is_none());
     }
 
@@ -330,7 +343,13 @@ mod tests {
         assert_eq!(j.end(), 11);
         assert_eq!(j.read_all().unwrap(), b"abcxyz");
         let after_gap = j.read_from(4, 100).unwrap().unwrap();
-        assert_eq!(after_gap, Chunk { at: 8, data: b"xyz".to_vec() });
+        assert_eq!(
+            after_gap,
+            Chunk {
+                at: 8,
+                data: b"xyz".to_vec()
+            }
+        );
         drop(j);
         let j = Journal::open(t.path(), small()).unwrap();
         assert_eq!(j.end(), 11);

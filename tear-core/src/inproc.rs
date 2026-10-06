@@ -43,8 +43,8 @@ use crate::registry::Registry;
 
 mod durable;
 
-use durable::{PaneIo, SpawnPlan};
 pub use durable::{Durable, RestoreReport};
+use durable::{PaneIo, SpawnPlan};
 
 /// Per-pane byte-stream fan-out state.
 ///
@@ -498,7 +498,11 @@ impl InProcess {
     /// Resolve the session this pane belongs to so we can stamp
     /// TEAR_SESSION_{ID,NAME} on the child's env. Typed cross-tool
     /// env-var names (the SAME source seki's prompt reads).
-    fn child_env(&self, pane_id: PaneId, spawn_env: &tear_types::SpawnEnv) -> Vec<(String, String)> {
+    fn child_env(
+        &self,
+        pane_id: PaneId,
+        spawn_env: &tear_types::SpawnEnv,
+    ) -> Vec<(String, String)> {
         use ishou_tokens::FleetStateVar as Fsv;
         let (session_id, session_name) = {
             let r = self.registry.read();

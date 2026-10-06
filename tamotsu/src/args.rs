@@ -134,7 +134,15 @@ mod tests {
     #[test]
     fn missing_required_fields_are_refused() {
         assert!(HoldArgs::parse(&["--".into(), "/bin/sh".into()]).is_err());
-        assert!(HoldArgs::parse(&["--pane-dir".into(), "/x".into(), "--socket".into(), "/y".into()]).is_err());
+        assert!(
+            HoldArgs::parse(&[
+                "--pane-dir".into(),
+                "/x".into(),
+                "--socket".into(),
+                "/y".into()
+            ])
+            .is_err()
+        );
         assert!(HoldArgs::parse(&["--bogus".into()]).is_err());
     }
 }

@@ -84,7 +84,10 @@ pub fn run(args: HoldArgs) -> anyhow::Result<()> {
     let holder = Arc::new(Holder {
         pane,
         socket: args.socket.clone(),
-        state: Mutex::new(State { journal, sink: None }),
+        state: Mutex::new(State {
+            journal,
+            sink: None,
+        }),
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
         child_pid: child.process_id(),

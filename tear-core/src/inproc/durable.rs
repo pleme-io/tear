@@ -124,20 +124,28 @@ impl InProcess {
                 .collect();
             ids.iter().filter_map(|id| ptys.remove(id)).collect()
         };
-        info!(panes = held.len(), "tear-core: held panes released to their holders");
+        info!(
+            panes = held.len(),
+            "tear-core: held panes released to their holders"
+        );
         drop(held);
     }
 
     pub(super) fn session_dir_of(&self, pane: PaneId) -> Option<(Durable, SessionDir)> {
         let durable = self.durable.read().clone()?;
-        let sid = self.registry.read().locate_pane(pane).map(|(s, _)| s).or_else(|| {
-            self.registry
-                .read()
-                .sessions
-                .values()
-                .find(|s| s.panes.contains_key(&pane))
-                .map(|s| s.id)
-        })?;
+        let sid = self
+            .registry
+            .read()
+            .locate_pane(pane)
+            .map(|(s, _)| s)
+            .or_else(|| {
+                self.registry
+                    .read()
+                    .sessions
+                    .values()
+                    .find(|s| s.panes.contains_key(&pane))
+                    .map(|s| s.id)
+            })?;
         let dir = durable.store.session(sid);
         Some((durable, dir))
     }
@@ -157,7 +165,11 @@ impl InProcess {
         }
     }
 
-    pub(super) fn open_pane_io(&self, plan: SpawnPlan<'_>, grid: &Arc<Mutex<PaneGrid>>) -> anyhow::Result<PaneIo> {
+    pub(super) fn open_pane_io(
+        &self,
+        plan: SpawnPlan<'_>,
+        grid: &Arc<Mutex<PaneGrid>>,
+    ) -> anyhow::Result<PaneIo> {
         if let Some((durable, dir)) = self.session_dir_of(plan.pane_id) {
             match self.launch_held(&durable, &dir, &plan, grid) {
                 Ok(held) => {
@@ -250,7 +262,8 @@ impl InProcess {
             .name("tear-persist".into())
             .spawn(move || {
                 let mut docs: HashMap<SessionId, blake3::Hash> = HashMap::new();
-                let mut metas: HashMap<PaneId, (Option<String>, String, (u16, u16))> = HashMap::new();
+                let mut metas: HashMap<PaneId, (Option<String>, String, (u16, u16))> =
+                    HashMap::new();
                 loop {
                     thread::sleep(PERSIST_TICK);
                     let (Some(registry), Some(grids), Some(durable), Some(restored)) = (
@@ -541,7 +554,12 @@ fn prune_pane(session: &mut TearSession, pid: PaneId) {
         session.windows.remove(&wid);
     }
     if !session.windows.contains_key(&session.active_window) {
-        session.active_window = session.windows.keys().next().copied().unwrap_or(WindowId::NULL);
+        session.active_window = session
+            .windows
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(WindowId::NULL);
     }
 }
 
@@ -568,7 +586,11 @@ mod tests {
 
     #[test]
     fn pruning_ended_panes_keeps_the_layout_consistent() {
-        let (a, b, c) = (PaneId::from_seed("a"), PaneId::from_seed("b"), PaneId::from_seed("c"));
+        let (a, b, c) = (
+            PaneId::from_seed("a"),
+            PaneId::from_seed("b"),
+            PaneId::from_seed("c"),
+        );
         let (w1, w2) = (WindowId::from_seed("w1"), WindowId::from_seed("w2"));
         let mut layout = LayoutNode::leaf(a);
         assert!(layout.split_leaf(a, b, Direction::Right, 0.5));
@@ -599,7 +621,9 @@ mod tests {
             id: SessionId::from_seed("s"),
             name: "s".into(),
             windows,
-            panes: [(a, pane(a)), (b, pane(b)), (c, pane(c))].into_iter().collect(),
+            panes: [(a, pane(a)), (b, pane(b)), (c, pane(c))]
+                .into_iter()
+                .collect(),
             active_window: w2,
             state: SessionState::Active,
             created_at_unix: 0,

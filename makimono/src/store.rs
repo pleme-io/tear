@@ -184,7 +184,10 @@ impl SessionDir {
             Some(d) if d.version == DOC_VERSION => Ok(Some(d.session)),
             Some(d) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("session document version {} is not {DOC_VERSION}", d.version),
+                format!(
+                    "session document version {} is not {DOC_VERSION}",
+                    d.version
+                ),
             )),
             None => Ok(None),
         }
@@ -349,8 +352,15 @@ mod tests {
         pane.create().unwrap();
         assert!(pane.tombstone().unwrap().is_none());
         assert!(pane.write_tombstone(&Ending::by_control()).unwrap());
-        assert!(!pane.write_tombstone(&Ending::Exited { code: Some(0) }).unwrap());
-        assert!(matches!(pane.tombstone().unwrap(), Some(Ending::EndedBy { .. })));
+        assert!(
+            !pane
+                .write_tombstone(&Ending::Exited { code: Some(0) })
+                .unwrap()
+        );
+        assert!(matches!(
+            pane.tombstone().unwrap(),
+            Some(Ending::EndedBy { .. })
+        ));
     }
 
     #[test]

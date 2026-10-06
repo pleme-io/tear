@@ -116,9 +116,9 @@ impl HeldPty {
 
     fn send(&self, msg: &ToHolder) -> io::Result<()> {
         let mut guard = self.link.writer.lock();
-        let stream = guard
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "holder link is being repaired"))?;
+        let stream = guard.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "holder link is being repaired")
+        })?;
         write_to_holder(stream, msg)
     }
 }
@@ -152,7 +152,8 @@ fn follow(
                 }
                 let skip = usize::try_from(next.saturating_sub(at)).unwrap_or(data.len());
                 let fresh = &data[skip.min(data.len())..];
-                link.consumed.fetch_add(fresh.len() as u64, Ordering::Relaxed);
+                link.consumed
+                    .fetch_add(fresh.len() as u64, Ordering::Relaxed);
                 on_bytes(fresh);
                 next = end;
             }
