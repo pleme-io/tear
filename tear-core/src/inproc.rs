@@ -37,10 +37,14 @@ use tear_types::{
 use std::sync::mpsc;
 
 use crate::pane_grid::PaneGrid;
-use crate::pty::PtyHandle;
 use crate::reap::AllPanesExited;
 use crate::recording::PaneRecording;
 use crate::registry::Registry;
+
+mod durable;
+
+use durable::{PaneIo, SpawnPlan};
+pub use durable::{Durable, RestoreReport};
 
 /// Per-pane byte-stream fan-out state.
 ///
@@ -64,7 +68,7 @@ struct PaneSubscribers {
 /// The native in-process multiplexer backend.
 pub struct InProcess {
     registry: Arc<RwLock<Registry>>,
-    ptys: Arc<Mutex<BTreeMap<PaneId, PtyHandle>>>,
+    ptys: Arc<Mutex<BTreeMap<PaneId, PaneIo>>>,
     /// Per-pane VT parser + cell grid. Phase-2-MVP wires PTY bytes
     /// into these so [`Self::pane_snapshot`] returns the rendered
     /// state. Wrapped per-pane in `Mutex` so the PTY reader thread
@@ -112,6 +116,9 @@ pub struct InProcess {
     /// were built with — a live change applies to the next pane, which is the
     /// honest contract for a per-grid allocation.
     scrollback_rows: Arc<RwLock<usize>>,
+    durable: Arc<RwLock<Option<Durable>>>,
+    persister_started: Arc<std::sync::atomic::AtomicBool>,
+    restored: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for InProcess {
@@ -132,6 +139,9 @@ impl InProcess {
             socket_path: Arc::new(RwLock::new(None)),
             spawn_env: Arc::new(RwLock::new(tear_types::SpawnEnv::none())),
             scrollback_rows: Arc::new(RwLock::new(crate::pane_grid::DEFAULT_SCROLLBACK_ROWS)),
+            durable: Arc::new(RwLock::new(None)),
+            persister_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            restored: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -423,21 +433,73 @@ impl InProcess {
         yurai: tear_types::Yurai,
         spawn_env: &tear_types::SpawnEnv,
     ) -> anyhow::Result<()> {
-        // Typed cross-tool env-var names (the SAME source seki's prompt
-        // reads) — hoisted to the top of the fn so it's an item, not a
-        // statement-position import.
-        use ishou_tokens::FleetStateVar as Fsv;
         let pty_size = PtySize {
             rows: size.1,
             cols: size.0,
             pixel_width: 0,
             pixel_height: 0,
         };
-        // Resolve the session this pane belongs to so we can stamp
-        // TEAR_SESSION_{ID,NAME} on the child's env. Look-up is
-        // cheap (BTreeMap walk over typically <10 sessions); the
-        // alternative — caller threading session_id in — would
-        // bloat every call site.
+        let env = self.child_env(pane_id, spawn_env);
+        let cwd = spawn_env.cwd.clone();
+        // Allocate the per-pane grid and register it BEFORE spawning
+        // the PTY — the reader thread starts immediately on spawn,
+        // and we want the first bytes to find their grid.
+        let grid = Arc::new(Mutex::new(PaneGrid::with_scrollback(
+            size.0 as usize,
+            size.1 as usize,
+            *self.scrollback_rows.read(),
+        )));
+        // Stamp provenance BEFORE the grid is registered, so the
+        // first byte the reader thread feeds already lands in an
+        // attributed extractor. Registering first would leave a
+        // window in which a fast-printing shell mints `Unknown`
+        // blocks for a pane whose provenance we already knew.
+        grid.lock().stamp_yurai(yurai);
+        self.grids.lock().insert(pane_id, grid.clone());
+
+        let io = self.open_pane_io(
+            SpawnPlan {
+                pane_id,
+                shell,
+                args,
+                cwd,
+                env,
+                size: pty_size,
+                overrides: spawn_env.overrides.clone(),
+            },
+            &grid,
+        )?;
+        self.ptys.lock().insert(pane_id, io);
+        // Reap-race guard: a child that exits faster than this insert
+        // lands may already have been reaped (session gone from the
+        // registry) — pull the handle straight back out so a dead
+        // session can't strand a PtyHandle in the map. The handle (if
+        // any) drops outside every lock, per `detach_panes`' contract.
+        let orphaned = {
+            let in_registry = self
+                .registry
+                .read()
+                .sessions
+                .values()
+                .any(|s| s.panes.contains_key(&pane_id));
+            if in_registry {
+                None
+            } else {
+                self.grids.lock().remove(&pane_id);
+                self.subscribers.lock().remove(&pane_id);
+                self.recordings.lock().remove(&pane_id);
+                self.ptys.lock().remove(&pane_id)
+            }
+        };
+        drop(orphaned);
+        Ok(())
+    }
+
+    /// Resolve the session this pane belongs to so we can stamp
+    /// TEAR_SESSION_{ID,NAME} on the child's env. Typed cross-tool
+    /// env-var names (the SAME source seki's prompt reads).
+    fn child_env(&self, pane_id: PaneId, spawn_env: &tear_types::SpawnEnv) -> Vec<(String, String)> {
+        use ishou_tokens::FleetStateVar as Fsv;
         let (session_id, session_name) = {
             let r = self.registry.read();
             r.sessions
@@ -545,23 +607,19 @@ impl InProcess {
         // win over the xterm-256color fallback above (the "vim grey"
         // fix), and PWD is stamped to match the cwd. Empty pre-seam.
         spawn_env.apply_to(&mut env);
-        let cwd = spawn_env.cwd.clone();
-        // Allocate the per-pane grid and register it BEFORE spawning
-        // the PTY — the reader thread starts immediately on spawn,
-        // and we want the first bytes to find their grid.
-        let grid = Arc::new(Mutex::new(PaneGrid::with_scrollback(
-            size.0 as usize,
-            size.1 as usize,
-            *self.scrollback_rows.read(),
-        )));
-        // Stamp provenance BEFORE the grid is registered, so the
-        // first byte the reader thread feeds already lands in an
-        // attributed extractor. Registering first would leave a
-        // window in which a fast-printing shell mints `Unknown`
-        // blocks for a pane whose provenance we already knew.
-        grid.lock().stamp_yurai(yurai);
-        self.grids.lock().insert(pane_id, grid.clone());
+        env
+    }
 
+    #[allow(clippy::type_complexity)]
+    fn pane_callbacks(
+        &self,
+        pane_id: PaneId,
+        grid: &Arc<Mutex<PaneGrid>>,
+        tombstone: Option<makimono::PaneDir>,
+    ) -> (
+        Box<dyn FnMut(&[u8]) + Send>,
+        Box<dyn FnOnce(Option<i32>) + Send>,
+    ) {
         let grid_for_callback = grid.clone();
         let subscribers_for_callback = self.subscribers.clone();
         let recordings_for_callback = self.recordings.clone();
@@ -634,10 +692,13 @@ impl InProcess {
         // (`detach_panes`' deadlock contract).
         let subscribers_for_exit = Arc::clone(&self.subscribers);
         let registry_for_exit = Arc::clone(&self.registry);
-        let ptys_for_exit = Arc::clone(&self.ptys);
+        let ptys_for_exit = Arc::downgrade(&self.ptys);
         let grids_for_exit = Arc::clone(&self.grids);
         let recordings_for_exit = Arc::clone(&self.recordings);
         let on_exit = Box::new(move |code: Option<i32>| {
+            if let Some(t) = &tombstone {
+                let _ = t.write_tombstone(&makimono::Ending::Exited { code });
+            }
             let (still_present, fully_exited) = {
                 let mut r = registry_for_exit.write();
                 let mut found = false;
@@ -714,10 +775,10 @@ impl InProcess {
                     .sessions
                     .get(&sid)
                     .and_then(AllPanesExited::witness);
-                if let Some(proof) = proof {
+                if let (Some(proof), Some(ptys)) = (proof, ptys_for_exit.upgrade()) {
                     reap_proven_dead(
                         &registry_for_exit,
-                        &ptys_for_exit,
+                        &ptys,
                         &grids_for_exit,
                         &subscribers_for_exit,
                         &recordings_for_exit,
@@ -726,39 +787,7 @@ impl InProcess {
                 }
             }
         });
-        let pty = PtyHandle::spawn(
-            shell,
-            args,
-            cwd.as_deref(),
-            &env,
-            pty_size,
-            on_bytes,
-            on_exit,
-        )?;
-        self.ptys.lock().insert(pane_id, pty);
-        // Reap-race guard: a child that exits faster than this insert
-        // lands may already have been reaped (session gone from the
-        // registry) — pull the handle straight back out so a dead
-        // session can't strand a PtyHandle in the map. The handle (if
-        // any) drops outside every lock, per `detach_panes`' contract.
-        let orphaned = {
-            let in_registry = self
-                .registry
-                .read()
-                .sessions
-                .values()
-                .any(|s| s.panes.contains_key(&pane_id));
-            if in_registry {
-                None
-            } else {
-                self.grids.lock().remove(&pane_id);
-                self.subscribers.lock().remove(&pane_id);
-                self.recordings.lock().remove(&pane_id);
-                self.ptys.lock().remove(&pane_id)
-            }
-        };
-        drop(orphaned);
-        Ok(())
+        (on_bytes, on_exit)
     }
 
     /// Detach every runtime artifact for `panes` — PTY handle, VT grid,
@@ -776,7 +805,7 @@ impl InProcess {
     /// observed as a 20+ minute wedge. The handles therefore ALWAYS
     /// leave the maps inside the lock scope and die outside it (the
     /// reap itself is additionally bounded — see `pty::reap_with_deadline`).
-    fn detach_panes(&self, panes: &[PaneId]) -> Vec<PtyHandle> {
+    fn detach_panes(&self, panes: &[PaneId]) -> Vec<PaneIo> {
         let detached = {
             let mut ptys = self.ptys.lock();
             let mut grids = self.grids.lock();
@@ -837,6 +866,12 @@ impl InProcess {
     }
 }
 
+fn end_all(detached: Vec<PaneIo>) {
+    for io in detached {
+        io.end();
+    }
+}
+
 /// Free-standing so both `spawn_pty_for`'s `on_exit` hook (which owns
 /// cloned `Arc`s, not a `&self`) and [`InProcess::reap_proven_dead_session`]
 /// share one implementation — the session-removal path exists once.
@@ -845,7 +880,7 @@ impl InProcess {
 /// under the locks, handles die outside them (that deadlock contract).
 fn reap_proven_dead(
     registry: &RwLock<Registry>,
-    ptys: &Mutex<BTreeMap<PaneId, PtyHandle>>,
+    ptys: &Mutex<BTreeMap<PaneId, PaneIo>>,
     grids: &Mutex<BTreeMap<PaneId, Arc<Mutex<PaneGrid>>>>,
     subscribers: &Mutex<BTreeMap<PaneId, PaneSubscribers>>,
     recordings: &Mutex<BTreeMap<PaneId, Arc<PaneRecording>>>,
@@ -873,7 +908,7 @@ fn reap_proven_dead(
     if panes_to_detach.is_empty() {
         return false;
     }
-    let detached: Vec<PtyHandle> = {
+    let detached: Vec<PaneIo> = {
         let mut ptys = ptys.lock();
         let mut grids = grids.lock();
         let mut subs = subscribers.lock();
@@ -1012,12 +1047,13 @@ impl MultiplexerControl for InProcess {
             let s = r.sessions.get(&id).ok_or(ControlError::NoSuchSession(id))?;
             s.panes.keys().copied().collect()
         };
+        self.record_human_end(&panes_to_kill);
         // Pull the runtime artifacts out under the locks…
         let detached = self.detach_panes(&panes_to_kill);
         self.registry.write().sessions.remove(&id);
         // …and kill + reap the PTY children with NO InProcess lock
         // held (detach_panes' deadlock contract).
-        drop(detached);
+        end_all(detached);
         info!(session = %id, "tear-core: killed session");
         Ok(())
     }
@@ -1040,6 +1076,7 @@ impl MultiplexerControl for InProcess {
         // Same shape as kill_session: artifacts leave the maps under
         // the locks, handles die only after every lock is released
         // (detach_panes' deadlock contract).
+        self.record_human_end(&panes_to_kill);
         let detached = self.detach_panes(&panes_to_kill);
         {
             let mut r = self.registry.write();
@@ -1059,7 +1096,7 @@ impl MultiplexerControl for InProcess {
                 }
             }
         }
-        drop(detached);
+        end_all(detached);
         info!(window = %id, "tear-core: killed window");
         Ok(())
     }
@@ -1084,6 +1121,7 @@ impl MultiplexerControl for InProcess {
         let Some((sid, wid)) = self.registry.read().locate_pane(id) else {
             return Err(ControlError::NoSuchPane(id));
         };
+        self.record_human_end(&[id]);
         let detached = self.detach_panes(&[id]);
         // true → pane removed from a multi-pane window, geometry needs a
         // reflow; false → the window collapsed (was its last pane) so
@@ -1091,7 +1129,7 @@ impl MultiplexerControl for InProcess {
         let needs_reflow = {
             let mut r = self.registry.write();
             let Some(s) = r.sessions.get_mut(&sid) else {
-                drop(detached);
+                end_all(detached);
                 return Err(ControlError::NoSuchSession(sid));
             };
             let outcome = match s.windows.get_mut(&wid) {
@@ -1111,7 +1149,7 @@ impl MultiplexerControl for InProcess {
                 // exists and already round-trips over the wire, so this
                 // costs no new type and no wire churn.
                 LeafRemoval::NotFound => {
-                    drop(detached);
+                    end_all(detached);
                     return Err(ControlError::NoSuchPane(id));
                 }
                 // Parent split collapsed into the sibling — the flat pane
@@ -1143,7 +1181,7 @@ impl MultiplexerControl for InProcess {
                 }
             }
         };
-        drop(detached);
+        end_all(detached);
         if needs_reflow {
             self.apply_layout_geometry(sid, wid);
         }

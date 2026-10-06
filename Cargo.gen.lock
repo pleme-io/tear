@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "69b71f1ec181d5fca8c50a6e9c6c2b6716406ccc6cc390004846609e2e2f9b16",
+  "cargo_lock_sha256": "86706ae676a20f457534566adb0afd3f3f9f933ca63904dd86445c8fbb44aa9a",
   "manifest_sha256": {
     "Cargo.toml": "e0397d34b7c245634bdf984eab83debe9585bef9f9ec585d33e65c51f1710d0b",
     "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
@@ -9,12 +9,12 @@
     "tamotsu/Cargo.toml": "82551e8d94bf35a707de833b73dfce7eef4325ce3aa2cca3331b0ebfad5a7f42",
     "tear-client/Cargo.toml": "146a70ab0117997feea3dcfe3fab32f42492d8e0f782bfb0f72079c7a6f30d42",
     "tear-config/Cargo.toml": "36b5d7b438eba05504078bbd3267d7258dc93ccd954f9e931b142e97b3cd5a22",
-    "tear-core/Cargo.toml": "7ef92b040112b6212d8c9b6d4ab3bb023bd4cde1a0e47452c6652dc49c71b7d0",
-    "tear-daemon/Cargo.toml": "e8e7a3b26b84c0241105bde8fa621f1e9332e7102a4372030fbb592562ad0de9",
+    "tear-core/Cargo.toml": "cef1ceeefba9112b1913dccc604bb4139a613b50bac7fb28093ca98f363f1060",
+    "tear-daemon/Cargo.toml": "79fad43b61e6994124f43017533c3267a0c856a738310689245f4f50bfee9cc6",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
     "tear-types/Cargo.toml": "fc85e48deda19504834d22af1615ff8b3e55f4338fe1401d7e27709156fd36a3",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
-    "tear/Cargo.toml": "39f5eae7cdf9d104ed1c437b509c3e073c839ddc4e2d0b05a0922f3b1b89f59a"
+    "tear/Cargo.toml": "b812e66c9b5b1a858e020dbd308ace1753350f82d281645bd575ab6b3134f3cf"
   },
   "target_resolves": {
     "base": {
@@ -5157,6 +5157,16 @@
             "tree": "target"
           },
           {
+            "name": "makimono",
+            "package_key": "makimono-0.1.27",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "mimalloc",
             "package_key": "mimalloc-0.1.52",
             "kind": "normal",
@@ -5256,6 +5266,16 @@
           {
             "name": "sysinfo",
             "package_key": "sysinfo-0.32.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tamotsu",
+            "package_key": "tamotsu-0.1.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8800,6 +8820,16 @@
             "tree": "target"
           },
           {
+            "name": "makimono",
+            "package_key": "makimono-0.1.27",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "once_cell",
             "package_key": "once_cell-1.21.4",
             "kind": "normal",
@@ -8844,6 +8874,16 @@
           {
             "name": "serde_json",
             "package_key": "serde_json-1.0.151",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tamotsu",
+            "package_key": "tamotsu-0.1.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8950,6 +8990,16 @@
             "tree": "target"
           },
           {
+            "name": "makimono",
+            "package_key": "makimono-0.1.27",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "nix",
             "package_key": "nix-0.30.1",
             "kind": "normal",
@@ -9019,6 +9069,16 @@
           {
             "name": "serde_yaml_ng",
             "package_key": "serde_yaml_ng-0.10.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tamotsu",
+            "package_key": "tamotsu-0.1.27",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

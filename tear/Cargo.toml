@@ -38,6 +38,8 @@ shikumi = { workspace = true }
 tear-core = { workspace = true }
 tear-client = { workspace = true }
 tear-daemon = { workspace = true }
+tamotsu = { workspace = true }
+makimono = { workspace = true }
 tear-tmux-backend = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
@@ -88,6 +90,7 @@ shidou = { version = "0.1" }
 
 [dev-dependencies]
 tempfile = "3"
+nix = { workspace = true, features = ["signal"] }
 # Enables tear_daemon::testing::{DaemonHarness, DuplexStream}
 # during test compilation only; production builds keep the feature
 # off so the helpers are gated out. The `testing` feature must be

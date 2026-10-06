@@ -171,6 +171,61 @@ pub struct TearConfig {
     /// cross-tool composition pattern.
     #[serde(default)]
     pub scrollback: ScrollbackConfig,
+
+    #[serde(default)]
+    pub sessions: SessionsConfig,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsConfig {
+    #[serde(default)]
+    pub durability: SessionDurability,
+    #[serde(default)]
+    pub journal: JournalConfig,
+    #[serde(default)]
+    pub holder_program: Option<Vec<String>>,
+    #[serde(default)]
+    pub store_dir: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionDurability {
+    #[default]
+    ProcessBound,
+    Held,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalConfig {
+    #[serde(default = "default_journal_max_bytes")]
+    pub max_bytes_per_pane: u64,
+    #[serde(default = "default_journal_segment_bytes")]
+    pub segment_bytes: u64,
+    #[serde(default = "default_journal_fsync_ms")]
+    pub fsync_interval_ms: u64,
+}
+
+impl Default for JournalConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes_per_pane: default_journal_max_bytes(),
+            segment_bytes: default_journal_segment_bytes(),
+            fsync_interval_ms: default_journal_fsync_ms(),
+        }
+    }
+}
+
+fn default_journal_max_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+
+fn default_journal_segment_bytes() -> u64 {
+    4 * 1024 * 1024
+}
+
+fn default_journal_fsync_ms() -> u64 {
+    1000
 }
 
 /// Per-pane scrollback policy. Every knob is operator-tunable;
@@ -372,6 +427,7 @@ impl Default for TearConfig {
             audit_log: None,
             auth_token_env: None,
             scrollback: ScrollbackConfig::default(),
+            sessions: SessionsConfig::default(),
         }
     }
 }
@@ -818,6 +874,7 @@ impl shikumi::TieredConfig for TearConfig {
             audit_log: None,
             auth_token_env: None,
             scrollback: <ScrollbackConfig as shikumi::TieredConfig>::bare(),
+            sessions: SessionsConfig::default(),
         }
     }
 
@@ -970,6 +1027,42 @@ mod tiered_tests {
     // convergence is meanwhile pinned by the atlas-routing assertion
     // above (`prefix_chord_converges_with_fleet_keybinds_atlas`) which
     // performs the exact normalization both sides need.
+}
+
+#[cfg(test)]
+mod sessions_tests {
+    use super::*;
+
+    #[test]
+    fn durability_defaults_to_process_bound_and_a_bare_config_parses() {
+        let cfg: TearConfig = serde_yaml_ng::from_str("prefix: ctrl+a\n").unwrap();
+        assert_eq!(cfg.sessions, SessionsConfig::default());
+        assert_eq!(cfg.sessions.durability, SessionDurability::ProcessBound);
+        assert_eq!(cfg.sessions.journal.max_bytes_per_pane, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_partial_sessions_block_fills_the_rest_from_defaults() {
+        let cfg: TearConfig = serde_yaml_ng::from_str(
+            "sessions:\n  durability: held\n  journal:\n    max_bytes_per_pane: 1048576\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.sessions.durability, SessionDurability::Held);
+        assert_eq!(cfg.sessions.journal.max_bytes_per_pane, 1_048_576);
+        assert_eq!(cfg.sessions.journal.segment_bytes, 4 * 1024 * 1024);
+        assert_eq!(cfg.sessions.journal.fsync_interval_ms, 1000);
+        assert!(cfg.sessions.holder_program.is_none());
+        let back: TearConfig =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.sessions, cfg.sessions);
+    }
+
+    #[test]
+    fn an_unknown_durability_is_refused_at_parse_time() {
+        let r: Result<TearConfig, _> =
+            serde_yaml_ng::from_str("sessions:\n  durability: immortal\n");
+        assert!(r.is_err());
+    }
 }
 
 #[cfg(test)]

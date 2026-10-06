@@ -20,6 +20,8 @@ okiba = "0.2"
 tear-types = { workspace = true }
 tear-core = { workspace = true }
 tear-config = { workspace = true }
+makimono = { workspace = true }
+tamotsu = { workspace = true }
 # praça (M1 "Remember"): the typed session-orchestration substrate.
 # The daemon persists its project↔session bindings + frecency index
 # (a `praca::PracaSnapshot`) so they survive daemon restarts.

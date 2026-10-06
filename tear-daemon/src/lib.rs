@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod durability;
 pub mod kanshou_state;
 pub mod praca_store;
 #[cfg(any(test, feature = "testing"))]
@@ -231,6 +232,7 @@ impl DaemonHandle {
         if let Some(h) = self.accept_thread.take() {
             let _ = h.join();
         }
+        self._inproc.release_durable();
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
@@ -459,6 +461,8 @@ pub fn start_with_config(
     // (alongside TEAR_SESSION_ID/NAME and TEAR_PANE_ID) — shells
     // and starship rely on it for prompt visibility + re-discovery.
     inproc.set_socket_path(socket_path.clone());
+
+    durability::enable_and_restore(&inproc, &live_config.load().sessions, Some(&socket_path));
 
     // ── Kanshou introspection server ─────────────────────────────
     // Expose the daemon's live Registry (sessions, panes, socket,

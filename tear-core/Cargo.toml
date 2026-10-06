@@ -20,6 +20,8 @@ engate = ["dep:engate-types", "dep:engate-attach", "tear-types/engate"]
 
 [dependencies]
 tear-types = { workspace = true }
+makimono = { workspace = true }
+tamotsu = { workspace = true }
 tear-config = { workspace = true }
 # Typed cross-tool environment contract — FleetStateVar owns the
 # canonical TEAR_* env-var names tear stamps onto every spawned pane

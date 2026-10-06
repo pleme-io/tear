@@ -189,7 +189,7 @@ pub fn default_praca_path() -> PathBuf {
 /// `okiba` refuses a relative override and has no arm that returns a relative
 /// path, so both are gone. `TEAR_STATE_DIR` is still honoured first and is
 /// still tear's own knob; it is checked for absoluteness for the same reason.
-fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     if let Ok(explicit) = std::env::var("TEAR_STATE_DIR") {
         let p = PathBuf::from(explicit);
         // Tear's own override gets the same rule as XDG's: a relative one
@@ -223,51 +223,16 @@ fn load_snapshot(path: &Path) -> std::io::Result<Option<PracaSnapshot>> {
     Ok(Some(snap))
 }
 
-/// Serialise `snap` to `path` atomically and durably
-/// (write-temp → `sync_all` → rename). Creates parent dirs on demand.
-///
-/// The shipped reference for this shape is izumi's `atomic_write_framed`
-/// (`izumi/src/persist.rs`), which additionally frames the body with a magic
-/// tag + BLAKE3 hash so a torn file is *detectable* rather than merely
-/// unlikely. Only the durability half is implemented here — see the module
-/// docs for why the framing half is deferred rather than forgotten.
+/// Serialise `snap` to `path` atomically and durably — the one
+/// write-temp → `sync_all` → rename implementation in this workspace,
+/// `makimono::atomic`, which the durable session store uses too.
 fn persist_snapshot(path: &Path, snap: &PracaSnapshot) -> std::io::Result<()> {
-    use std::io::Write;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(snap)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // Temp file in the SAME directory so the rename stays within one
-    // filesystem (cross-device rename is not atomic / fails outright).
-    let tmp = tmp_path(path);
-    let mut f = std::fs::File::create(&tmp)?;
-    // `sync_all` BEFORE the rename. `std::fs::write` — which this replaced —
-    // does not sync, and rename only makes the *directory entry* atomic; the
-    // temp file's bytes can still be in flight. Publishing an unsynced temp
-    // means a crash can leave a present, correctly-named, EMPTY snapshot.
-    let written = f.write_all(json.as_bytes()).and_then(|()| f.sync_all());
-    drop(f);
-    if let Err(e) = written {
-        // Never leave a half-written temp behind for a later reader to find.
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    makimono::atomic::write_json(path, snap)
 }
 
-/// `<path>.tmp.<pid>` — pid-tagged so two daemons (or a test running
-/// several stores) never collide on the same temp name.
+#[cfg(test)]
 fn tmp_path(path: &Path) -> PathBuf {
-    let pid = std::process::id();
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsStr::to_os_string)
-        .unwrap_or_default();
-    name.push(format!(".tmp.{pid}"));
-    path.with_file_name(name)
+    makimono::atomic::tmp_path(path)
 }
 
 #[cfg(test)]

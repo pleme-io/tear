@@ -437,6 +437,10 @@ enum PaneRecordAction {
 }
 
 fn main() -> Result<()> {
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some(tear_daemon::durability::HOLD_SUBCOMMAND) {
+        tamotsu::main_from_args(&argv[2..]);
+    }
     let cli = Cli::parse();
 
     // MCP must dispatch BEFORE the global tracing init below.
