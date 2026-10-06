@@ -1,7 +1,8 @@
 # Session durability — a session ends only when it ends
 
-> **Status: design, 2026-09-22. Nothing below is shipped unless its row in
-> §6 says so.** This amends [`SESSION-TYPESCAPE.md`](./SESSION-TYPESCAPE.md)
+> **Status: P1–P3 shipped 2026-10-06; P4 (fleet) ships with the nix
+> wiring. §6 is the ledger, §7 records where the build departed from this
+> design and why.** Designed 2026-09-22. This amends [`SESSION-TYPESCAPE.md`](./SESSION-TYPESCAPE.md)
 > §2's `Phase-6` row and its illegal state #6, and says exactly which part of
 > that entry was a fact about the world and which part was a fact about our
 > own architecture.
@@ -174,20 +175,30 @@ surface being built:
 ## 4. Config
 
 ```yaml
-tear:
-  runtime: daemon            # required by detach_on_close (typed, §5)
-  sessions:
-    detach_on_close: true
-    auto_revive: true        # re-adopt held panes; resurrect orphaned ones
-    persist:
-      enable: true
-      max_bytes_per_pane: 64MiB
-      fsync_interval_ms: 1000
+# ~/.config/tear/tear.yaml — read once, at daemon start
+sessions:
+  durability: held            # process_bound (default) | held
+  journal:
+    max_bytes_per_pane: 67108864
+    segment_bytes: 4194304
+    fsync_interval_ms: 1000
+  store_dir: null             # default $XDG_STATE_HOME/tear/makimono
+  holder_program: null        # default: this tear binary, `tear hold`
 ```
 
-Rendered by the nix module trio for mado and tear; the daemon unit gets
-`AbandonProcessGroup` (launchd) / `KillMode=process` (systemd) whenever
-`auto_revive` is on, derived rather than hand-set.
+```yaml
+# ~/.config/mado/mado.yaml — the view side
+tear:
+  runtime: resident           # embedded (default) | daemon | resident
+```
+
+The two halves are separate on purpose. `runtime: resident` is what makes a
+window a view (closing it detaches); `durability: held` is what makes the
+daemon's sessions outlive the daemon. Each default leaves today's behaviour
+untouched, and the fleet turns both on together through the
+`pleme.terminal` nix surface, which also derives the launchd
+`AbandonProcessGroup` / systemd `KillMode=process` posture from
+`durability: held`.
 
 ## 5. Invariants and their tiers
 
@@ -202,9 +213,38 @@ Rendered by the nix module trio for mado and tear; the daemon unit gets
 
 ## 6. Phases — each ends on a verified receipt
 
-| Phase | Delivers | Receipt |
-|---|---|---|
-| **P1 views detach** | daemon runtime gets switching + the Ctrl-S picker over `MultiplexerControl`; close/SIGTERM detach; picker lists all daemon sessions with state + preview + end | kill mado with sessions open; relaunch; Ctrl-S shows them; attach restores the screen |
-| **P2 makimono** | the journal crate; the daemon writes it; resurrection on daemon start | `kill -9` the daemon, reboot-equivalent (kill holders+daemon), relaunch: sessions come back in the right cwd with their scrollback |
-| **P3 tamotsu** | the holder; `PtyHandle::Held`; re-adoption; journal writer moves into the holder | `kill -9` the daemon mid-`top`; relaunch; the same `top` pid is still running in the reattached pane |
-| **P4 fleet** | nix options, launchd/systemd derivations, docs, SESSION-TYPESCAPE rows updated | rebuild cid; restart the daemon unit; sessions survive |
+| Phase | Delivers | Status | Receipt |
+|---|---|---|---|
+| **P1 views detach** | mado `tear.runtime: resident`; close/SIGTERM detach; Ctrl-S over `MultiplexerControl` | **Shipped** (mado, before 2026-10-06) | `TearRuntime::Resident` + its picker bridge in `mado/src/gui_tear_attach.rs` |
+| **P2 makimono** | journal crate; resurrection on daemon start | **Shipped** | `makimono` unit tests (journal reopen/eviction/gap, first-ending-wins, archive retention); `tear/tests/held_sessions.rs::a_lost_holder_is_resurrected_in_place_on_the_next_start` — holder SIGKILLed while no daemon runs (the reboot shape), next start shows the old scrollback, the banner, and a different shell pid |
+| **P3 tamotsu** | the holder; `PaneIo::Held`; re-adoption | **Shipped** | `tear/tests/held_sessions.rs::a_daemon_restart_reattaches_the_same_shell_with_its_screen` — same session id, screen rebuilt from the journal, `$$` identical before and after the restart; `tamotsu/tests/holder.rs` — detach/adopt keeps the pid, an exit code becomes the ending, a killed holder is revived in place |
+| **P3b clients reconnect** | `tear-client` re-dials a restarted daemon; mado re-subscribes the displayed pane | **Shipped** | `tear-client::tests::a_client_outlives_a_daemon_restart_on_the_same_socket`; mado's resident loop re-attaches when its byte stream ends while the pane is still `Running` |
+| **P4 fleet** | nix surface, derived launchd/systemd posture, rebuild | ships with the nix commit | rebuild, `launchctl kickstart -k` the daemon, sessions and their shells survive |
+
+## 7. As built — where the build departed from the design
+
+- **P2 and P3 merged.** The journal writer lives in the holder from the
+  first commit rather than moving there in P3: every byte is written by the
+  one process that is guaranteed to see it, so there was never a version in
+  which the daemon journals and a later one in which it does not.
+- **One durability enum, not three booleans.** §4's draft had
+  `detach_on_close`, `auto_revive` and `persist.enable`. Held panes without
+  a journal, or a journal without re-adoption, have no meaning, so the
+  daemon side is a single `durability: process_bound | held` and the view
+  side is mado's existing `runtime` enum.
+- **Read once, at start.** `sessions` is not hot-reloaded. A mado built
+  against an older `tear-config` round-trips `SetConfig` without the field,
+  which would otherwise switch durability off on a live daemon.
+- **Holder sockets live beside the daemon socket** (`<socket dir>/h/<pane>.sock`),
+  not under the session directory: macOS caps `sun_path` at 104 bytes.
+- **The holder is `tear hold`**, the same binary as the daemon, so no
+  second package has to be installed or kept in step. The `tamotsu` binary
+  exists for that crate's own tests.
+- **A daemon stopping hands its holders off explicitly.**
+  `DaemonHandle::stop` calls `InProcess::release_durable`, which detaches
+  every held pane and parks the persister. Without it an in-process daemon
+  that stops while another `Arc<InProcess>` lives (the kanshou sidecar holds
+  one) would keep repairing holders a successor daemon owns.
+- **cwd.** OSC 7 from the grid is persisted by the daemon; the holder also
+  polls `/proc/<pid>/cwd` on Linux. macOS has no unsafe-free poll yet, so a
+  macOS shell that never emits OSC 7 resurrects in its spawn directory.

@@ -61,7 +61,7 @@ restart-durable live state (a tmux-resurrect-class feature).
 | Latent definition carrying a layout plan (`SessionDefinition` + `LayoutPlan`) | **Shipped** | `validate → DefinitionError`; leaves are `PaneSlot`, never live `PaneId` |
 | 1:N definition→instances (`InstanceRegistry`) | **Shipped** | `BTreeMap<DefinitionId, BTreeSet<InstanceId>>` |
 | `instantiate` / `reinstantiate` morphism | **Shipped** | tested vs real `InProcess`; tree shape + per-pane shell exact |
-| `Durability::ProcessBound` (no restart-survival value) | **Shipped** | restart = re-instantiate, not resurrect |
+| `Durability { ProcessBound, Held }` (no reboot-survival value) | **Shipped** | `Held` = a tamotsu holder owns the PTY; a daemon restart re-adopts it. A reboot resurrects (new incarnation). See [`SESSION-DURABILITY.md`](./SESSION-DURABILITY.md) |
 | Genesis-derived `Guid` (full 256-bit BLAKE3, domain-separated leaves) | **Shipped** | `tear-types::genesis`; the only producer is `Genesis::guid`. Deliberately NOT `SessionId::from_seed`, which truncates to 8 bytes and seeds off the mutable name |
 | `Address` / `address::Segment` / `Pattern` (dot-separated alias + NATS matcher) | **Shipped** (type) / **M2** (wired) | `tear-types::address`; nothing resolves an address yet — `Request` is still exhaustively id-typed |
 | Typed `SessionOrigin` (project / ad-hoc / authored) | **Shipped** | the ad-hoc path is a typed arm, not a hidden branch |
@@ -72,7 +72,7 @@ restart-durable live state (a tmux-resurrect-class feature).
 | mado renders multi-pane from `compute_rects` | **M5** | the renderer + wire are ready; mado's `render_multi_pane` was deleted at Phase 4 and must be re-added |
 | no-overlap: one vte parser (retire mado's `terminal.rs` double-parse) | **M5** | the live double-parse is named tech debt; the seam is now decided + typed — [`SHUKEN.md`](./SHUKEN.md) |
 | `(defsession …)` tatara-lisp authoring leg | **M5+** | the `TataraDomain` derive is not in the tear crate-tree; don't pull the heavy dep prematurely |
-| restart-durable live sessions (PTYs + scrollback survive a daemon restart) | **Phase-6** | impossible without serialize-registry + respawn/reattach-PTY; only the *definition* survives today |
+| restart-durable live sessions (PTYs + scrollback survive a daemon restart) | **Shipped** (opt-in: `sessions.durability: held`) | tamotsu holds each PTY, makimono journals every byte; the daemon re-adopts on start — [`SESSION-DURABILITY.md`](./SESSION-DURABILITY.md) §6 |
 
 ---
 
@@ -91,7 +91,7 @@ shipped with the wiring still at M2/M5), **1 is parse-time-rejected**, and
 | 3 | a definition carried no layout/panes/commands | `SessionDefinition` holds a **non-Option** `LayoutPlan` + a `SpawnSpec` per slot | **truly-unrep** ✓ |
 | 4 | `SessionState::Templated` empty arm | deleted; the latent thing IS a `SessionDefinition` value | **truly-unrep** ✓ (type shipped; arm deleted at M2) |
 | 5 | no way to instantiate a definition | `instantiate` morphism + `AttachAction::Instantiate` | **truly-unrep** ✓ |
-| 6 | "live PTYs survive a daemon restart" | `Durability` has no survival arm; `reinstantiate` is the constructive "restart" | **truly-unrep** ✓ |
+| 6 | "these processes survived a reboot" (narrowed from "…a daemon restart", which `Held` now makes true) | `Durability` has no reboot arm; a resurrected pane is a new process under a visible banner, and the tests assert its pid differs | **truly-unrep** ✓ |
 | 9 | ad-hoc = a silent third construction path | `SessionOrigin {Project, Adhoc, Authored}` non-Option field | **truly-unrep** ✓ |
 | 10 | model focus vs view focus conflated | `TearWindow.active_pane` (shared model) vs mado's displayed-pane (view-local) — different types/crates | **truly-unrep** (mado-side, M2/M5) |
 | 7 | `decide()` can return `SwitchTo(dead_id)` | resolve the instance against the live registry before switching | **only-mitigated — C2 ceiling** |
@@ -135,7 +135,7 @@ PaneSlot       definition-local pane key (never a live PaneId)
 SpawnSpec      what to spawn in a slot (shell/args/env/cwd/title/policy)
 LayoutPlan     latent layout tree over PaneSlots; ::realize(mint) → LayoutNode
 WindowPlan     latent TearWindow (name + LayoutPlan + active_slot)
-Durability     { ProcessBound }   — no restart-surviving value exists
+Durability     { ProcessBound, Held } — Held survives a daemon restart; nothing survives a reboot
 LiveSession    TearSession + the typed live→DefinitionId link + Durability
 LayoutNode     the live layout tree + the shipped algebra (the renderer)
 Rect           gap-free/overlap-free cell rectangles
@@ -192,10 +192,10 @@ INTERPRETER TRIPLET:
 - **Split-screens and layouts** — a window IS a `LayoutNode`; split-screen
   is `compute_rects` rendered by a view. One algorithm, both apps.
 - **Persistence across all this** — the *definition* is durable (survives
-  restart); the *instance* is `ProcessBound` (survives client disconnect,
-  not daemon restart). "Restart the session" = `reinstantiate` the
-  definition. Restart-durable live PTYs are a named Phase-6 feature, not a
-  silent promise.
+  restart). The *instance* is `ProcessBound` by default (survives client
+  disconnect, not daemon restart) and `Held` under
+  `sessions.durability: held` (survives a daemon restart; after a reboot
+  it is resurrected from its journal as a new incarnation).
 
 ---
 
@@ -216,9 +216,10 @@ INTERPRETER TRIPLET:
   parsers and renames the overlap a boundary. `PaneGrid` becomes the sole
   VT authority and the seam is typed as *ownership*, not content: see
   [`SHUKEN.md`](./SHUKEN.md).
-- **Phase-6.** Restart-durable live sessions: serialize the registry +
-  grids, respawn/reattach PTYs. Only attempt once the model above is
-  load-bearing.
+- **Phase-6 — shipped as session durability.** Restart-durable live
+  sessions landed as tamotsu holders + makimono journals, not as a
+  serialized grid: the journal is the raw byte stream and the one VT
+  parser rebuilds the grid. [`SESSION-DURABILITY.md`](./SESSION-DURABILITY.md).
 
 Provenance: model chosen via a 4-framing design panel → adversarial
 synthesis (backbone = the triplet/crate-seam framing). The algebra was

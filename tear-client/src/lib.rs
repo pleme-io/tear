@@ -194,6 +194,7 @@ pub struct Client {
     /// the daemon predates `Request::Hello` — which is the common
     /// case today, not an error.
     daemon: DaemonIdentity,
+    auth_token: Option<String>,
 }
 
 /// Handle returned by [`Client::subscribe_pane_bytes`] and
@@ -321,6 +322,7 @@ impl Client {
             socket_path: PathBuf::from(transport.display_string()),
             transport,
             daemon,
+            auth_token,
         })
     }
 
@@ -437,7 +439,9 @@ impl Client {
             tear_types::wire::Request::Authenticate(token.to_string()),
             "Authenticate",
             io::ErrorKind::PermissionDenied,
-        )
+        )?;
+        self.auth_token = Some(token.to_string());
+        Ok(())
     }
 
     /// #2 — tag this connection with a 64-bit client identity used
@@ -642,11 +646,20 @@ impl Client {
     /// request-response per the daemon's contract.
     fn rpc(&self, req: Request) -> ControlResult<Response> {
         let mut inner = self.inner.lock();
-        let ClientInner { reader, writer } = &mut *inner;
-        write_msg::<_, Request>(writer, &req)
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let resp: Response =
-            read_msg(reader).map_err(|e| ControlError::Transport(e.to_string()))?;
+        let first = exchange(&mut inner, &req);
+        let resp = match first {
+            Err(lost) => {
+                let Ok(fresh) = Self::dial(&self.transport, self.auth_token.as_deref()) else {
+                    return Err(ControlError::Transport(lost.to_string()));
+                };
+                *inner = fresh;
+                if !replayable(&req) {
+                    return Err(ControlError::Transport(lost.to_string()));
+                }
+                exchange(&mut inner, &req).map_err(|e| ControlError::Transport(e.to_string()))?
+            }
+            Ok(resp) => resp,
+        };
         if let Response::Err(we) = resp {
             return Err(ControlError::from(we));
         }
@@ -1136,6 +1149,35 @@ fn unexpected(want: &'static str, got: Response) -> ControlError {
     ControlError::Transport(format!(
         "tear-daemon returned wrong response variant: expected {want}, got {got:?}"
     ))
+}
+
+fn exchange(inner: &mut ClientInner, req: &Request) -> io::Result<Response> {
+    let ClientInner { reader, writer } = inner;
+    write_msg::<_, Request>(writer, req)?;
+    read_msg(reader)
+}
+
+fn replayable(req: &Request) -> bool {
+    matches!(
+        req,
+        Request::ListSessions
+            | Request::GetSession(_)
+            | Request::GetWindow(_)
+            | Request::GetPane(_)
+            | Request::PaneSnapshot(_)
+            | Request::GetConfig
+            | Request::ExportPaneRecording(_)
+            | Request::PaneRecordingStatus(_)
+            | Request::PaneBlocksList { .. }
+            | Request::PaneBlockAt { .. }
+            | Request::PaneBlocksStatus(_)
+            | Request::PaneSubscriberCount(_)
+            | Request::GetFreio
+            | Request::SelectWindow(_)
+            | Request::SelectPane(_)
+            | Request::PaneResizeAbsolute { .. }
+            | Request::SetSpawnEnv(_)
+    )
 }
 
 #[cfg(test)]
@@ -1778,6 +1820,30 @@ mod tests {
     /// attempt fails with `NotFound` (no leftover socket) — proves
     /// the cleanup-on-drop story.
     #[test]
+    fn a_client_outlives_a_daemon_restart_on_the_same_socket() {
+        let socket = std::env::temp_dir().join(format!("tear-client-restart-{}.sock", std::process::id()));
+        let first = tear_daemon::start(socket.clone(), Arc::new(tear_core::InProcess::new()))
+            .expect("first daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let client = Client::connect(&socket).expect("connect");
+        assert!(client.list_sessions().unwrap().is_empty());
+        first.stop();
+        let second = tear_daemon::start(socket.clone(), Arc::new(tear_core::InProcess::new()))
+            .expect("second daemon");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            client.list_sessions().is_ok(),
+            "a read-only call re-dials the restarted daemon instead of failing forever"
+        );
+        let refused = client.kill_session(tear_types::SessionId::from_seed("absent"));
+        assert!(
+            matches!(refused, Err(ControlError::NoSuchSession(_))),
+            "after the re-dial every call reaches the new daemon: {refused:?}"
+        );
+        second.stop();
+    }
+
+    #[test]
     fn connect_after_daemon_stop_returns_not_found() {
         let socket = {
             let mut p = std::env::temp_dir();
@@ -2102,6 +2168,7 @@ mod tests {
             // the probe never ran. Protocol 0 is the honest value —
             // and the right default for a client assembled by hand.
             daemon: DaemonIdentity::pre_capability(),
+            auth_token: None,
         };
         let err = match me.authenticate("wrong-secret") {
             Ok(()) => panic!("bad token must error"),

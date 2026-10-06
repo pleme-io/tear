@@ -6,12 +6,13 @@
 //! (see praça's `SessionDefinition` + the `instantiate` morphism), and a
 //! daemon restart does NOT resurrect it — it re-instantiates the
 //! definition under a *fresh* [`InstanceId`]. The [`Durability`] marker
-//! is how that impossibility is made typed: there is no value of
-//! `Durability` that means "survives a restart", so a live session
-//! claiming restart-durability is **unrepresentable** (pressure-test
-//! illegal state #6). The only thing that survives a restart is the
-//! definition (durable, in praça's store); the live processes are, by
-//! type, process-bound.
+//! types how far a live session's processes reach: `ProcessBound` dies
+//! with the daemon; `Held` (a tamotsu holder owns the PTY outside the
+//! daemon) survives a daemon restart and is re-adopted. Nothing names
+//! survival of a reboot or logout — after one, a held session is
+//! *resurrected* as a new incarnation from its makimono journal
+//! (docs/SESSION-DURABILITY.md), so "these processes survived a reboot"
+//! stays **unrepresentable** (pressure-test illegal state #6, narrowed).
 
 use serde::{Deserialize, Serialize};
 
@@ -20,20 +21,21 @@ use crate::{
     session::TearSession,
 };
 
-/// Durability of a live session's runtime state. The marker exists to
-/// make one illegal claim unrepresentable: a [`LiveSession`]'s PTYs,
-/// layout, and scrollback live in the daemon process and die with it, so
-/// there is no `Durable` / `SurvivesRestart` arm to construct. "Restart
-/// the session" is therefore not "resurrect these processes" (no value
-/// expresses that) but "re-instantiate the definition" — a fresh
-/// incarnation. New arms would only ever describe *finer* process-bound
-/// lifetimes, never a restart-surviving one.
+/// Durability of a live session's runtime state. `ProcessBound`: the
+/// PTYs live in the daemon and die with it. `Held`: a holder process
+/// outside the daemon owns them, so a daemon restart re-adopts the same
+/// processes. No arm claims survival of a reboot — that is a world fact
+/// (every process of the user dies), answered by resurrection, which is a
+/// fresh incarnation and never a claimed survivor.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Durability {
     /// State lives in the daemon process and is lost when it exits.
     /// Recovery is re-instantiation of the definition, never resurrection.
     ProcessBound,
+    /// The PTY and child are held by a tamotsu holder outside the daemon;
+    /// a daemon restart re-adopts them. A reboot is not covered.
+    Held,
 }
 
 impl Default for Durability {
@@ -118,14 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn durability_has_no_restart_surviving_value() {
-        // The whole guarantee in one line: the only constructible value is
-        // ProcessBound. (If a `Durable` arm were ever added, this match
-        // would fail to compile — the forcing function.)
-        let d = Durability::default();
-        match d {
-            Durability::ProcessBound => {}
+    fn durability_names_daemon_restart_survival_and_nothing_beyond_it() {
+        // The forcing function: an arm claiming reboot survival would fail
+        // this exhaustive match and has to be argued for here.
+        for d in [Durability::ProcessBound, Durability::Held] {
+            match d {
+                Durability::ProcessBound | Durability::Held => {}
+            }
         }
+        assert_eq!(Durability::default(), Durability::ProcessBound);
     }
 
     #[test]
