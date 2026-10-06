@@ -152,7 +152,7 @@ fn a_shell_that_exits_writes_its_exit_code_as_the_ending() {
 fn a_killed_holder_is_revived_in_place_with_a_new_shell_and_its_scrollback() {
     let t = Scratch::new("revive");
     let rv = revival(&t.0);
-    let (seen, on_bytes, _exit, on_exit) = sinks();
+    let (seen, on_bytes, exit, on_exit) = sinks();
     let held = HeldPty::launch(rv.clone(), on_bytes, on_exit).unwrap();
     held.write(b"echo before-$((3*3))\n").unwrap();
     assert!(wait_for(&seen, "before-9"));
@@ -191,4 +191,9 @@ fn a_killed_holder_is_revived_in_place_with_a_new_shell_and_its_scrollback() {
         "{text}"
     );
     held.end();
+    assert_eq!(exit.recv_timeout(Duration::from_secs(10)).unwrap(), None);
+    assert!(
+        !HeldPty::probe(&rv.args.socket),
+        "the revived holder is gone"
+    );
 }
