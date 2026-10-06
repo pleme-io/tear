@@ -48,6 +48,20 @@
           withUserDaemon = true;
           withShikumiConfig = true;
           shikumiDefaults = {};
+          extraHmConfigFn = { cfg, lib, config, pkgs, ... }:
+            let
+              settings = config.services.tear.settings or { };
+              held = ((settings.sessions or { }).durability or "process_bound") == "held";
+              daemon = cfg.daemon.enable or false;
+            in
+            lib.mkMerge [
+              (lib.mkIf (held && daemon && pkgs.stdenv.hostPlatform.isDarwin) {
+                launchd.agents.tear-daemon.config.AbandonProcessGroup = true;
+              })
+              (lib.mkIf (held && daemon && !pkgs.stdenv.hostPlatform.isDarwin) {
+                systemd.user.services.tear-daemon.Service.KillMode = "process";
+              })
+            ];
         };
       };
 
