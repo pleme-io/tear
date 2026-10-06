@@ -1,5 +1,5 @@
 [package]
-name = "makimono"
+name = "tear-makimono"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "makimono (巻物, the scroll) — tear's durable session store: an append-only, bounded raw-byte journal per pane, the session document, and the typed tombstone that is the only record of a session ending."
+
+[lib]
+name = "makimono"
 
 [lints]
 workspace = true

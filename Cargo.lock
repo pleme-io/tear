@@ -1546,17 +1546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "makimono"
-version = "0.1.27"
-dependencies = [
- "serde",
- "serde_json",
- "tear-types",
- "thiserror 2.0.19",
- "tracing",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1996,7 +1985,6 @@ dependencies = [
  "ctrlc",
  "ishou-tokens",
  "kotae",
- "makimono",
  "mimalloc",
  "nix 0.30.1",
  "ratatui",
@@ -2008,11 +1996,12 @@ dependencies = [
  "shidou",
  "shikumi",
  "sysinfo",
- "tamotsu",
  "tear-client",
  "tear-config",
  "tear-core",
  "tear-daemon",
+ "tear-makimono",
+ "tear-tamotsu",
  "tear-tmux-backend",
  "tear-types",
  "tempfile",
@@ -2968,20 +2957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tamotsu"
-version = "0.1.27"
-dependencies = [
- "anyhow",
- "ciborium",
- "makimono",
- "nix 0.30.1",
- "parking_lot",
- "portable-pty",
- "serde",
- "tracing",
-]
-
-[[package]]
 name = "tear-client"
 version = "0.1.27"
 dependencies = [
@@ -3024,15 +2999,15 @@ dependencies = [
  "engate-types",
  "espelho",
  "ishou-tokens",
- "makimono",
  "once_cell",
  "parking_lot",
  "portable-pty",
  "proptest",
  "serde",
  "serde_json",
- "tamotsu",
  "tear-config",
+ "tear-makimono",
+ "tear-tamotsu",
  "tear-types",
  "thiserror 2.0.19",
  "tracing",
@@ -3048,7 +3023,6 @@ dependencies = [
  "blake3",
  "ciborium",
  "kanshou",
- "makimono",
  "nix 0.30.1",
  "notify",
  "okiba",
@@ -3056,11 +3030,37 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "tamotsu",
  "tear-config",
  "tear-core",
+ "tear-makimono",
+ "tear-tamotsu",
  "tear-types",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "tear-makimono"
+version = "0.1.27"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tear-types",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
+name = "tear-tamotsu"
+version = "0.1.27"
+dependencies = [
+ "anyhow",
+ "ciborium",
+ "nix 0.30.1",
+ "parking_lot",
+ "portable-pty",
+ "serde",
+ "tear-makimono",
  "tracing",
 ]
 

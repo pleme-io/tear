@@ -1,5 +1,5 @@
 [package]
-name = "tamotsu"
+name = "tear-tamotsu"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "tamotsu (保つ, to keep) — the per-pane PTY holder for tear: a small process outside the daemon that owns one pane's PTY and child, journals every byte to makimono, and lets a restarted daemon re-adopt the live shell."
+
+[lib]
+name = "tamotsu"
 
 [lints]
 workspace = true
