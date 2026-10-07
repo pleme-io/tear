@@ -1897,6 +1897,8 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: Option<std::net::SocketAd
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    #[cfg(feature = "bench-probes")]
+    makimono::probes::arm_from_env();
     let inproc = Arc::new(InProcess::new());
     let (handle, listen_addr) = if let Some(addr) = tcp {
         let h = tear_daemon::start_tcp(addr, inproc)
@@ -1937,6 +1939,8 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: Option<std::net::SocketAd
     }
     println!("\ntear-daemon shutting down...");
     handle.stop();
+    #[cfg(feature = "bench-probes")]
+    let _ = makimono::probes::dump("daemon");
     Ok(())
 }
 

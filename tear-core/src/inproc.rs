@@ -635,15 +635,7 @@ impl InProcess {
             // sender is dead — prune it.
             let mut subs = subscribers_for_callback.lock();
             if let Some(ps) = subs.get_mut(&pane_id) {
-                let senders = &mut ps.senders;
-                let mut i = 0;
-                while i < senders.len() {
-                    if senders[i].send(bytes.to_vec()).is_err() {
-                        senders.swap_remove(i);
-                    } else {
-                        i += 1;
-                    }
-                }
+                fan_out(&mut ps.senders, bytes);
             }
             drop(subs);
             // Push to the recording (#4). The Arc-cloned
@@ -873,6 +865,19 @@ impl InProcess {
 fn end_all(detached: Vec<PaneIo>) {
     for io in detached {
         io.end();
+    }
+}
+
+fn fan_out(senders: &mut Vec<mpsc::Sender<Vec<u8>>>, bytes: &[u8]) {
+    let mut i = 0;
+    while i < senders.len() {
+        tear_types::probe_gauge!(raise SubscriberBacklog, 1);
+        if senders[i].send(bytes.to_vec()).is_err() {
+            tear_types::probe_gauge!(lower SubscriberBacklog, 1);
+            senders.swap_remove(i);
+        } else {
+            i += 1;
+        }
     }
 }
 

@@ -71,6 +71,7 @@ impl AuditLog {
             }
         };
         payload.push('\n');
+        tear_types::probe!(AuditWrites);
         let mut f = self.inner.file.lock().expect("audit file lock poisoned");
         if let Err(e) = f.write_all(payload.as_bytes()) {
             warn!(error = %e, path = %self.inner.path.display(), "audit: write failed");
@@ -113,6 +114,11 @@ pub enum AuditEvent {
         /// SHA-256 of the YAML payload — useful to grep diffs
         /// without storing the whole config in every audit row.
         config_hash: String,
+    },
+    #[cfg(feature = "bench-probes")]
+    AuditedKey {
+        ts_ms: u64,
+        pid: String,
     },
 }
 

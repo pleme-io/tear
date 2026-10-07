@@ -1642,6 +1642,7 @@ impl PaneGrid {
         } else {
             self.state.scrollback.iter().cloned().collect()
         };
+        tear_types::probe!(SnapshotRows, cells.len() + scrollback.len());
         PaneSnapshot {
             rows: self.state.rows,
             cols: self.state.cols,

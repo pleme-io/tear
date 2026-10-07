@@ -657,16 +657,19 @@ impl Client {
     /// request-response per the daemon's contract.
     fn rpc(&self, req: Request) -> ControlResult<Response> {
         let mut inner = self.inner.lock();
+        tear_types::probe!(ClientRpcs);
         let first = exchange(&mut inner, &req);
         let resp = match first {
             Err(lost) => {
                 let Ok(fresh) = Self::dial(&self.transport, self.auth_token.as_deref()) else {
                     return Err(ControlError::Transport(lost.to_string()));
                 };
+                tear_types::probe!(ClientRedials);
                 *inner = fresh;
                 if !replayable(&req) {
                     return Err(ControlError::Transport(lost.to_string()));
                 }
+                tear_types::probe!(ClientReplays);
                 exchange(&mut inner, &req).map_err(|e| ControlError::Transport(e.to_string()))?
             }
             Ok(resp) => resp,

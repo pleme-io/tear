@@ -179,6 +179,8 @@ impl Holder {
             .is_err()
         });
         if failed {
+            #[cfg(feature = "bench-probes")]
+            tear_types::probes::bump(tear_types::probes::Counter::HolderSinksMuted, 1);
             st.sink = None;
         }
     }
@@ -349,6 +351,8 @@ impl Holder {
             }
         }
         let _ = fs::remove_file(&self.socket);
+        #[cfg(feature = "bench-probes")]
+        let _ = makimono::probes::dump("holder");
         std::process::exit(0)
     }
 }

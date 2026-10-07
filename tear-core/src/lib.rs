@@ -22,6 +22,8 @@ pub mod blocks;
 pub mod engate_producer;
 pub mod inproc;
 pub mod pane_grid;
+#[cfg(feature = "bench-probes")]
+pub mod probes;
 pub mod pty;
 pub mod reap;
 pub mod recording;

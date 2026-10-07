@@ -61,3 +61,4 @@ ciborium = { workspace = true }
 # their [dev-dependencies].
 default = []
 testing = []
+bench-probes = ["tear-types/bench-probes", "tear-core/bench-probes", "makimono/bench-probes", "tamotsu/bench-probes"]

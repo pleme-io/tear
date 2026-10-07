@@ -143,22 +143,29 @@ impl Journal {
         }
         self.unsynced += bytes.len() as u64;
         self.evict()?;
-        self.sync_if_due()
-    }
-
-    pub fn sync_if_due(&mut self) -> io::Result<()> {
-        if self.unsynced == 0 {
-            return Ok(());
-        }
-        if self.unsynced >= 1024 * 1024 || self.last_sync.elapsed() >= self.bounds.fsync_interval()
-        {
+        if self.sync_due() {
+            tear_types::probe!(JournalSyncsInAppend);
             self.sync()?;
         }
         Ok(())
     }
 
+    pub fn sync_if_due(&mut self) -> io::Result<()> {
+        if self.sync_due() {
+            self.sync()?;
+        }
+        Ok(())
+    }
+
+    fn sync_due(&self) -> bool {
+        self.unsynced > 0
+            && (self.unsynced >= 1024 * 1024
+                || self.last_sync.elapsed() >= self.bounds.fsync_interval())
+    }
+
     pub fn sync(&mut self) -> io::Result<()> {
         if let Some(f) = self.file.as_mut() {
+            tear_types::probe!(JournalSyncs);
             f.sync_data()?;
         }
         self.unsynced = 0;
@@ -213,6 +220,8 @@ impl Journal {
 
     fn rotate(&mut self) -> io::Result<()> {
         if let Some(f) = self.file.as_mut() {
+            tear_types::probe!(JournalSyncs);
+            tear_types::probe!(JournalSyncsInAppend);
             f.sync_data()?;
         }
         let start = self.end();
@@ -228,6 +237,7 @@ impl Journal {
             let Some(oldest) = self.segments.pop_front() else {
                 break;
             };
+            tear_types::probe!(JournalUnlinksInAppend);
             match fs::remove_file(self.segment_path(oldest.start)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}

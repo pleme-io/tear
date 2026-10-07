@@ -3,6 +3,8 @@
 pub mod atomic;
 mod ending;
 mod journal;
+#[cfg(feature = "bench-probes")]
+pub mod probes;
 mod store;
 
 pub use ending::{Ending, Human, Verdict, classify, now_unix};

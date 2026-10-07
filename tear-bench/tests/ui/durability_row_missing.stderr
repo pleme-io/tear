@@ -1,0 +1,25 @@
+error[E0004]: non-exhaustive patterns: `Durability::Held` not covered
+ --> tests/ui/durability_row_missing.rs:5:1
+  |
+5 | / tear_bench::product_rows! {
+6 | |     fn rows(Durability) -> DurabilityRow {
+7 | |         Durability::ProcessBound => DurabilityRow { config: SessionDurability::ProcessBound, yaml: "process_bound", label: "bound...
+8 | |     }
+9 | | }
+  | |_^ pattern `Durability::Held` not covered
+  |
+note: `Durability` defined here
+ --> $WORKSPACE/tear-types/src/live.rs
+  |
+  | pub enum Durability {
+  | ^^^^^^^^^^^^^^^^^^^
+...
+  |     Held,
+  |     ---- not covered
+  = note: the matched value is of type `Durability`
+  = note: this error originates in the macro `tear_bench::product_rows` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+ --> src/matrix.rs
+  |
+  |                 $($pat => $val, Durability::Held => todo!()),+
+  |                               +++++++++++++++++++++++++++++

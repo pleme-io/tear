@@ -17,6 +17,7 @@ default = []
 # use tear-core's MultiplexerControl path don't pull in engate's
 # typestate machinery + drop_bomb + typed-builder.
 engate = ["dep:engate-types", "dep:engate-attach", "tear-types/engate"]
+bench-probes = ["tear-types/bench-probes", "makimono/bench-probes", "tamotsu/bench-probes"]
 
 [dependencies]
 tear-types = { workspace = true }

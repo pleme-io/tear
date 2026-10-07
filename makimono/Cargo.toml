@@ -14,6 +14,10 @@ name = "makimono"
 [lints]
 workspace = true
 
+[features]
+default = []
+bench-probes = ["tear-types/bench-probes"]
+
 [dependencies]
 tear-types = { workspace = true }
 serde = { workspace = true }

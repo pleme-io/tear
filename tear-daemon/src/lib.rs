@@ -975,7 +975,9 @@ fn serve_subscription<S: io::Read + io::Write>(
             return Ok(());
         }
     };
-    write_msg(&mut stream, &Response::Ok)?;
+    write_msg(&mut stream, &Response::Ok).inspect_err(|_| {
+        tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
+    })?;
     // ── engate M0: initial-grid replay ──────────────────────────────
     //
     // Race the daemon used to lose: shell prints prompt at t=0;
@@ -1003,6 +1005,7 @@ fn serve_subscription<S: io::Read + io::Write>(
         Ok(snap) => {
             let bytes = snap.to_ansi();
             if !bytes.is_empty() && write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err() {
+                tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
                 return Ok(());
             }
         }
@@ -1019,10 +1022,12 @@ fn serve_subscription<S: io::Read + io::Write>(
     loop {
         match rx.recv() {
             Ok(bytes) => {
+                tear_types::probe_gauge!(lower SubscriberBacklog, 1);
                 if write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err() {
                     // Peer disconnected — drop our sender by
                     // letting the rx drop naturally. The next PTY
                     // chunk on InProcess prunes the dead sender.
+                    tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
                     return Ok(());
                 }
             }
@@ -1460,8 +1465,26 @@ pub fn dispatch_with_shutai(
             }
             resp
         }
-        other => dispatch(inproc, other),
+        other => dispatch(inproc, audit_every_key(audit, other)),
     }
+}
+
+#[cfg(feature = "bench-probes")]
+fn audit_every_key(audit: Option<&AuditLog>, req: Request) -> Request {
+    if let (Request::SendKeys { id, .. }, Some(a)) = (&req, audit)
+        && tear_types::probes::active(tear_types::probes::Fault::AuditEveryKey)
+    {
+        a.emit(&AuditEvent::AuditedKey {
+            ts_ms: AuditEvent::now_ms(),
+            pid: id.to_string(),
+        });
+    }
+    req
+}
+
+#[cfg(not(feature = "bench-probes"))]
+const fn audit_every_key(_audit: Option<&AuditLog>, req: Request) -> Request {
+    req
 }
 
 /// Apply an operator rename to the praça record's `custom_name` and persist

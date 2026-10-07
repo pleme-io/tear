@@ -18,6 +18,7 @@ default = []
 # daemon, future tear-web) share ONE Snap type so consumers like
 # mado need only one Consumer impl across all backends.
 engate = ["dep:engate-types"]
+bench-probes = []
 
 [dependencies]
 # kukaku (区画) — the split-tree layout algebra this crate used to define

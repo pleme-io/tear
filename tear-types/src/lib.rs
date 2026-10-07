@@ -60,6 +60,12 @@ pub mod pane;
 pub mod pane_snapshot;
 pub mod path;
 pub mod plan;
+#[cfg(feature = "bench-probes")]
+pub mod probes;
+pub mod probe_env {
+    pub const FAULTS: &str = "TEAR_BENCH_FAULTS";
+    pub const DUMP: &str = "TEAR_BENCH_PROBES_DIR";
+}
 pub mod session;
 pub mod shutai;
 pub mod spawn_env;
@@ -68,6 +74,64 @@ pub mod theme;
 pub mod window;
 pub mod wire;
 pub mod yurai;
+
+#[macro_export]
+macro_rules! closed_vocabulary {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            pub const ALL: &'static [$name] = &[$($name::$variant),+];
+
+            #[must_use]
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $($name::$variant => $wire),+
+                }
+            }
+
+            #[must_use]
+            pub fn parse(s: &str) -> Option<Self> {
+                match s {
+                    $($wire => Some($name::$variant),)+
+                    _ => None,
+                }
+            }
+
+            #[must_use]
+            pub const fn index(self) -> usize {
+                self as usize
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! probe {
+    ($counter:ident) => {
+        $crate::probe!($counter, 1)
+    };
+    ($counter:ident, $n:expr) => {
+        #[cfg(feature = "bench-probes")]
+        $crate::probes::bump($crate::probes::Counter::$counter, ($n) as u64);
+    };
+}
+
+#[macro_export]
+macro_rules! probe_gauge {
+    (raise $gauge:ident, $n:expr) => {
+        #[cfg(feature = "bench-probes")]
+        $crate::probes::raise($crate::probes::Gauge::$gauge, ($n) as u64);
+    };
+    (lower $gauge:ident, $n:expr) => {
+        #[cfg(feature = "bench-probes")]
+        $crate::probes::lower($crate::probes::Gauge::$gauge, ($n) as u64);
+    };
+}
 
 // `address::Segment` is deliberately NOT re-exported: the crate root
 // already binds `Segment` to the status-bar widget. Reach the address

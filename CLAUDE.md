@@ -67,6 +67,7 @@ Adding a new pane operation lands in one place (`tear-types::MultiplexerControl`
 | `tear-ws-bridge` | Re-frames the same CBOR wire over WebSocket. | **shipped** (395 LOC) |
 | `makimono` (package `tear-makimono`; the bare name is a third party's on crates.io) | The durable session store: per-pane append-only raw-byte journal (bounded segments), `session.json`, `meta.json`, and the typed `Ending` tombstone — the only record of a session ending. Also the workspace's one atomic-write (`makimono::atomic`). | **shipped** (2026-10-06) |
 | `tamotsu` (package `tear-tamotsu`) | The per-pane PTY holder (`tear hold`): owns the PTY + child outside the daemon, journals every byte, serves attach/replay; `HeldPty` is the daemon-side client that re-adopts or revives it. Enabled by `sessions.durability: held` — see [`docs/SESSION-DURABILITY.md`](docs/SESSION-DURABILITY.md). | **shipped** (2026-10-06) |
+| `tear-bench` (`publish = false`) | The all-variants gate of [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) §6: the case matrix (`bench_matrix!`, exhaustive over `Durability`, `SessionDurability`, `HostRole` and `Transport`, so a variant without a row is E0004 and a metric without a budget E0063), the floors, the isolated harness and the `tearbench` binary. It only ever drives daemons it spawns from the workspace build, under a scratch root it refuses to run without. The `bench-probes` feature (off in every release build) compiles structural counters and the fault vocabulary into the product crates. | **shipped** (R1, tear half) |
 | `mado-web` | wasm32 browser client. **Skeleton** — streams raw bytes into a `<pre>`; no cell grid, no glyph atlas, no input path. Out-of-workspace, own `Cargo.lock`. | skeleton |
 | `tear` (bin) | Multi-call CLI, ~24 subcommands: `up`/`list`/`kill`/`rename`/`attach`/`top`/`mcp`/`daemon`/`blocks`/`block`/`history`/`replay`/`audit`/`ai`/`snapshot`/`migrate`/`pane-input`/`pane-info`/`pane-record`/`render`/`status`/`config-*`. GH releases via `rust-workspace-release-flake.nix`. | **shipped** |
 
@@ -128,6 +129,7 @@ authoring either learn one mental model.
 | Substrate builder wiring | `flake.nix` (consumes `substrate/lib/rust-workspace-release-flake.nix`) |
 | Repo-forge spec (regenerate boilerplate) | `repo-forge.lisp` |
 | Latency, throughput and the tear ↔ mado wire: measured baseline, the ladder, the gate | `docs/PERFORMANCE.md` |
+| The gate's matrix, floors and harness (`nix run .#bench -- gate --tier all`) | `tear-bench/src/{matrix,table}.rs`, `tear-bench/sql/` |
 
 ## Project plan (updated)
 

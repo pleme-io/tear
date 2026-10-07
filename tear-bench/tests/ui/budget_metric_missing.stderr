@@ -1,0 +1,5 @@
+error[E0063]: missing field `flushes` in initializer of `Budgets`
+ --> tests/ui/budget_metric_missing.rs:6:13
+  |
+6 |     let _ = Budgets {
+  |             ^^^^^^^ missing `flushes`

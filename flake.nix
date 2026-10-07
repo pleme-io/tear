@@ -78,8 +78,21 @@
         tearPackages = baseOutputs.packages;
         inherit hmHelpers;
       };
+
+      benchApp = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          workspace = substrate.lib.${system}.mkRustWorkspace { name = "tear"; src = self; };
+          tearbench = pkgs.runCommand "tearbench" { nativeBuildInputs = [ pkgs.makeBinaryWrapper ]; } ''
+            makeBinaryWrapper ${workspace.binaryOf "tear-bench"}/bin/tearbench $out/bin/tearbench --add-flags "--tear-bin ${baseOutputs.packages.${system}.tear}/bin/tear"
+          '';
+        in {
+          type = "app";
+          program = "${tearbench}/bin/tearbench";
+        };
     in
       baseOutputs // {
+        apps = builtins.mapAttrs (system: apps: apps // { bench = benchApp system; }) baseOutputs.apps;
         homeManagerModules = (baseOutputs.homeManagerModules or {}) // {
           ws-bridge = wsBridgeModule;
         };

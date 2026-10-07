@@ -24,6 +24,17 @@ workspace = true
 name = "tear"
 path = "src/main.rs"
 
+[features]
+default = []
+bench-probes = [
+    "tear-types/bench-probes",
+    "tear-core/bench-probes",
+    "tear-client/bench-probes",
+    "tear-daemon/bench-probes",
+    "makimono/bench-probes",
+    "tamotsu/bench-probes",
+]
+
 [dependencies]
 tear-types = { workspace = true }
 tear-config = { workspace = true }

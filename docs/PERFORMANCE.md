@@ -32,11 +32,15 @@
 > view-codec prototype (two runs) · **P** protocol-compatibility and mutation
 > probes · **R** prior art, named inline · **S** source at the pinned
 > revisions (§11). A composite floor is a sum of separately measured hops,
-> never an end-to-end run. The sources and raw results behind H, F, D, G, W,
-> C, P and M are not in this repository yet: R1 ports them into `tear-bench`,
-> scrubbed of paths, process ids and user names, and re-measures every number
-> there. Until then each figure is that pass's receipt, not a gate. L is
-> summarized only, because it profiles a private machine.
+> never an end-to-end run. The harness (H) and the floor suite (F) live in
+> `tear-bench` since R1, scrubbed of paths, process ids and user names, with
+> every machine-specific value a flag (§6); so do D's stall probe, W's
+> encoding probe and G's allocation count. The sources behind C, P, M and the
+> rest of D, G and W are not in this repository yet. Each figure stays that
+> pass's receipt, not a gate, until tear-bench re-measures it on the
+> reference Mac; R1's reproduction run re-measured the three counts its gate
+> names exactly (§5 R1). L is summarized only, because it profiles a private
+> machine.
 
 ## 0. The destination
 
@@ -448,6 +452,62 @@ negative control is a fault injector compiled only for tests (§6).
   fails with a pinned E0004 or E0063.
 - **Old behaviour:** `performance.histograms: off` (mado's existing
   `performance` section, hot-reloaded) stops recording; the counters stay.
+- **State of the tear half (2026-10-07):** `tear-bench` holds the matrix (20
+  rows, 32 metrics each; 64 cells `Pending` with their §2 receipts, R1's own
+  cell budgeted, every other cell `NotApplicable` with its reason), the
+  floors, the harness and a reproduction run. Against isolated daemons spawned
+  from the workspace build it reproduced the gate's three counts exactly: 0 of
+  20 mado-shaped keys delivered at 3,000 rows (the send-only control 5 of 5,
+  the snapshot frame 29,356,065 B, the pass's byte count); 513 allocations per
+  KiB of `yes` at 163 columns, 1,026,000 over 2,000 chunks of 1 KiB after
+  20,000 warm-up chunks with 10k rows of scrollback, counted by a global
+  allocator in tear-bench's seam the way G counted them; and 65,537 frames
+  for the 67,108,905 B flood (65,536 of 1,024 B and one of 41 B). The held
+  spikes reproduced at ~1 Hz in each of the implementation's three runs (the
+  second judged by the criterion below after the fact). The first run read
+  28 of 1,500 echoes over 3 ms with 7 of 27 inter-spike gaps at
+  990–1,040 ms, against 6 and 0 of 5 in the same run's page-cache control;
+  the last read 60 of 1,500 with 5 of 59 gaps and 41 spike pairs 1 s apart
+  against 11 pairs 1.5 s apart, and 2 pairs 1 s apart in the control. The
+  spike count alone did not separate held from control at that load (the
+  middle run read 56 against 58), so the reproduction reads R17's own red
+  condition — any inter-spike gap at 990–1,040 ms, or spikes over max(4, 2×
+  the control) — together with periodicity: more spike pairs 1 s apart than
+  1.5 s apart, and than the control has 1 s apart. The landing run, at load
+  averages of 18–29, reproduced all four again: 0 of 20 keys, 1,026,000
+  allocations over 2,000 chunks, 65,537 frames, and the held spikes at 26 of
+  1,500 with 9 of 25 gaps at ~1 s and 21 pairs 1 s apart against 3 pairs 1.5 s
+  apart, the page-cache control at 6, 0 of 5 and 0. The same runs re-measured
+  two more of §2's bad states: a held pane muted by a 3 s daemon stall (8,192
+  B delivered while the journal grew 4,587,520 B, D's shape) and 2.13 GiB of
+  daemon RSS growth per 64 MiB flood (H-d's 2.2 GiB). One full
+  `gate --tier all` ran end to end and derived all 640 cells; its sentinels
+  read `Blind` (channel wake 1.28× and UDS one-way 1.47× the reference). Load
+  averages were 18–128 throughout, so none of these timings is a receipt.
+  R1's own cell, C13's audit emission, is a count with budget 0 on two
+  samples: audit records appended while 200 keys are typed and echoed, and
+  the distance between audit records and lifecycle requests (`NewSession`,
+  `SetInputPolicy`, `KillSession`), both read from the audit file of a daemon
+  started with `audit_log`. Its negative control, the `audit-every-key`
+  fault (an audit record per `SendKeys`, compiled only under
+  `bench-probes`), is the first control a run switches on: the structural
+  tier runs it beside the clean case, and the run is red unless the cell
+  reads `Over` with it on. R1 is in the matrix's `LANDED` list, so a
+  `Pending` cell that still named R1 would not compile. Two parts of the
+  rung did not land here: the timings as floor multiples (`Blind` at that
+  load, by §6's own sentinels) and mado's half — paint counters,
+  `kanshou::metrics`, `frame_perf` blind, the parked-window floor and the
+  `ui_io: inline` fault. Every other count kind stays `Pending`, as this
+  rung's text requires, until the rung that owns its cell gives it a budget;
+  and the counts run where `tearbench gate` runs, not yet on every push: no
+  CI job runs tearbench until the timing tier's `benchmark-runner` change
+  (§6). The launchd question is half answered: `PRIO_DARWIN_BG` that a
+  process set on itself, as `taskpolicy -b` sets it, is not cleared by
+  another process's `setpriority(PRIO_DARWIN_PROCESS, pid, 0)` — the call
+  succeeds and the priority stays 4, read through `proc_pidinfo` and through
+  `ps` — while the same flag set from outside clears, 4 → 31 (`tearbench
+  band-probe`). Which of the two launchd's `Adaptive` applies is not
+  measured: that needs a launchd-spawned process, which R2's gate reads.
 
 ### Phase B — the measured slownesses, smallest change first
 
@@ -1716,6 +1776,84 @@ every machine-specific value turned into a flag.
 mado's present-path half lives in mado's benches and structural tests and
 invokes the same declaration.
 
+**As built at R1 (the tear half).** `tear-bench/src`: `matrix.rs` (the
+vocabulary, the `bench_matrix!` and `product_rows!` macros, the const checks),
+`table.rs` (the one `bench_matrix!` invocation), `verdict.rs`, `floor/`,
+`harness/`, `gate.rs`, `seam.rs`, and the `tearbench` binary: `matrix`,
+`floors`, `reproduce`, `case`, `gate`, `band-probe`, `replay-file`, `status`,
+`cleanup`. Every command that runs anything re-executes itself with a cleared
+environment, every home, XDG, `TMPDIR` and kanshou directory under the run
+root (`--run-dir`) and the root as its working directory, and refuses with
+exit 2 otherwise; each daemon variant gets its own directories under the root
+and a socket path relative to it. Before measuring, the harness lists every
+file its daemon and holders hold open (`lsof`, or `/proc/<pid>/fd` on Linux)
+and refuses the variant if one sits under the operator's home (`--forbid`,
+default `$HOME`); it refuses a `tear` binary or a daemon `Hello` whose version
+is not the workspace's. Results land in `<run-dir>/data/` as `samples.tsv`
+(one row per sample), `verdicts.tsv`, `runs.tsv` and `probes.tsv`, read with
+the queries in `tear-bench/sql/`:
+`duckdb -cmd "set variable data = '<run-dir>/data'" -cmd ".read tear-bench/sql/summary.sql" -c "from latency"`.
+`nix run .#bench` builds tear-bench through substrate's `mkRustWorkspace`
+and wraps it with the flake's own `tear` as `--tear-bin`; that build has no
+`bench-probes`, so probe-backed cells and the screen-parse floor read
+`Blind` there. Where the code refines this section:
+`Variant` splits the band into the daemon's and the client's, because the
+pass's `held-bgd` and `held-bg` differ only there; tear-config's
+`SessionDurability`, `Durability`'s configuration twin, is matched both ways
+beside it. `JournalSync` is not a product enum until R17, so the axis renders
+today's `fsync_interval_ms`: `write_ahead` as 0, `group_commit{N}` as N and
+`page_cache` as 86,400,000 ms — which still flushes at every 1 MiB unsynced
+(S `journal.rs`), so the page-cache control is page-cache only at typing
+rates. `Stat` is p50, p90 or p99 and has no maximum, so a gated maximum does
+not compile; a p99 budget needs `k ≥ 3`, the reading C2's own ≤2× / ≤3× row
+requires. Throughput cells are ns per MiB, so every `Floor` budget is
+`≤ k × floor` (≥0.6× the ceiling is ≤1.67× its ns per MiB). Three same-run
+controls are typed floors beside the primitives: the plain key's echo (C12),
+the page-cache series (C4's spikes) and the bound `NewSession` (C8). The
+derivation runs `NotApplicable`, `Pending`, `Blind`, `Errored` (zero samples),
+then `Within` or `Over`; the sentinels gate timing cells only, and the
+host-class table holds the reference Mac's four p50s (F-a 7.38 µs, F-d
+5.79 µs, F-e 7.08 µs, F-d 6.46 µs). The negative controls are declared per
+row and checked statically — each reddens at least one cell that is not
+`NotApplicable`, and every budgeted cell has one — but no run switches them
+on except R1's own `audit-every-key`: the kept configurations arrive with
+their rungs, and the three tear faults phase A–C needs (the mute sink,
+`snapshot.history: all`, the unbounded subscriber queue) are today's only
+behaviour, so each fault's injection point lands with the rung that builds
+its good state (R4, R9, R22). Until then the `bench-probes` counter that
+observes the bad state is its red run: `holder-sinks-muted`, `snapshot-rows`,
+the `subscriber-backlog` peak. That gauge is read from the daemon's dump
+only: it rises before a chunk is queued to a subscriber and falls when the
+chunk is taken, when the send fails, and by whatever is still queued when a
+subscriber's connection ends; an embedded consumer's process never reports
+it, so the embedded path is unmeasured rather than counted one way. A
+control's audit passes only when every cell it declares was measured with
+the control on and reads `Over` — `Blind`, `Errored`, `Pending` or a missing
+cell fails it — and a timing cell must clear the noise band too: its value
+above its limit by more than 1.42× at p50 or p90 (the widest interactive p50
+reproduction below; no p90 was measured, so it takes p50's) and 5.3× at p99.
+A control the build cannot arm (no `bench-probes` in tearbench, or a daemon
+that writes no probe dump) reads `Blind`, never a pass. The blind streak
+reads runs in the order they appended to `runs.tsv`, not by name. The
+counters, armed faults and the dump live behind `bench-probes` in tear-types,
+makimono, tamotsu, tear-core, tear-client, tear-daemon and the `tear` binary;
+daemon and holder write theirs at exit to `TEAR_BENCH_PROBES_DIR`, and
+`TEAR_BENCH_FAULTS` arms faults by name, an unknown name refused alone.
+Processes: tearbench refuses a run root that is the operator's home, holds
+it, or overlaps tear's live `~/.local/state/tear`, `~/.local/share/tear` or
+`~/.config/tear`, before it creates anything. It records every process it
+starts, and each descendant of its daemons, by pid and start time
+(`proc_pidinfo`, `/proc/<pid>/stat`), and signals only a recorded pid whose
+start time still matches; a holder counts as the harness's only when its
+`--pane-dir` sits under `<run-dir>/iso` by path component. The open-files
+audit covers files and bound sockets by path component; it does not see
+outbound connections, because `lsof` on macOS names a connected client unix
+socket by address only, so the environment isolation is what keeps a daemon
+off the operator's socket. Bytes per mado-shaped key count every frame the
+key moves in full, each with its 4 B header — the `PaneSnapshot` request and
+reply, `SendKeys` and its reply — and the sample's detail carries §2's
+convention (the `SendKeys` frame plus the snapshot body) beside it.
+
 **The declaration.** One `bench_matrix!` invocation. A row is a case, its
 per-metric budgets as a struct literal — a missing metric is E0063, and
 `Budgets` deliberately has no `Default` — a mandatory receipt string and its
@@ -1955,8 +2093,11 @@ decision, and every rung that depends on it says so.
 - GPU time per frame (no timestamp queries yet), and the Ctrl-S frame since
   `aa031a2` cached overlay shapes (R1 for both).
 - Whether launchd's background state on a running process can be cleared from
-  outside it (R1, for R2), and whether `posix_spawn` carries the caller's
-  thread QoS into the child (R28).
+  outside it (R2's gate). R1 measured the mechanism: `PRIO_DARWIN_BG` a
+  process set on itself is not cleared by another process's `setpriority`,
+  while the flag set from outside is (R1's state line); which of the two
+  launchd applies is open. Whether `posix_spawn` carries the caller's thread
+  QoS into the child (R28).
 - Linux: the PTY read quantum, the cost of `fdatasync`, and whether per-pane
   scopes measurably help (R2's Linux gate); whether `latency-server`'s
   `CPUWeight`/`IOWeight` of 200 measurably helps a server under contention;

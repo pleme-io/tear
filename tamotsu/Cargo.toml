@@ -18,8 +18,13 @@ workspace = true
 name = "tamotsu"
 path = "src/main.rs"
 
+[features]
+default = []
+bench-probes = ["dep:tear-types", "tear-types/bench-probes", "makimono/bench-probes"]
+
 [dependencies]
 makimono = { workspace = true }
+tear-types = { workspace = true, optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 ciborium = { workspace = true }
