@@ -127,6 +127,7 @@ authoring either learn one mental model.
 | CLI entry point | `tear/src/main.rs` |
 | Substrate builder wiring | `flake.nix` (consumes `substrate/lib/rust-workspace-release-flake.nix`) |
 | Repo-forge spec (regenerate boilerplate) | `repo-forge.lisp` |
+| Latency, throughput and the tear ↔ mado wire: measured baseline, the ladder, the gate | `docs/PERFORMANCE.md` |
 
 ## Project plan (updated)
 
