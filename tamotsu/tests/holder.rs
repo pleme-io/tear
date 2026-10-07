@@ -71,15 +71,23 @@ fn sinks() -> (
     )
 }
 
-fn wait_for(seen: &Seen, needle: &str) -> bool {
+fn eventually(holds: impl Fn() -> bool) -> bool {
     let until = Instant::now() + Duration::from_secs(10);
     while Instant::now() < until {
-        if String::from_utf8_lossy(&seen.lock().unwrap()).contains(needle) {
+        if holds() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     false
+}
+
+fn wait_for(seen: &Seen, needle: &str) -> bool {
+    eventually(|| String::from_utf8_lossy(&seen.lock().unwrap()).contains(needle))
+}
+
+fn gone(socket: &Path) -> bool {
+    eventually(|| !HeldPty::probe(socket))
 }
 
 fn child_pid(socket: &Path) -> Option<u32> {
@@ -131,7 +139,7 @@ fn a_detached_session_keeps_its_process_and_replays_its_history_on_adoption() {
     assert_eq!(exit2.recv_timeout(Duration::from_secs(10)).unwrap(), None);
     let tomb = PaneDir::at(&rv.args.pane_dir).tombstone().unwrap();
     assert!(matches!(tomb, Some(Ending::EndedBy { .. })), "{tomb:?}");
-    assert!(!HeldPty::probe(&rv.args.socket));
+    assert!(gone(&rv.args.socket));
 }
 
 #[test]
@@ -192,8 +200,5 @@ fn a_killed_holder_is_revived_in_place_with_a_new_shell_and_its_scrollback() {
     );
     held.end();
     assert_eq!(exit.recv_timeout(Duration::from_secs(10)).unwrap(), None);
-    assert!(
-        !HeldPty::probe(&rv.args.socket),
-        "the revived holder is gone"
-    );
+    assert!(gone(&rv.args.socket), "the revived holder is gone");
 }
