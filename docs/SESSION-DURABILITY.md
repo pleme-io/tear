@@ -87,8 +87,12 @@ Model↔View axis of SESSION-TYPESCAPE §1, finally honoured at runtime):
 
 One tiny process per pane that owns the PTY master fd and the child:
 
-* spawned by the daemon, double-forked + `setsid`, so it is nobody's child and
-  outside the daemon's process group;
+* spawned by the daemon with one `Command::spawn` (tamotsu `held.rs`
+  `spawn_holder`); the holder's first act is `setsid` (`holder.rs` `run`), so
+  it leads its own session and process group, outside the daemon's. It is
+  *not* double-forked: it stays the daemon's child, reaped by the daemon's
+  `tamotsu-holder-reaper` thread, until that daemon exits and it is
+  reparented;
 * serves ONE unix socket: `attach` (replay from offset N, then live bytes),
   `write`, `resize`, `signal`, `end(cause)`, `status` (pid, cwd, exit);
 * writes every output byte to that pane's **makimono** journal itself, so no
@@ -126,9 +130,13 @@ $XDG_STATE_HOME/tear/sessions/<guid>/
   the bound is not optional.
 * **fsync cadence:** every 1 s or 1 MiB, whichever first. A crash loses at most
   that window of *display history*; it never loses the session.
-* **cwd:** tracked from OSC 7 in the stream AND polled from the child
-  (`/proc/<pid>/cwd`, `proc_pidinfo` on macOS) into `meta.json`, so a shell
-  that never emits OSC 7 still resurrects in the right directory.
+* **cwd:** tracked from OSC 7 in the stream, which the daemon's persister
+  writes into `meta.json` (`last_cwd`), AND — on Linux only — polled from the
+  child every 2 s by the holder (`/proc/<pid>/cwd`) into the pane's `cwd`
+  file. Revival prefers the polled directory, then OSC 7's, then the spawn
+  directory (makimono `PaneDir::revive_cwd`). macOS has no unsafe-free poll
+  yet (§7), so there a shell that never emits OSC 7 resurrects in its spawn
+  directory.
 
 Why files and not SQLite: the workload is one append-only byte stream per pane
 plus a tiny metadata document. Append-only segments are the cheapest correct

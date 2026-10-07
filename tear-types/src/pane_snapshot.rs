@@ -332,6 +332,25 @@ fn default_true() -> bool {
 }
 
 impl PaneSnapshot {
+    #[must_use]
+    pub fn blank(rows: usize, cols: usize) -> Self {
+        Self {
+            rows,
+            cols,
+            cells: vec![vec![Cell::BLANK; cols]; rows],
+            cursor_row: 0,
+            cursor_col: 0,
+            alt_screen_active: false,
+            cursor_visible: true,
+            title: None,
+            cursor_keys_mode: false,
+            scrollback: Vec::new(),
+            combining: Vec::new(),
+            modes: crate::modes::ModeSet::default(),
+            graphics: Vec::new(),
+        }
+    }
+
     /// Project to plain text — one String per row, blanks rendered
     /// as ASCII spaces. Drops color/attr information; useful for
     /// assertions and grep-style introspection.
@@ -488,23 +507,11 @@ mod to_ansi_tests {
     use super::*;
 
     fn snap_with(rows: usize, cols: usize, ch: char) -> PaneSnapshot {
-        PaneSnapshot {
-            rows,
-            cols,
-            cells: (0..rows)
-                .map(|_| (0..cols).map(|_| Cell { ch, ..Cell::BLANK }).collect())
-                .collect(),
-            cursor_row: 0,
-            cursor_col: 0,
-            alt_screen_active: false,
-            cursor_visible: true,
-            title: None,
-            cursor_keys_mode: false,
-            scrollback: Vec::new(),
-            combining: Vec::new(),
-            modes: crate::modes::ModeSet::default(),
-            graphics: Vec::new(),
+        let mut snap = PaneSnapshot::blank(rows, cols);
+        for cell in snap.cells.iter_mut().flatten() {
+            cell.ch = ch;
         }
+        snap
     }
 
     #[test]

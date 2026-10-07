@@ -412,20 +412,6 @@ impl MultiplexerControl for MockBackend {
     }
 
     fn pane_snapshot(&self, _id: PaneId) -> ControlResult<PaneSnapshot> {
-        Ok(PaneSnapshot {
-            rows: 24,
-            cols: 80,
-            cells: vec![vec![tear_types::Cell::BLANK; 80]; 24],
-            cursor_row: 0,
-            cursor_col: 0,
-            alt_screen_active: false,
-            cursor_visible: true,
-            title: None,
-            cursor_keys_mode: false,
-            scrollback: Vec::new(),
-            combining: Vec::new(),
-            modes: tear_types::ModeSet::default(),
-            graphics: Vec::new(),
-        })
+        Ok(PaneSnapshot::blank(24, 80))
     }
 }

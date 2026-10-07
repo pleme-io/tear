@@ -1,30 +1,17 @@
 name: auto-release
 
-# ┌─ DORMANT: Actions are DISABLED for this repository ────────────────────┐
+# Actions RUN for this repository. The declaration is `actions_enabled:
+# true` on the `tear` record in pangea-architectures
+# `workspaces/pleme-io-opensource/org.yaml` (flipped 2026-08-03), and
+# `GET /repos/pleme-io/tear/actions/permissions` answers {"enabled": true}
+# (measured 2026-10-07). Every push to main runs this workflow — the test
+# gate, then bump + tag and publish — and every workspace crate, `pleme-tear`
+# included, is on crates.io; `mado-web` sits outside the workspace and is not.
+# Actions on/off is still owned by that org.yaml field, never the GitHub UI or
+# API: open_source_repo.rb reconciles the repository permission from it.
 #
-# Nothing in this file runs today, and no trigger below can change that.
-# `GET /repos/pleme-io/tear/actions/permissions` returns
-# {"enabled": false} (measured 2026-07-30), and that is DECLARED, not drift:
-# pangea-architectures `workspaces/pleme-io-opensource/org.yaml` carries
-# `actions_enabled: false` on the `tear` record. 14 of 860 records set it
-# explicitly — a deliberate CI-cost/noise posture, not an oversight.
-#
-# CONSEQUENCE, stated plainly so the next reader doesn't hunt for a bug:
-# `pleme-tear` and `mado-web` are ABSENT from crates.io (both 404) and no
-# automated path can put them there while Actions are off. That is an
-# accepted state, not a stranded release. `tear-types` and `praca` are on
-# the registry from before the posture changed.
-#
-# THE REVERSAL IS ONE LINE: flip `actions_enabled` to `true` on the `tear`
-# record in that org.yaml and let the reconciler apply it. Do NOT enable
-# Actions through the GitHub UI or API — open_source_repo.rb emits
-# `github_actions_repository_permissions enabled=false` from the declared
-# value, so an unmanaged re-enable is REVERTED on the next reconcile.
-#
-# The wiring below is kept, not deleted (MODULARIZE, DON'T DELETE): it is
-# correct, and it resumes on its own the moment the declaration flips.
-#
-# └────────────────────────────────────────────────────────────────────────┘
+# The test gate runs with `--all-features` (`test-args` below), the same set
+# ci.yml runs on every push and pull request.
 
 on:
   push:
@@ -49,16 +36,15 @@ on:
   #
   # So the tick was not draining a stranded publish; it was a self-renewing
   # red-run generator firing 96×/day on a metered hosted runner, and the
-  # comment asserting otherwise is what made it invisible. It now cannot
-  # fire at all (Actions disabled, above), which means re-enabling Actions
-  # with this cron still present would resume the failure storm rather than
-  # finish anything.
+  # comment asserting otherwise is what made it invisible. Actions run
+  # again (header), so re-adding this cron would resume the failure storm
+  # rather than finish anything.
   #
   # The drip job itself is NOT retired — substrate's rust-auto-release.yml
   # still ships it, and `push` + `workflow_dispatch` below still reach it.
   # What is retired is the unattended timer, whose only demonstrated effect
-  # was noise. If a genuinely stranded publish needs draining after Actions
-  # come back, run `workflow_dispatch` deliberately and read the result.
+  # was noise. If a genuinely stranded publish needs draining, run
+  # `workflow_dispatch` deliberately and read the result.
   #
 
 # NO concurrency override here — the substrate reusable
@@ -79,4 +65,5 @@ jobs:
     uses: pleme-io/substrate/.github/workflows/rust-auto-release.yml@main
     with:
       bump-type: ${{ inputs.bump-type || 'patch' }}
+      test-args: "--workspace --all-features --no-fail-fast"
     secrets: inherit

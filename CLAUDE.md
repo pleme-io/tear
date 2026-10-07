@@ -80,12 +80,12 @@ Adding a new pane operation lands in one place (`tear-types::MultiplexerControl`
 ## Build & run
 
 ```bash
-cargo check --workspace          # whole tree
-cargo test  --workspace          # 524 #[test]/#[tokio::test] attributes
-                                 # NOTE: no automated green receipt — ci.yml is
-                                 # disabled_manually AND repo Actions are off in
-                                 # org.yaml. Its history is 76 runs / 76 failures
-                                 # / 0 successes. Run it locally; do not assume.
+cargo check --workspace --all-features   # whole tree
+cargo test  --workspace --all-features   # the set CI runs: ci.yml on every push
+                                         # and pull request, auto-release's test
+                                         # gate (nextest --no-tests=fail) before
+                                         # every release. Without --all-features
+                                         # the `engate` tests are never compiled.
 nix run .#tear -- --help         # via substrate's workspace builder
 
 # Live shikumi config — same pattern as mado

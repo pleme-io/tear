@@ -7,8 +7,14 @@
 //! CBOR was chosen over bincode because `LayoutNode` uses an
 //! internally-tagged enum representation (`#[serde(tag = "kind")]`)
 //! that bincode rejects — CBOR handles every serde tagging style.
-//! The size + speed difference is negligible at IPC scale (single
-//! Request/Response per call, not a streaming hot path).
+//!
+//! The codec's cost is NOT negligible here, and this wire is not only
+//! single Request/Response calls: `Response::PaneBytes` streams every
+//! byte of pane output, and a `Vec<u8>` without `serde_bytes` encodes
+//! as a CBOR array of integers — 1.98× the bytes on the wire, and 60×
+//! (1 KiB) to 173× (64 KiB) the encode + decode time of the same
+//! payload as a CBOR byte string (PERFORMANCE.md §2 C2, §3 class 8;
+//! R6 moves byte payloads to byte strings).
 //!
 //! ## Why this lives in `tear-types`
 //!
@@ -25,9 +31,21 @@
 //! The wire is **CBOR + serde** (see the framing note above — an
 //! earlier revision of this paragraph said "bincode", which was
 //! stale: bincode was evaluated and rejected for the tagging reason
-//! stated above, and never shipped). Adding a new variant to either
-//! enum at the *end* is backwards-compatible (older clients ignore
-//! variants they don't understand because they never emit them).
+//! stated above, and never shipped). New variants go at the *end*,
+//! and the two enums are not symmetric about it:
+//!
+//! - an appended [`Request`] variant is safe: an older client never
+//!   emits a variant it does not know, and a current daemon answers
+//!   one it does not know with `Rejected` (below);
+//! - an appended [`Response`] variant is safe only as the answer to a
+//!   request that only a newer client sends. A response the daemon
+//!   *pushes unprompted* — on a subscription stream — reaches clients
+//!   that never asked for it, and an older client cannot decode it:
+//!   `tear-client`'s subscription reader ends the stream on any frame
+//!   it cannot decode or does not expect. A new pushed frame is
+//!   therefore sent only to a peer that declared it decodes it
+//!   (PERFORMANCE.md §7 rule 2, R15).
+//!
 //! Removing or reordering variants is a breaking wire change — bump
 //! the workspace minor version when that happens.
 //!

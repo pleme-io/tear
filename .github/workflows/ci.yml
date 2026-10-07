@@ -23,6 +23,10 @@ name: ci
 # Test coverage goes UP: the reusable defaults to
 # `--workspace --all-features --no-fail-fast` against the old bare
 # `--workspace`.
+#
+# Whether this workflow runs is GitHub-side state, recorded in neither this
+# file nor org.yaml: `gh api repos/pleme-io/tear/actions/workflows/ci.yml
+# --jq .state`.
 
 on:
   push:

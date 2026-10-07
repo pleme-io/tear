@@ -26,8 +26,13 @@
 //!
 //! The mutex serialises requests within one `Client`. Multiple
 //! `Client`s connected to the same daemon get their own connections
-//! and proceed in parallel — that's how mado will scale across
-//! Tier-2/Tier-3 callers without head-of-line blocking.
+//! and proceed in parallel — but mado does not use more than one: it
+//! shares a single `Arc<Client>` across its UI thread, its Ctrl-S
+//! picker, its signal reaper and its engate producer
+//! (`gui_tear_attach.rs`), so every one of those
+//! callers queues behind whichever request holds the mutex, with no
+//! deadline. That is the head-of-line blocking PERFORMANCE.md §3
+//! class 3 measures; R29's lane sessions are its fix.
 //!
 //! ## Connecting
 //!
@@ -55,9 +60,15 @@
 //! ## Why sync
 //!
 //! The trait is sync. The PTY pump is on the daemon side, not the
-//! client side. Async at this layer would be all cost no benefit —
-//! the client's job is to ferry a few Request/Response pairs per
-//! human keystroke, not pump kilobytes per second.
+//! client side. The premise this section used to rest on — that the
+//! client only ferries a few Request/Response pairs per keystroke and
+//! never pumps kilobytes a second — does not hold: every byte of pane
+//! output reaches mado through this crate as `Response::PaneBytes`
+//! (`subscribe_pane_bytes`), a snapshot carries all scrollback at
+//! ~60 B a cell and is fetched on every key (PERFORMANCE.md §2 C6,
+//! C12), and both run through this `Client`. Sync is kept; the bulk
+//! moves onto lanes (PERFORMANCE.md R29–R37), not onto an async
+//! runtime here.
 
 #![forbid(unsafe_code)]
 

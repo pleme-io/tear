@@ -31,16 +31,82 @@
 //!
 //! ## Adding a capability
 //!
-//! Add the variant to [`Capability`], give it a `wire_name`, and
-//! classify it in `advertised()`. The classification is an exhaustive
-//! `match`, so a new variant that nobody decided about is a **compile
-//! error**, not a silently-unadvertised capability.
+//! Add the variant to [`Capability`] and give it one row in the
+//! `capabilities!` invocation below: its wire name and whether this
+//! build advertises it. The rows are the whole vocabulary:
+//! [`Capability::ALL`] is generated from them, and so are
+//! [`Capability::wire_name`] and [`Capability::advertised`], through one
+//! exhaustive `match`. A variant without a row is therefore
+//! `error[E0004]: non-exhaustive patterns` — a **compile error**, not a
+//! capability that exists but is never parsed or advertised. Two rows
+//! for one variant fail `unreachable_patterns` (denied), and two rows
+//! sharing a wire name fail a const assert.
+//!
+//! The E0004 is pinned, not assumed: `tests/capability_rows.rs` compiles
+//! the real vocabulary with `SpawnEnv`'s row removed and expects exactly
+//! that error (`tests/ui/capability_without_row.stderr`). Adding a
+//! capability adds its row there too; the case keeps every row but
+//! `SpawnEnv`'s.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use crate::control::{ControlError, ControlResult};
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! capabilities {
+    ($($variant:ident { wire: $wire:literal, advertised: $advertised:literal }),+ $(,)?) => {
+        const CAPABILITY_ROWS: &[$crate::capability::Capability] =
+            &[$($crate::capability::Capability::$variant),+];
+
+        #[deny(unreachable_patterns)]
+        const fn capability_row(
+            capability: $crate::capability::Capability,
+        ) -> (&'static str, bool) {
+            match capability {
+                $($crate::capability::Capability::$variant => ($wire, $advertised),)+
+            }
+        }
+
+        const _: () = assert!(
+            $crate::capability::wire_names_are_unique(&[$($wire),+]),
+            "two capabilities share a wire name"
+        );
+    };
+}
+
+#[doc(hidden)]
+#[must_use]
+pub const fn wire_names_are_unique(names: &[&str]) -> bool {
+    let mut i = 0;
+    while i < names.len() {
+        let mut j = i + 1;
+        while j < names.len() {
+            if bytes_equal(names[i].as_bytes(), names[j].as_bytes()) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn bytes_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// One named thing a daemon build can do. Each variant names a
 /// **field or a behaviour a caller can gate on** — never a release,
@@ -95,26 +161,23 @@ pub enum Capability {
     SpawnEnv,
 }
 
+capabilities! {
+    SpawnArgs { wire: "spawn-args", advertised: true },
+    PaneYurai { wire: "pane-yurai", advertised: true },
+    Freio { wire: "freio", advertised: true },
+    SpawnEnv { wire: "spawn-env", advertised: true },
+}
+
 impl Capability {
-    /// Every capability name this build's *vocabulary* knows. Not the
-    /// same thing as what a given daemon advertises — see
-    /// [`Capability::advertised`].
-    pub const ALL: &'static [Capability] = &[
-        Capability::SpawnArgs,
-        Capability::PaneYurai,
-        Capability::Freio,
-        Capability::SpawnEnv,
-    ];
+    /// Every capability name this build's *vocabulary* knows: the
+    /// `capabilities!` rows, in row order. Not the same thing as what a
+    /// given daemon advertises — see [`Capability::advertised`].
+    pub const ALL: &'static [Capability] = CAPABILITY_ROWS;
 
     /// The on-wire name. Kebab-case, names the field or behaviour.
     #[must_use]
     pub fn wire_name(self) -> &'static str {
-        match self {
-            Capability::SpawnArgs => "spawn-args",
-            Capability::PaneYurai => "pane-yurai",
-            Capability::Freio => "freio",
-            Capability::SpawnEnv => "spawn-env",
-        }
+        capability_row(self).0
     }
 
     /// Parse a wire name back to a typed capability. `None` for a
@@ -128,17 +191,13 @@ impl Capability {
 
     /// Does **this build of the daemon** implement the capability?
     ///
-    /// The exhaustive `match` is the seal: adding a [`Capability`]
-    /// variant without deciding this is `error[E0004]: non-exhaustive
-    /// patterns`, so no capability can land unclassified.
+    /// The variant's `capabilities!` row decides, and the row is the
+    /// seal: adding a [`Capability`] variant without one is
+    /// `error[E0004]: non-exhaustive patterns`, so no capability can land
+    /// unclassified.
     #[must_use]
     pub fn advertised(self) -> bool {
-        match self {
-            Capability::SpawnArgs
-            | Capability::PaneYurai
-            | Capability::Freio
-            | Capability::SpawnEnv => true,
-        }
+        capability_row(self).1
     }
 }
 
@@ -300,35 +359,13 @@ mod tests {
         assert_eq!(Capability::from_wire(""), None);
     }
 
-    /// `Capability::ALL` must actually list every variant. The
-    /// exhaustive match makes a missing variant a compile error here
-    /// rather than a capability that exists but is never advertised.
     #[test]
-    fn all_lists_every_variant() {
-        for cap in Capability::ALL.iter().copied() {
-            // Exhaustive — adding a variant without adding it to ALL
-            // fails this assertion; adding a variant at all without
-            // touching `advertised()` is E0004 at compile time.
-            match cap {
-                Capability::SpawnArgs => {
-                    assert!(Capability::ALL.contains(&Capability::SpawnArgs));
-                }
-                Capability::PaneYurai => {
-                    assert!(Capability::ALL.contains(&Capability::PaneYurai));
-                }
-                Capability::Freio => {
-                    assert!(Capability::ALL.contains(&Capability::Freio));
-                }
-                Capability::SpawnEnv => {
-                    assert!(Capability::ALL.contains(&Capability::SpawnEnv));
-                }
-            }
-        }
-        assert_eq!(
-            Capability::ALL.len(),
-            4,
-            "update this count with the vocabulary"
-        );
+    fn wire_names_are_unique_refuses_any_repeat() {
+        assert!(wire_names_are_unique(&["spawn-args", "freio", "spawn-env"]));
+        assert!(!wire_names_are_unique(&["freio", "spawn-args", "freio"]));
+        assert!(!wire_names_are_unique(&["spawn-env", "spawn-env"]));
+        assert!(wire_names_are_unique(&["spawn", "spawn-env"]));
+        assert!(wire_names_are_unique(&[]));
     }
 
     #[test]

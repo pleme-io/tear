@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use tear_core::inproc::InProcess;
 use tear_types::{
-    Cell, MultiplexerControl, PaneId, PaneSnapshot, SessionId, SessionSource,
+    MultiplexerControl, PaneId, PaneSnapshot, SessionId, SessionSource,
     wire::{Response, read_msg, write_msg},
 };
 
@@ -145,42 +145,11 @@ fn subscribe_emits_snapshot_replay_before_live_stream() {
 /// every fleet consumer.
 #[test]
 fn to_ansi_emits_known_byte_sequence_for_known_grid() {
-    let mut snap = PaneSnapshot {
-        rows: 1,
-        cols: 5,
-        cells: vec![vec![
-            Cell {
-                ch: 'h',
-                ..Cell::BLANK
-            },
-            Cell {
-                ch: 'e',
-                ..Cell::BLANK
-            },
-            Cell {
-                ch: 'l',
-                ..Cell::BLANK
-            },
-            Cell {
-                ch: 'l',
-                ..Cell::BLANK
-            },
-            Cell {
-                ch: 'o',
-                ..Cell::BLANK
-            },
-        ]],
-        cursor_row: 0,
-        cursor_col: 5,
-        alt_screen_active: false,
-        cursor_visible: true,
-        title: None,
-        cursor_keys_mode: false,
-        scrollback: Vec::new(),
-        combining: Vec::new(),
-        modes: tear_types::ModeSet::default(),
-        graphics: Vec::new(),
-    };
+    let mut snap = PaneSnapshot::blank(1, 5);
+    for (cell, ch) in snap.cells[0].iter_mut().zip("hello".chars()) {
+        cell.ch = ch;
+    }
+    snap.cursor_col = 5;
     let bytes = snap.to_ansi();
     let s = String::from_utf8_lossy(&bytes).into_owned();
     // Prelude

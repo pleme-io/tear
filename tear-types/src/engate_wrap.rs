@@ -7,7 +7,7 @@
 
 use engate_types::Snapshot;
 
-use crate::pane_snapshot::PaneSnapshot;
+use crate::pane_snapshot::{Cell, PaneSnapshot};
 
 /// Newtype wrapper carrying a `PaneSnapshot` through engate's typed
 /// attach lifecycle. `to_ansi()` is the canonical serialization
@@ -16,8 +16,19 @@ pub struct PaneSnapshotWrap(pub PaneSnapshot);
 
 impl Snapshot for PaneSnapshotWrap {
     fn size_bytes(&self) -> usize {
-        // Approximate — cells × 4 bytes (char + fg/bg/attrs).
-        self.0.cells.iter().map(|r| r.len() * 4).sum()
+        // In-memory bytes the replay carries: visible and scrollback cells,
+        // the combining table and the undecoded images. Memory, not the
+        // wire: over the daemon a snapshot is CBOR at ~60 B a cell
+        // (PERFORMANCE.md §2 C6, §3 class 2).
+        let s = &self.0;
+        let cells: usize = s.cells.iter().chain(&s.scrollback).map(Vec::len).sum();
+        let marks: usize = s.combining.iter().map(Vec::len).sum();
+        let images: usize = s
+            .graphics
+            .iter()
+            .map(|g| g.params.len() + g.data.len())
+            .sum();
+        cells * std::mem::size_of::<Cell>() + marks * std::mem::size_of::<char>() + images
     }
 }
 
@@ -44,33 +55,48 @@ impl From<PaneSnapshot> for PaneSnapshotWrap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pane_snapshot::{Cell, CellAttrs, Color};
+    use crate::graphics::{Graphic, GraphicProtocol};
+    use crate::pane_snapshot::{CellAttrs, Color};
 
     fn dummy_snap(rows: usize, cols: usize) -> PaneSnapshot {
-        PaneSnapshot {
-            rows,
-            cols,
-            cells: vec![vec![Cell::BLANK; cols]; rows],
-            cursor_row: 0,
-            cursor_col: 0,
-            alt_screen_active: false,
-            cursor_visible: true,
-            title: None,
-            cursor_keys_mode: false,
-            scrollback: Vec::new(),
-        }
+        PaneSnapshot::blank(rows, cols)
+    }
+
+    fn size(snap: &PaneSnapshot) -> usize {
+        <PaneSnapshotWrap as Snapshot>::size_bytes(&PaneSnapshotWrap(snap.clone()))
     }
 
     #[test]
     fn wrap_size_bytes_scales_with_grid() {
-        let small = PaneSnapshotWrap(dummy_snap(1, 1));
-        let big = PaneSnapshotWrap(dummy_snap(24, 80));
-        assert!(
-            <PaneSnapshotWrap as Snapshot>::size_bytes(&big)
-                > <PaneSnapshotWrap as Snapshot>::size_bytes(&small)
+        let small = dummy_snap(1, 1);
+        let big = dummy_snap(24, 80);
+        assert!(size(&big) > size(&small));
+        assert_eq!(size(&big), 24 * 80 * std::mem::size_of::<Cell>());
+    }
+
+    #[test]
+    fn wrap_size_bytes_counts_scrollback_marks_and_images() {
+        let mut snap = dummy_snap(24, 80);
+        let screen = size(&snap);
+        snap.scrollback = vec![vec![Cell::BLANK; 80]; 1000];
+        assert_eq!(
+            size(&snap),
+            screen + 1000 * 80 * std::mem::size_of::<Cell>()
         );
-        // 24*80 cells × 4 bytes/cell = 7680.
-        assert_eq!(<PaneSnapshotWrap as Snapshot>::size_bytes(&big), 7680);
+        let with_history = size(&snap);
+        snap.combining = vec![vec!['\u{301}', '\u{302}']];
+        snap.graphics = vec![Graphic {
+            protocol: GraphicProtocol::Kitty,
+            params: "a=T".into(),
+            data: vec![0; 4096],
+            at_row: 0,
+            at_col: 0,
+            truncated: false,
+        }];
+        assert_eq!(
+            size(&snap),
+            with_history + 2 * std::mem::size_of::<char>() + 3 + 4096
+        );
     }
 
     #[test]

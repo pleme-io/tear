@@ -4,17 +4,20 @@
 //! pair into the engate typed-attach contract. With this impl, a mado
 //! GUI process can:
 //!
-//! 1. Embed `InProcess` directly (no daemon hop, no IPC, no second
-//!    VT parse).
+//! 1. Embed `InProcess` directly (no daemon hop, no IPC).
 //! 2. Construct an `engate::Attach<Live>` via `Attach::builder()` —
 //!    the same call site the daemon-mode path uses.
 //! 3. Get the engate typestate guarantees (history-replayed-before-
 //!    render, drop-bomb on forgotten History, etc.) for free.
 //!
-//! The latency math: embedded mode = ghostty-class single-process
-//! PTY-to-pixel; daemon mode = the same typed contract through a
-//! Unix socket. The composition stays correct; the operator picks
-//! the latency/multi-attach tradeoff via maestro's StackSpec.
+//! Embedding does NOT remove the second VT parse. The pane's
+//! `PaneGrid` parses every byte in the PTY callback
+//! (`InProcess::pane_callbacks`, `grid.feed`), and the consumer parses
+//! the same bytes again from `subscribe_pane_bytes` — two parses per
+//! output byte in embedded mode as in daemon mode (PERFORMANCE.md §2
+//! C1, §3 class 9). Embedded saves the socket hop, not the parse;
+//! the single parse is R38's flip, where the consumer reads the
+//! authority's view instead of re-parsing its bytes.
 
 #![cfg(feature = "engate")]
 

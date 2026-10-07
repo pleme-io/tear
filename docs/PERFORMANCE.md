@@ -400,8 +400,10 @@ negative control is a fault injector compiled only for tests (§6).
   `cargo fmt --check` passes today (S, Actions API); madori, engate, garasu
   and kanshou get the same push and pull-request test job (their tests run
   only at release today, S); the capability vocabulary becomes one
-  `capabilities!` row per variant (variant, wire name, advertised, membership
-  of `ALL`); the stale models of §10 are corrected in the same change.
+  `capabilities!` row per variant (variant, wire name, advertised); the rows
+  *are* `ALL`, so membership is the row itself — a membership flag would make
+  "a variant outside `ALL`" a value someone could write; the stale models of
+  §10 are corrected in the same change.
 - **Effect:** feature-gated tests run on every push, where today they run
   nowhere; a capability missing from `ALL` stops compiling, where today 9 of 9
   tests stay green (P).
