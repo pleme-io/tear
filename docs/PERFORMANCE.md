@@ -420,13 +420,22 @@ negative control is a fault injector compiled only for tests (§6).
   injectors that stand in for bad states (§6) and the negative controls; every
   cell starts `Pending` with today's receipt. In mado: paint counters per
   reason, `declined_after_acquire`, a per-method count of tear calls made on
-  the UI thread, queue-depth gauges for every channel between tear and the UI,
-  parse bytes per tick, and input → present and byte → present histograms on a
-  new `kanshou::metrics` (counter, gauge, log histogram); `frame_perf` answers
-  *blind*, not zeros, when no GUI is reachable. Two facts the pass lacked are
-  measured here first: a parked madori window with no tear link (C10's floor),
-  and whether launchd's background state on a running process can be cleared
-  from outside it (R2).
+  the UI thread, counted at the type (every tear handle the UI holds is a
+  counting `MultiplexerControl`, and a source scan refuses a call on a raw
+  backend in a UI module), queue-depth gauges for every channel between tear
+  and the UI, parse bytes per UI tick, and input → present and byte → present
+  histograms on a new `kanshou::metrics` (counter, gauge, log histogram);
+  `frame_perf` answers *blind*, not zeros, when no GUI is reachable. The
+  subscribe channel feeding mado's stream-watch relay belongs to tear-client
+  and std's `mpsc` exposes no depth, so for it mado gauges chunks relayed per
+  wake, whose peak bounds that channel's depth from above; the stream-watch
+  queue's depth is exact. A key's input → present sample closes at the end of
+  the first painted frame holding bytes received after the key, the statement
+  before madori's synchronous `present()` (R14 moves the close with the
+  present); byte → present runs from the relay's receipt of a chunk to that
+  close. Two facts the pass lacked are measured here first: a parked madori
+  window with no tear link (C10's floor), and whether launchd's background
+  state on a running process can be cleared from outside it (R2).
 - **Effect:** 0 → 13 cases declared; the nine count-metric kinds of §6 gated
   on every push, one cell per case where they apply.
 - **Gate:** the matrix compiles with every case; it reproduces the 2026-10-07
@@ -435,8 +444,8 @@ negative control is a fault injector compiled only for tests (§6).
   within §6's noise band (the held flood, the ~1 Hz echo spikes, `yes`
   throughput, RSS per byte flooded); a `trybuild` case with a row removed
   fails with a pinned E0004 or E0063.
-- **Old behaviour:** `perf.histograms: off` stops recording; the counters
-  stay.
+- **Old behaviour:** `performance.histograms: off` (mado's existing
+  `performance` section, hot-reloaded) stops recording; the counters stay.
 
 ### Phase B — the measured slownesses, smallest change first
 
