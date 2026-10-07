@@ -1446,7 +1446,7 @@ dependencies = [
 
 [[package]]
 name = "kukaku"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "serde",
  "serde_json",
@@ -1984,7 +1984,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pleme-tear"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "clap",
@@ -2071,7 +2071,7 @@ dependencies = [
 
 [[package]]
 name = "praca"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "ishou-tokens",
  "serde",
@@ -2990,7 +2990,7 @@ checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
 
 [[package]]
 name = "tear-bench"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "ciborium",
  "clap",
@@ -3011,7 +3011,7 @@ dependencies = [
 
 [[package]]
 name = "tear-client"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "engate-attach",
  "engate-types",
@@ -3026,7 +3026,7 @@ dependencies = [
 
 [[package]]
 name = "tear-config"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "tear-core"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "tear-daemon"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "tear-makimono"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "serde",
  "serde_json",
@@ -3105,7 +3105,7 @@ dependencies = [
 
 [[package]]
 name = "tear-tamotsu"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "ciborium",
@@ -3120,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "tear-tmux-backend"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "tear-config",
@@ -3129,7 +3129,7 @@ dependencies = [
 
 [[package]]
 name = "tear-types"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3146,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "tear-ws-bridge"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "anyhow",
  "clap",
