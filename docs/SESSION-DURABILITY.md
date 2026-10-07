@@ -7,6 +7,14 @@
 > that entry was a fact about the world and which part was a fact about our
 > own architecture.
 
+> **Amended 2026-10-07 (operator decision, [`PERFORMANCE.md`](./PERFORMANCE.md)
+> §8.2).** §3.2's holder stops being frozen: it upgrades in place behind a
+> preflight and a canary, and serves several sinks (PERFORMANCE R16, R21).
+> §3.3's re-adoption reads a checkpoint plus the journal tail instead of
+> replaying from offset 0, behind a grid-equality gate (R27). The journal
+> keeps its guarantee, flushed beside delivery rather than in front of it
+> (R17). Each section changes when its rung lands.
+
 ## 0. The destination
 
 A tear session ends for exactly two reasons:

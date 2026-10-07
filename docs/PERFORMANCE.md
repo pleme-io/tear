@@ -8,8 +8,8 @@
 > in-process carrier becomes an owned frame published by reference instead of
 > a borrowed view (R26, §10); SESSION-DURABILITY §3.2's holder becomes
 > upgradable in place and serves several sinks (R16, R21); and §3.3's
-> re-adoption reads a checkpoint plus the journal tail (R27). The two
-> SESSION-DURABILITY amendments are held for the operator (§8.2). §5 is the
+> re-adoption reads a checkpoint plus the journal tail (R27). The operator
+> adopted both SESSION-DURABILITY amendments on 2026-10-07 (§8.2). §5 is the
 > ladder: every rung says what it extends, what it should buy (with a
 > receipt), the gate that proves it, whether it is an interim step on the path
 > or the destination, and the configuration value that keeps today's behaviour
@@ -359,8 +359,8 @@ are data, queried with duckdb.
 | Raw frames for bytes | `serde_bytes` only; raw `DATA{at}` frames | both: `serde_bytes` on the legacy CBOR wire (R6), `DATA{at}` on byte lanes (R37) | not for the 2.5 µs per 64 KiB (F-f) but for the offset that must ride every byte frame, in the framer the holder already speaks: one framer, not two |
 | How the holder protocol evolves | `PROTO = 2`; capability names with `PROTO` frozen at 1 | names, `PROTO = 1` forever | the holder refuses any other integer (S `holder.rs:206`), so a bump strands every live holder at a daemon upgrade; names decode in all four directions (P) |
 | DEC 2026 hold bound | 100 ms (mado today); 150 ms + 2 MiB (Alacritty); 1 s (Ghostty, foot); 2 s (kitty) | 100 ms + 2 MiB, one setting; input modes published ahead of held cells | moving the hold to the authority must not change what the operator sees (S `render.rs:2097`); the heaviest full redraw the codec runs met is 227 KB of VT (C), 3.2 ms even at the background-band ceiling (F-b); a key must not wait out a hold under stale modes |
-| Default flush primitive | `F_FULLFSYNC`; `F_BARRIERFSYNC` | `persisted` (`F_FULLFSYNC`), off the byte path; `ordered` a typed option | SESSION-DURABILITY §3.3 promises a bounded loss window; a barrier promises ordering only (`man 2 fcntl`); within either probe a full flush costs 3–17× a barrier (F-c, D); held for the operator (§8.2) |
-| Scrollback default | unlimited; 64 MiB per pane | unlimited, stored compactly; 64 MiB proposed | "never lose anything" is a recorded operator contract (S `tear-config` `lib.rs:238`); held for the operator (§8.2) |
+| Default flush primitive | `F_FULLFSYNC`; `F_BARRIERFSYNC` | `persisted` (`F_FULLFSYNC`), off the byte path; `ordered` a typed option | SESSION-DURABILITY §3.3 promises a bounded loss window; a barrier promises ordering only (`man 2 fcntl`); within either probe a full flush costs 3–17× a barrier (F-c, D); decided 2026-10-07 (§8.2) |
+| Scrollback default | unlimited; 64 MiB per pane | unlimited, stored compactly | "never lose anything" is a recorded operator contract (S `tear-config` `lib.rs:238`), kept on 2026-10-07 (§8.2) |
 | UDS buffer size | 256 KiB; 1 MiB | 256 KiB | already at the plateau, 11.46 against 11.21 µs for 64 KiB (F-a); holds four lane frames |
 | Scheduling declaration | a `processType` spec field; a closed workload class | `workloadClass`; a class beside a `processType` wins, named in a warning for that daemon | 32 literal `ProcessType` settings in 27 files across the fleet's Nix (counted 2026-10-07, comments and tests excluded): the third hand-wiring is a primitive; one table renders launchd and systemd; a module assertion would fail every daemon on the node for one daemon's contradiction |
 | Matrix language | a tatara-lisp declaration; a Rust macro | a Rust `bench_matrix!` | the proof is rustc's exhaustiveness over tear's enums in tear's workspace, and over mado's and madori's in mado's bench crate; a parsed file would demote it to a CI check (§6) |
@@ -371,7 +371,7 @@ are data, queried with duckdb.
 | When readers move to the view | at the flip; onto a projection first | a projection first (R30) | every reader moves in one commit onto one model; the flip then swaps only the producer |
 | Lane topology | one multiplexed connection with priorities; one connection per flow-control domain | per domain | the head-of-line blocking measured is in the client mutex and the daemon's serial loop (S), not the socket; a 738 KB message costs 2.98 ms to decode (C) ahead of any key; connect + subscribe costs 0.29 + 0.25 ms once (H) |
 | Shared memory | a cross-process ring; UDS | UDS across processes, RCU within one | 7.50–7.54 against 7.08 µs (F-e) |
-| Holder upgrade | on every adoption; opt-in, canary first | opt-in, behind a preflight, one canary first | an exec that succeeds into a failing image ends the shell the holder exists to keep; held for the operator (§8.2) |
+| Holder upgrade | on every adoption; opt-in, canary first | on by default, behind a preflight, one canary first | an exec that succeeds into a failing image ends the shell the holder exists to keep, so the preflight and the canary gate every rollout; decided 2026-10-07 (§8.2) |
 
 ## 5. The ladder
 
@@ -555,8 +555,8 @@ negative control is a fault injector compiled only for tests (§6).
   daemon-side check covers them.
 
 #### R17 · Forward first, flush beside
-*Destination for where the flush runs · after R1 · the default primitive is
-held for the operator (§8.2).*
+*Destination for where the flush runs · after R1 · the default primitive,
+`persisted`, decided 2026-10-07 (§8.2).*
 - **Changes** (extends makimono's `Journal`, `JournalBounds` and `atomic.rs`,
   tear-config's `JournalConfig`, tamotsu's `holder.rs`, praça persistence):
   the journal splits into a writer that appends to the page cache and a syncer
@@ -919,17 +919,23 @@ R37.*
   file (S `atomic.rs:51-58`), and a binding takes its cwd from the request's
   `SpawnEnv` instead of the daemon-global spawn cwd (S daemon
   `lib.rs:1500-1509`), which resident mado never sets because it sends a
-  per-request environment (S mado `gui_tear_attach.rs:259-270`); the holder's
-  cwd poll rides the syncer's wake; macOS cwd comes through R28's seam.
+  per-request environment (S mado `gui_tear_attach.rs:259-270`); bindings live
+  with their sessions (§8.2): the daemon owns them for daemon and resident
+  sessions and serves them to mado over the registry feed (R36, until then a
+  read request), and mado's own file keeps only embedded sessions' bindings;
+  the holder's cwd poll rides the syncer's wake; macOS cwd comes through R28's
+  seam.
 - **Effect:** authority timer wakeups 5/s + 2/s + 4.5/s per held pane (+20/s
   with `--tcp`) → 0 (S); the daemon's 77 context switches/s → ≤1/s with no
   client polling (L); kill and rename RPCs shed 4–9 ms of flushing (S);
-  resident sessions get praça bindings.
+  resident sessions get praça bindings, held in one store.
 - **Gate:** over 60 s with no clients, the daemon makes ≤60 context switches
   and each holder 0 (`proc_pidinfo` deltas); an rg gate refuses
   `thread::sleep` in daemon and holder loops; a resident `NewSession` in a
-  project directory creates its binding.
-- **Old behaviour:** `persist.debounce_ms`.
+  project directory creates its binding, and mado's picker shows it from the
+  daemon with no entry in mado's file.
+- **Old behaviour:** `persist.debounce_ms`; `praca.resident_bindings: mado`
+  keeps resident sessions' bindings in mado's file, as today.
 
 ### Phase D — negotiation both ways, and the holder's reach
 
@@ -958,7 +964,7 @@ R37.*
 - **Old behaviour:** the untagged legacy paths are served for good.
 
 #### R16 · Holders upgrade in place
-*Prerequisite · after R15 · its default is held for the operator (§8.2).*
+*Prerequisite · after R15 · default `canary-then-all`, decided 2026-10-07 (§8.2).*
 - **Changes** (extends tamotsu's spawn in `held.rs` and the holder's control
   verbs): holder capability `reexec`. On `Upgrade{program}` the holder first
   runs `<program> hold --adopt-abi` as a child and requires it to report an
@@ -974,18 +980,17 @@ R37.*
   with an unchanged child pid and contiguous offsets before the rest follow,
   and the rollout stops at the first failure.
 - **Effect:** every later holder-side change (R21, R35's dedup) reaches every
-  pane created after this rung, including shells that live for months, once
-  the operator opts in. Holders from v0.1.28 — the first, shipped 2026-10-06
-  (S) — up to this rung cannot be upgraded and keep their behaviour until
-  their shell exits.
+  pane created after this rung, including shells that live for months.
+  Holders from v0.1.28 — the first, shipped 2026-10-06 (S) — up to this rung
+  cannot be upgraded and keep their behaviour until their shell exits.
 - **Gate:** an upgrade under a running echo loop keeps journal offsets
   contiguous, the child pid unchanged and 0 bytes lost; a rollback (`Head` →
   `Prev`) is refused at the preflight or completes with the shell alive; an
   image that panics at startup is caught by the preflight and the shell stays
   with the old image; the control `never` leaves the holder's version
   unchanged.
-- **Old behaviour:** `durability.holder_upgrade: never`, the default until the
-  operator decides (§8.2).
+- **Old behaviour:** `durability.holder_upgrade: never` keeps every holder on
+  the image it was spawned with.
 
 ### Phase E — the authority's data path
 
@@ -1073,8 +1078,7 @@ the flip (R38).*
   who answers is R42's lease.
 
 #### R21 · Gather at the source; a holder that serves many
-*Destination · after R16, R19 · the holder half is held for the operator
-(§8.2).*
+*Destination · after R16, R19 · the holder half decided 2026-10-07 (§8.2).*
 - **Changes** (extends tamotsu's pump and single sink, tear-core's `pty.rs`
   reader and mado's local `pty.rs` — three serial copies today — and the
   PauseReader contract): one PTY source (working name `PtyPump`) on Ghostty's
@@ -1259,7 +1263,7 @@ the flip (R38).*
   (today's truncation); `scrollback.rows` unchanged.
 
 #### R27 · Restart costs the screen, not the journal
-*Step (a) interim to (c); (b) held for the operator (§8.2); (c) destination ·
+*Step (a) interim to (c); (b) decided 2026-10-07 (§8.2); (c) destination ·
 after R21, R22, R26, and (c) after R28; exact fences use R25's `is_ground()`.*
 - **Changes** (extends `cmd_daemon`, `start_with_config`, the restore in
   `durable.rs`, tamotsu's readiness, the module trio): (a) bind and accept
@@ -1272,7 +1276,8 @@ after R21, R22, R26, and (c) after R28; exact fences use R25's `is_ground()`.*
   backfilled from the journal in the background, and held-spawn readiness on
   an inherited pipe instead of 10 ms polls. The checkpoint is a second
   serialisation of the grid, which SESSION-DURABILITY §3.3 chose against ("raw
-  bytes, not rendered cells"), so it waits for the operator; it must carry
+  bytes, not rendered cells") and the operator adopted on 2026-10-07 behind
+  the grid-equality gate below; it must carry
   what `to_ansi` drops today — graphics, title, cwd, OSC 133 blocks, DECSTBM,
   the palette and the primary screen under an alternate one (S
   `pane_snapshot.rs:372-480`) — or that pane re-adopts from offset 0. (c)
@@ -1452,7 +1457,8 @@ after R21, R22, R26, and (c) after R28; exact fences use R25's `is_ground()`.*
   until the reflowed view arrives the current one is drawn anchored; before
   the flip the mirror reflows on the view lane, after it the authority does;
   with several windows on one pane only the size owner resizes (daemon policy,
-  latest-focused by default) and the others letterbox.
+  latest-focused by default, decided 2026-10-07, §8.2) and the others
+  letterbox.
 - **Effect:** per drag step, an O(scrollback) rewrap under the write lock, a
   blocking RPC, a truncating resize and a SIGWINCH (S) → a surface reconfigure
   and one frame; one reflow and one SIGWINCH per settled size.
@@ -1897,22 +1903,25 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a `SetConfig` that resets keys its writer could not see | a merge keyed on the writer's schema version; durability and delivery keys read once at start | an impose from `Prev` mado against `Head` | — | parse-time-rejected |
 | two authorities on one holder | a store lease ordered by incarnation; `Displaced` is terminal | two daemons on one store for 10 s | PROTO-1 holders obey the lease only through the daemons | only-mitigated (C4) |
 | a holder upgrade that ends a shell | a preflight of the new image's adoption ABI; the journal drained before exec; one canary first | a rollback; an image that panics at startup | an image that passes the preflight and fails after the exec | only-mitigated (C2) |
-| unbounded history in RAM | `max_bytes` wired | the RSS row with `max_bytes` set | the default is held for the operator (§8.2) | only-mitigated (C1) |
+| unbounded history in RAM | `max_bytes` wired | the RSS row with `max_bytes` set | the default stays unlimited by operator decision (§8.2), at ~1–1.5× the text | only-mitigated (C1) |
 | Nagle on a tear TCP socket | one connect and accept path sets `TCP_NODELAY` | an rg gate; the Nagle probe | a bypass outside the profile | only-mitigated (C1) |
 | a shell started outside the default band | the holder resets its main thread and clears inherited background state on the child before exec | the `proc_pidinfo` row through the production `NewSession` RPC, the daemon at `session-host` and at `xpc-adaptive` | whether `posix_spawn` carries the caller's QoS (§8.3) | only-mitigated (C1) |
 | an allocation per line feed | row recycling | the counting allocator; the allocating-row fault | — | only-mitigated (C1) |
 
-### 8.2 Held for the operator
+### 8.2 Operator decisions (2026-10-07)
 
-| Decision | Evidence | Until decided |
+Each was put to the operator with the evidence below; the last column is the
+decision, and every rung that depends on it says so.
+
+| Decision | Evidence | Decided |
 |---|---|---|
-| The journal's flush primitive | `persisted` keeps what SESSION-DURABILITY §3.3 promises — a crash loses at most the window — at 3.73–5.92 ms a flush (F-c, D). `ordered` costs 0.22–1.41 ms (F-c, D), 3–17× cheaper within either probe, and keeps ordering, but promises nothing persisted at return (`man 2 fcntl`); the two probes disagree by 6.4× on the barrier, so R1 re-measures both primitives in one run before the decision. The survival ladder (§2 there) names process deaths, logout and reboot, where the page cache loses nothing either way; only a panic or a power loss tells them apart. | `persisted`, off the byte path (R17) |
-| The scrollback default | unlimited rows is a recorded contract (S `tear-config` `lib.rs:238`). Held panes journal at most 64 MiB (S `tear-config` `lib.rs:219-220`) and re-adoption rebuilds the grid from that journal alone (D), so history beyond it already disappears at every daemon restart; a 64 MiB bound in RAM would make the two horizons agree. Compact history (R26) makes either affordable. | unlimited, stored compactly |
-| The holder's growth — SESSION-DURABILITY §3.2 keeps it "deliberately small and slow-moving" | a holder fault ends a live shell, the one loss the design exists to prevent. R16 makes the holder upgradable in place behind a preflight and a canary, which no holder is today; R21's holder half moves the pump from 1 KiB frames to 64 KiB batches (the journal-and-framing hop 407 → 1,130 MiB/s, D) and serves observers and a lease-ordered authority. Each adds code to the one process whose crash is a lost shell. | R16 ships with `durability.holder_upgrade: never`; R21's local half lands, its holder half waits |
-| The checkpoint — SESSION-DURABILITY §3.3 chose "raw bytes, not rendered cells" | a restart re-parses a pane's whole journal, 0.59–0.71 s per 64 MiB with the child paused (G); a checkpoint plus a ≤4 MiB tail costs 46–47 ms of parsing (G) plus its load. It is a second serialisation of the grid, which must carry what `to_ansi` drops today (S) or fall back to offset 0, and espelho equality is its gate (R27). | `checkpoint: off`: offset-0 replay |
-| Who owns praça | the daemon keeps a praça store and mado keeps its own file, and no wire request reads the daemon's (S); R18 makes the daemon bind resident sessions | both, as today |
-| Who owns a shared pane's size (C5) | latest-focused, largest, smallest or manual; tmux defaults to latest (R) | latest-focused |
-| The present mode on macOS | the deployment runs Immediate on macOS (`vsync: false`, L) and Fifo on Linux, after measuring tearing there; Ghostty keeps vsync on, citing kernel panics with out-of-sync rendering on macOS 14.4+ (R) | unchanged until R1's input → present histograms compare both under R11 |
+| The journal's flush primitive | `persisted` keeps what SESSION-DURABILITY §3.3 promises — a crash loses at most the window — at 3.73–5.92 ms a flush (F-c, D). `ordered` costs 0.22–1.41 ms (F-c, D), 3–17× cheaper within either probe, and keeps ordering, but promises nothing persisted at return (`man 2 fcntl`); the two probes disagree by 6.4× on the barrier, so R1 re-measures both primitives in one run before the decision. The survival ladder (§2 there) names process deaths, logout and reboot, where the page cache loses nothing either way; only a panic or a power loss tells them apart. | `persisted` — `group_commit{persisted, 1 s, 1 MiB}` off the byte path (R17); `ordered` stays a typed option, and R1 still re-measures both in one run |
+| The scrollback default | unlimited rows is a recorded contract (S `tear-config` `lib.rs:238`). Held panes journal at most 64 MiB (S `tear-config` `lib.rs:219-220`) and re-adoption rebuilds the grid from that journal alone (D), so history beyond it already disappears at every daemon restart; a 64 MiB bound in RAM would make the two horizons agree. Compact history (R26) makes either affordable. | unlimited rows, stored compactly (R26) — the contract stands; `scrollback.max_bytes` is the bound for anyone who wants one |
+| The holder's growth — SESSION-DURABILITY §3.2 keeps it "deliberately small and slow-moving" | a holder fault ends a live shell, the one loss the design exists to prevent. R16 makes the holder upgradable in place behind a preflight and a canary, which no holder is today; R21's holder half moves the pump from 1 KiB frames to 64 KiB batches (the journal-and-framing hop 407 → 1,130 MiB/s, D) and serves observers and a lease-ordered authority. Each adds code to the one process whose crash is a lost shell. | the holder grows: R16 ships with `durability.holder_upgrade: canary-then-all`, its preflight and canary gating every rollout, and R21's holder half lands after it. This amends SESSION-DURABILITY §3.2 |
+| The checkpoint — SESSION-DURABILITY §3.3 chose "raw bytes, not rendered cells" | a restart re-parses a pane's whole journal, 0.59–0.71 s per 64 MiB with the child paused (G); a checkpoint plus a ≤4 MiB tail costs 46–47 ms of parsing (G) plus its load. It is a second serialisation of the grid, which must carry what `to_ansi` drops today (S) or fall back to offset 0, and espelho equality is its gate (R27). | adopted behind the grid-equality gate; a pane whose checkpoint is incomplete re-adopts from offset 0. This amends SESSION-DURABILITY §3.3 |
+| Who owns praça | the daemon keeps a praça store and mado keeps its own file, and no wire request reads the daemon's (S); R18 makes the daemon bind resident sessions; two stores for one fact can disagree | bindings live with their sessions: the daemon owns them for daemon and resident sessions and mado reads them over the registry feed (R36); mado's own file serves embedded sessions only (R18) |
+| Who owns a shared pane's size (C5) | latest-focused, largest, smallest or manual; tmux defaults to latest (R) | latest-focused (R33) |
+| The present mode on macOS | the deployment runs Immediate on macOS (`vsync: false`, L) and Fifo on Linux, after measuring tearing there. On macOS WindowServer composites every window and presents on the refresh boundary, so a windowed Immediate present does not tear and saves about one refresh, ~4.2 ms at 120 Hz on average; Ghostty keeps vsync on, citing kernel panics with out-of-sync rendering on macOS 14.4+ (R) | unchanged: Immediate on macOS, Fifo on Linux, derived per platform by the fleet's terminal module; R1's input → present histograms re-check it under R11 and R14 |
 
 ### 8.3 Not yet measured
 
@@ -1967,9 +1976,9 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 - **Not a bigger frame cap.** 16 MiB stays a decoder sanity bound; lane frames
   never exceed 64 KiB.
 - **Not a reversal of the durability or scrollback decisions.** This plan
-  moves where flushes run and how history is stored; its two amendments to
-  SESSION-DURABILITY and every default that would change a guarantee are held
-  for the operator (§8.2).
+  moves where flushes run and how history is stored; the operator adopted its
+  two amendments to SESSION-DURABILITY on 2026-10-07, and no default weakens
+  a guarantee (§8.2).
 - **Not a second parser in mado, even for a while.** R30's interim frame is a
   projection of the parser mado already has.
 - **Not a present-mode change on macOS, not `CAMetalDisplayLink`, and not a
