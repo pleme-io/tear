@@ -46,6 +46,7 @@
           packageAttr = "tear";
           binaryName = "tear";
           withUserDaemon = true;
+          daemonWorkloadClass = "session-host";
           withShikumiConfig = true;
           shikumiDefaults = {};
           extraHmConfigFn = { cfg, lib, config, pkgs, ... }:

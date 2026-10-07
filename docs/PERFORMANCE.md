@@ -452,22 +452,30 @@ negative control is a fault injector compiled only for tests (§6).
 #### R2 · The session tree leaves the background band
 *Destination · after R1.*
 - **Changes** (extends substrate's module-trio `processType`, whose own
-  comment already records the band's cost, and `service-helpers`): a closed
-  `workloadClass` — `session-host`, `latency-server`, `service`, `background`,
-  `xpc-adaptive` — keyed on who waits on the process, rendering launchd
-  `ProcessType`, `Nice` and `LowPriorityIO` and systemd `Nice`, `CPUWeight`
-  and `IOWeight` from one table; module-trio gains `daemon.workloadClass`,
-  defaulted from a spec field; tear declares `session-host` for every daemon
-  flavour, because the band slows process-bound panes too. A daemon that
-  declares a class gets its scheduling from the class alone: an explicit
-  `processType` beside it is not rendered, and that daemon's evaluation warns
-  with both values, so the contradiction never reaches a unit and every other
-  daemon on the node evaluates unchanged. A daemon that declares no class
-  keeps today's free `processType`, unchanged: every explicit setting already
-  in the fleet — engenho's on darwin servers among them — and module-trio's
-  own tests (S substrate `module-trio-test.nix:325`) evaluate as today, and
-  the fleet's hand-set sites migrate later. Bands are inherited at spawn (F),
-  so a pane alive at the rebuild would keep the background band until its
+  comment already records the band's cost, and the four daemon helpers in
+  `lib/hm`): a closed `workloadClass` — `session-host`, `latency-server`,
+  `service`, `background`, `xpc-adaptive` — keyed on who waits on the
+  process, rendering launchd `ProcessType`, `Nice` and `LowPriorityIO` and
+  systemd `Nice`, `CPUWeight` and `IOWeight` from one table (substrate
+  `lib/hm/workload-class.nix`; `background` is the posture three hand-written
+  agents and substrate's periodic helpers had converged on, and
+  `latency-server`'s Linux weight of 200 is declared, not measured);
+  module-trio gains `daemon.workloadClass` on both daemon arms, defaulted
+  from the spec field `daemonWorkloadClass` (`userDaemonWorkloadClass` for
+  the user daemon); tear declares `daemonWorkloadClass = "session-host"`,
+  which reaches every daemon flavour, because the band slows process-bound
+  panes too. A daemon that declares a class gets its scheduling from the
+  class alone: an explicit `processType` beside it is not rendered, and that
+  daemon's evaluation warns with both values (`lib.warn`, forced when its
+  agent is rendered), so the contradiction never reaches a unit and every
+  other daemon on the node evaluates unchanged. A daemon that declares no
+  class keeps today's free `processType`, unchanged: every explicit setting
+  already in the fleet — engenho's on darwin servers among them — and
+  module-trio's own tests (S substrate
+  `lib/tests/module-trio-test.nix:405-416`) evaluate as today, and the
+  fleet's 32 hand-set sites (21 `Background`, 8 `Interactive`, 2 `Adaptive`,
+  1 conditional; re-counted 2026-10-07) migrate later. Bands are inherited at
+  spawn (F), so a pane alive at the rebuild would keep the background band until its
   shell exits: on adoption the daemon clears inherited background state on
   each holder, its shell and the shell's live descendants —
   `setpriority(PRIO_DARWIN_PROCESS, pid, 0)`, the inverse of the call F used
@@ -498,7 +506,10 @@ negative control is a fault injector compiled only for tests (§6).
   control `Band::Background` keeps the C2–C4 throughput, C2 and C4 warm-echo,
   C8 `NewSession` and C12 key cells red.
 - **Old behaviour:** `workloadClass: xpc-adaptive` renders today's `Adaptive`
-  exactly and stays module-trio's default, so no other daemon changes band.
+  units exactly. module-trio's default is no class, which leaves the free
+  `processType` — `Adaptive` unless set — in charge, so no other daemon
+  changes band; a default of `xpc-adaptive` would have overridden every
+  explicit `processType` in the fleet.
 
 #### R3 · The wire stops losing things
 *Correctness prerequisite · after R1.*
@@ -1881,7 +1892,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 
 | Bad state | Mechanism | Red run | Not covered | Tier (target) |
 |---|---|---|---|---|
-| a session-hosting daemon rendered in the background band | `session-host` renders only `Interactive`; a `processType` beside a class is not rendered and is named in a warning | a module-trio evaluation test: `session-host` beside `processType = "Background"` renders `Interactive` (pinned output) | a daemon that declares no class; a deliberate `xpc-adaptive`; panes born in the band before R2 that the OS will not reclass | truly-unrep (no class renders it) |
+| a session-hosting daemon rendered in the background band | `session-host` renders only `Interactive`; a `processType` beside a class is not rendered and is named in a warning | module-trio evaluation tests `testSessionHostBesideBackgroundRendersInteractive` (pinned output) and `testSessionHostBesideBackgroundWarns` (a spy `lib.warn`); a `session-host` row moved to `Background` reds 7 rows | a daemon that declares no class; a deliberate `xpc-adaptive`; a deliberate `mkForce` on the unit's own `ProcessType`; panes born in the band before R2 that the OS will not reclass | truly-unrep (no class renders it) |
 | a case or metric with no budget | the row is the only declaration; `Budgets` has no `Default` | `trybuild`, pinned E0063 and E0004 | enums of mado and madori, red only when mado builds against them | truly-unrep |
 | a capability that is never advertised | one `capabilities!` row per variant | `trybuild`: a variant with no row, E0004; mutation A, which left 9 of 9 tests green before the seal (P) | a deliberate macro edit | truly-unrep |
 | a key lost after an oversized response | a connection left mid-frame is never reused; a size refusal is never replayed | today's replay policy as a test double: 0 of 20 | other transport faults mid-frame | only-mitigated (C1) |
@@ -1945,7 +1956,11 @@ decision, and every rung that depends on it says so.
   outside it (R1, for R2), and whether `posix_spawn` carries the caller's
   thread QoS into the child (R28).
 - Linux: the PTY read quantum, the cost of `fdatasync`, and whether per-pane
-  scopes measurably help (R2's Linux gate).
+  scopes measurably help (R2's Linux gate); whether `latency-server`'s
+  `CPUWeight`/`IOWeight` of 200 measurably helps a server under contention;
+  whether `IOWeight` in a systemd user unit takes effect at all — upstream
+  `user@.service` delegates `pids memory cpu`, not `io`, so `background`'s
+  `IOWeight=20` on a user daemon may do nothing (R2's Linux gate).
 - Whether an acquire on a hidden Wayland surface under `AutoVsync` blocks the
   UI thread (R11), and whether macOS's compositor can be handed damage through
   `CAMetalLayer` (R31).
