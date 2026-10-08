@@ -213,9 +213,7 @@ impl Raw {
     }
 
     pub fn frame(&mut self, within: Duration) -> Frame {
-        if self.s.set_read_timeout(Some(within)).is_err() {
-            return Frame::Eof;
-        }
+        let _ = self.s.set_read_timeout(Some(within));
         match read_from_holder(&mut self.r) {
             Ok(FromHolder::Bytes { at, data }) => {
                 assert!(

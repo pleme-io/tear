@@ -145,7 +145,9 @@ fn an_older_incarnation_is_displaced_and_told_so_and_never_re_admitted() {
     let rv = revival(&t.0);
     let holder = spawn_holder(&rv);
     let mut older = Raw::attached(&rv.args.socket, 0, Some(1));
+    assert!(eventually(|| attaches(&rv) == 1), "{}", holder_log(&rv));
     let mut newer = Raw::attached(&rv.args.socket, 0, Some(2));
+    assert!(eventually(|| attaches(&rv) == 2), "{}", holder_log(&rv));
     let until = Instant::now() + Duration::from_secs(5);
     let mut told = None;
     while Instant::now() < until && told.is_none() {
@@ -176,6 +178,7 @@ fn a_daemon_that_declares_no_incarnation_is_left_attached_and_silent_beside_a_ne
     let rv = revival(&t.0);
     let holder = spawn_holder(&rv);
     let mut newer = Raw::attached(&rv.args.socket, 0, Some(2));
+    assert!(eventually(|| attaches(&rv) == 1), "{}", holder_log(&rv));
     let mut old = Raw::attached(&rv.args.socket, 0, None);
     newer.write(b"echo beside-$((3+4))\n");
     assert!(newer.until_text("beside-7", Duration::from_secs(10)));
