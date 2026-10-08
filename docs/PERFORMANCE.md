@@ -1223,7 +1223,9 @@ declaration lands at R38.*
   two scanners), aborted by `ESC` + anything else (mado's DEC anywhere rule,
   which tear's scanner lacked), a payload past 8 MiB consumed to its end and
   delivered cut — and hands the parser text only at rest: ground state,
-  outside any UTF-8 character. What follows the last rest point at a read
+  outside any UTF-8 character it could still complete (a character the next
+  byte ends invalid may close a chunk; vte then prints its replacement and
+  loses nothing). What follows the last rest point at a read
   boundary (an incomplete character, a lone `ESC`, an unfinished escape of at
   most `HOLD_MAX` = 4 KiB) is held and handed over with the bytes that
   complete it; a longer escape streams, and vte carries its state as before.
@@ -1235,13 +1237,21 @@ declaration lands at R38.*
   actions, so the feeder holds exactly where vte would be mid-sequence; every
   state leaves for `Escape` on `ESC`, so a read's end state is decided by the
   bytes after its last `ESC` and ground text is never stepped. Text is
-  borrowed from the read; only a held tail's completion is copied. Both
-  parsers hold a `feeder::Parser`, whose only advance takes a `Chunk`, and a
-  `Chunk` has one constructor, inside the feeder. `PaneGrid::feed` keeps
-  taking bytes and owns its `Feeder`, because the carry must live as long as
+  borrowed from the read; only a held tail's completion is copied, and a held
+  character that the next byte ends invalid is handed over alone, the rest of
+  the read borrowed again. Both parsers advance a `feeder::Parser`, whose only
+  advance takes a `Chunk`, and a `Chunk` has one constructor, inside the
+  feeder. `feeder::Stream` owns one feeder and the one parser it feeds, and
+  `PaneGrid` holds a `Stream`; mado's `Terminal` still pairs its own `Feeder`
+  and `Parser` until its next tear bump moves it onto `Stream`.
+  `PaneGrid::feed` keeps taking bytes, because the carry must live as long as
   the grid it feeds: a feeder outside the grid would split at the boundary
   between a journal replay and live output. An APC is transparent to the text
-  around it, as it was in both parsers. espelho gains `feed(whole) ==
+  around it, as it was in both parsers. A raw `9C` now ends an APC in tear as
+  it did in mado; in UTF-8 that byte is also a continuation byte (`Ü` is
+  `C3 9C`), so a non-kitty APC carrying UTF-8 ends early and the rest of its
+  payload prints as text, where tear used to swallow it. Kitty's payloads are
+  base64 and never carry it. espelho gains `feed(whole) ==
   feed(any split)` over the grid, its modes and its host answers.
 - **Effect:** UTF-8 split loss in 3 of 3 crafted split cases → 0 (G; the cause
   is vte 0.15.0's `advance_partial_utf8`, S); the per-chunk copy, 0.56–0.70 ns
@@ -1258,7 +1268,7 @@ declaration lands at R38.*
   for tests and `bench-probes`); `trybuild` cases: a `Chunk` minted outside
   the feeder fails with E0451, a parser advanced over raw bytes with E0308.
 - **Old behaviour:** none; the old path survives as the test oracle.
-- **Landed** (tear; mado's half follows tear's release). The proptest read
+- **Landed** (tear f19f1de; mado 9f3f7bd, on tear-core 0.1.39). The proptest read
   red on d69ce0f, shrunk to a kitty image followed by `ᝀ ⿰`, and green after;
   the old splitter reproduces G's three tails exactly (`ã ✓` → `ã✓`, `ñoño` →
   `ñño`, `é.…` → `é…`) and the feeder loses none; the E0451 case compiles once
@@ -1268,9 +1278,25 @@ declaration lands at R38.*
   boundary, was handed over whole and ended inside a character, so `C3` ×
   4,097 then `A3 20 E2 82 AC 21` cut after its first byte printed `ã€!`
   where whole it prints `ã €!`, at bounds 4 and 4 KiB. It is now cut before
-  its last incomplete character; that row and two lead-heavy proptests (no
-  chunk ends where the next byte continues its character; any split reads as
-  one raw vte advance) read red before the cut and green after. The copy
+  its last incomplete character; that row reads red before the cut and green
+  after, and so do the lead-heavy proptests (no chunk ends where the next
+  byte continues its character; any split reads as one raw vte advance), one
+  or both by seed. A second verification found the other hole: a held tail
+  that the next read's lead bytes ended invalid stayed held until a character
+  completed, while a whole read hands the ended characters over, so an image
+  after them landed by where the read was cut — `C3 C3 E2`, a kitty image,
+  then `82 AC X` placed it at column 0 split after the first byte and at
+  column 1 whole. A held tail is now handed over the moment a byte ends it.
+  Its rows (the feeder's trace and the grid's image placement, every cut),
+  the espelho proptest, now generating lead bytes before its kitty images and
+  stray continuation bytes, and the feeder's any-split proptest, now
+  generating whole characters, lead bytes and APCs, all read red on the
+  previous `resolve` and green after. The feeder's test trace now keeps
+  prints and APCs in one ordered log, so `apcs_arrive_in_stream_order` reads
+  red when every APC is deferred to the end of its read, and the any-split
+  proptest reads red when the feeder holds nothing; before, both stayed
+  green. mado runs tear-core 0.1.39's feeder and takes this fix, and
+  `Stream`, with its next tear bump. The copy
   became a borrow: over 32 MiB of G's four workloads in 1 KiB reads, six
   interleaved runs each, the feeder costs 0.043–0.064 ns per byte (median)
   where the old splitter cost 0.558–0.691 — G's 0.56–0.70 again — and
@@ -2851,7 +2877,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a connection that skips the handshake | the control connection, every re-dial and every subscription run one handshake: `Authenticate`, `Hello`, the stored `IdentifyClient` | `raw-subscribe`; the tokened-subscription row; a re-dial test against a daemon double | — | only-mitigated (C1) |
 | a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways; for older holders, a pane snapshot or an unechoed key makes the daemon compare `Status.end` and re-attach | a `Sink::drop` without the shutdown reddens the sink's own test and three tamotsu `never_mute` tests (shut-down, stall, displaced); the mute-sink fault on C4 `loss` (3,660,800 B lost); the shut-down and stall tests, red against v0.1.34's holder; tear's daemon-process test of a muted holder recovered by wire snapshots, red with the edge off the wire read (1 attach, the marker never shown) | holders spawned before R4, which the daemon's `Status.end` check only mitigates, on an edge; a holder that writes through a raw stream again (the `trybuild` case pins `Sink::new`, a definition, not the holder's use); a deliberate `Sink::leave_silent` on the failure path, which is what the fault does | only-mitigated (C1) |
 | a byte payload written as a CBOR integer array | every `Vec<u8>` field of a serde type in tear-types goes through `tear_types::byte_string` (serde_bytes); a scan of tear-types' sources refuses one that does not, and counts three so a broken parser cannot read as safe | the `array-encoder` fault: C2 `wire-bytes` 2,042 against 1,044 and `encodes` 465× its floor in a run with quiet sentinels, and `wire-bytes` alone on a loud host, where `encodes` reads `Blind` (`encodes` has no pre-rung red with quiet sentinels yet); tear-types' `array_encoder` test; `the_scan_sees_a_bare_byte_field`; the 65,552 B pin; the 18 head-to-published cross-version rows, red with the three attributes removed (six with `Graphic.data`'s alone, six with `SendKeys.bytes`') | a byte field of a serde type outside tear-types; a type the scan does not read, one declared inside a macro or an indented module | only-mitigated (C1) |
-| a UTF-8 character split across two of a parser's chunks | both parsers advance only through `feeder::Parser`, which takes a `Chunk` only the feeder mints, and the feeder cuts text only at rest, or, past the hold bound in ground state, before the last incomplete character, so no chunk ends where the next byte continues one | `trybuild`: a `Chunk` minted outside the feeder, E0451, and raw bytes to the parser, E0308; the old splitter as a test double (`old-splitter`, C9 `loss`); the espelho split proptest; a run of lead bytes past the bound, red at bounds 4 and 4 KiB before the cut with two lead-heavy proptests | where the feeder rests is its own state machine, held to vte's by proptests, not by the type | parse-time-rejected |
+| a UTF-8 character split across two of a parser's chunks | both parsers advance only through `feeder::Parser`, which takes a `Chunk` only the feeder mints, and the feeder cuts text only at rest, or, past the hold bound in ground state, before the last incomplete character, so no chunk ends where the next byte continues one; a held character that the next byte ends invalid is handed over at once, so an APC stands at the same text offset however the read was cut; `PaneGrid` advances through `feeder::Stream`, one feeder bound to one parser | `trybuild`: a `Chunk` minted outside the feeder, E0451, and raw bytes to the parser, E0308; the old splitter as a test double (`old-splitter`, C9 `loss`); the espelho split proptest; a run of lead bytes past the bound, red at bounds 4 and 4 KiB before the cut, with the lead-heavy proptests by seed; an image after characters ended invalid (`C3 C3 E2`, kitty, `82 AC X`) at column 0 split and column 1 whole on the previous `resolve`, with the espelho proptest (lead bytes before its kitty images) and the feeder's any-split proptest red on it; the any-split proptest red with the hold removed, `apcs_arrive_in_stream_order` red with every APC deferred to its read's end | where the feeder rests is its own state machine, held to vte's by proptests, not by the type; a `Feeder` or `Stream` made per read compiles and drops what it held; mado's `Terminal` pairs its own `Feeder` and `Parser` until it adopts `Stream`, so there one parser can be advanced from two feeders, and it runs tear-core 0.1.39's `resolve`, which places an image after characters ended invalid by the read's cut, until its next tear bump | parse-time-rejected |
 | modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451 (at R38); before it the `daemon-rpc` control (`cursor-keys-via-rpc`: 2 RPCs and 194 B a key); mado's `n_arrow_keys_read_decckm_from_the_mirror_with_no_rpc_and_n_rpcs_under_daemon_rpc` (0 RPCs over 40 keys, red with `CursorKeys::read` reverted to the RPC) and the resolution test over `keys_read_the_mirror` | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does; against a daemon without `replay-modes` mado reads DECCKM over RPC, a mode at another instant than the mirror's cells | truly-unrep (at R38) |
 | a replay that leaves the consumer's modes or history unlike the authority's | `to_ansi` writes every `ModeSet` field as an absolute restore after a soft reset, stacks emptied before their pushes, and history with `rows − 1` line feeds | the `modeless-replay` fault on C7-attach `modes` (10 and 4 fields); `a_replay_restores_every_mode_field_and_twice_equals_once` (proptest over mode sequences) and the vim and history rows in tear-core, red against the pre-rung `to_ansi` (178 rows for 177, `mouse_encoding` off); tear-daemon's `replay_modes` tests through the real subscribe | a consumer of another height than the pane; modes outside `ModeSet` (DECOM, IRM, the scroll region); mado's single kitty stack | only-mitigated (C1) |
 | two history replays per attach | the daemon's first frame is the fenced replay, `replay-modes` says so on the subscription's own handshake, and engate takes no snapshot for a producer whose stream carries it | the `replay-modes-unadvertised` fault on C7-attach `replays` (2, through engate and the real producer); engate's `subscribe` mutated to ignore `replay_source` reddens 5 engate tests, and asked before `subscribe` reddens the ordering test; tear-client's producer mutated to say `Snapshot` takes a snapshot (1 for 0), and mutated to read the control connection's identity reddens `the_replay_source_is_the_subscription_s_own_daemon_s_not_the_control_connection_s`; mado's real-daemon attach, red with `CountedProducer::replay_source` removed (1 snapshot for 0); the fence tests in tear-core, red 5 of 5 with the old unfenced subscribe and 8 of 8 with the feed's guard dropped before the fan-out | a daemon without `replay-modes` (two replays, the old path); embedded attach (R20) | only-mitigated (C1) |

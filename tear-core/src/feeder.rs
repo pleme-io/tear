@@ -354,6 +354,12 @@ impl Feeder {
             return run;
         }
         for (k, &b) in run.iter().enumerate() {
+            if self.vt == Vt::Ground && b & 0xc0 != 0x80 && b != ESC {
+                sink(Segment::Text(Chunk { bytes: &self.held }));
+                self.held.clear();
+                self.ground_from = 0;
+                return &run[k..];
+            }
             self.held.push(b);
             let next = step(self.vt, b);
             if next == Vt::Ground && self.vt != Vt::Ground {
@@ -367,11 +373,7 @@ impl Feeder {
                 return &run[k + 1..];
             }
             if self.held.len() > self.hold_max {
-                let keep = if self.vt == Vt::Ground {
-                    utf8_tail(&self.held[self.ground_from..])
-                } else {
-                    usize::from(b == ESC)
-                };
+                let keep = usize::from(b == ESC);
                 let emit = self.held.len() - keep;
                 sink(Segment::Text(Chunk {
                     bytes: &self.held[..emit],
@@ -387,9 +389,40 @@ impl Feeder {
     }
 }
 
+#[derive(Default)]
+pub struct Stream {
+    feeder: Feeder,
+    parser: Parser,
+}
+
+impl Stream {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn at_rest(&self) -> bool {
+        self.feeder.at_rest()
+    }
+
+    pub fn feed<P: vte::Perform>(
+        &mut self,
+        performer: &mut P,
+        bytes: &[u8],
+        mut on_apc: impl FnMut(&mut P, &[u8], bool),
+    ) {
+        let Self { feeder, parser } = self;
+        feeder.feed(bytes, |segment| match segment {
+            Segment::Text(chunk) => parser.advance(performer, chunk),
+            Segment::Apc { payload, cut } => on_apc(performer, payload, cut),
+        });
+    }
+}
+
 #[cfg(any(test, feature = "bench-probes"))]
 pub(crate) mod legacy {
-    use super::{Chunk, GRAPHIC_PAYLOAD_MAX, Parser};
+    use super::{Chunk, GRAPHIC_PAYLOAD_MAX, Stream};
 
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     enum State {
@@ -470,13 +503,13 @@ pub(crate) mod legacy {
 
         pub(crate) fn feed<P: vte::Perform>(
             &mut self,
-            parser: &mut Parser,
+            stream: &mut Stream,
             performer: &mut P,
             bytes: &[u8],
             mut apc: impl FnMut(&mut P, &[u8], bool),
         ) {
             let (passthrough, done) = self.split(bytes);
-            parser.advance(
+            stream.parser.advance(
                 performer,
                 Chunk {
                     bytes: &passthrough,
@@ -503,6 +536,10 @@ mod tests {
     impl vte::Perform for Trace {
         fn print(&mut self, c: char) {
             self.printed.push(c);
+            match self.events.last_mut() {
+                Some(e) if e.starts_with("print ") => e.push(c),
+                _ => self.events.push(format!("print {c}")),
+            }
         }
         fn execute(&mut self, b: u8) {
             self.events.push(format!("x{b:02x}"));
@@ -593,10 +630,10 @@ mod tests {
     fn the_old_splitter_loses_a_character_at_a_read_boundary() {
         let s = "aã ✓".as_bytes();
         let mut legacy = legacy::Splitter::default();
-        let mut p = Parser::new();
+        let mut stream = Stream::new();
         let mut t = Trace::default();
         for read in reads(s, &[2]) {
-            legacy.feed(&mut p, &mut t, read, |_, _, _| {});
+            legacy.feed(&mut stream, &mut t, read, |_, _, _| {});
         }
         assert_eq!(t.printed, "aã✓");
     }
@@ -687,7 +724,15 @@ mod tests {
         assert_eq!(reference.printed, "ABCD");
         assert_eq!(
             reference.events,
-            vec!["apc Gone false", "apc Gtwo false", "apc Gthree false"]
+            vec![
+                "print A",
+                "apc Gone false",
+                "print B",
+                "apc Gtwo false",
+                "print C",
+                "apc Gthree false",
+                "print D"
+            ]
         );
         for a in 0..=s.len() {
             for b in a..=s.len() {
@@ -716,8 +761,7 @@ mod tests {
     fn a_payload_past_the_cap_is_cut_and_never_read_as_text() {
         let s = b"\x1b_Gabcdefghij\x1b\\ok";
         let t = traced(&mut Feeder::with_bounds(HOLD_MAX, 4), s, &[9, 13]);
-        assert_eq!(t.events, vec!["apc Gabc true"]);
-        assert_eq!(t.printed, "ok");
+        assert_eq!(t.events, vec!["apc Gabc true", "print ok"]);
     }
 
     #[test]
@@ -846,6 +890,37 @@ mod tests {
         ]
     }
 
+    fn stream_token() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![
+            4 => rich_byte().prop_map(|b| vec![b]),
+            3 => lead_heavy_byte().prop_map(|b| vec![b]),
+            3 => any::<char>().prop_map(|c| c.to_string().into_bytes()),
+            1 => "[A-Za-z0-9+/=]{0,6}".prop_map(|p| {
+                [b"\x1b_G".as_slice(), p.as_bytes(), b"\x1b\\"].concat()
+            }),
+        ]
+    }
+
+    #[test]
+    fn an_apc_after_characters_ended_invalid_stands_where_it_stood_whatever_the_split() {
+        let mut leads = vec![0xc2u8; 107];
+        leads.extend_from_slice(b"\x1b_G\x1b\\");
+        for stream in [
+            &b"\xc3\xc3\xe2\x1b_Ga=T,f=100;QUJD\x1b\\\x82\xacX"[..],
+            b"ab\xc3 \xe9\xe9\xe9\x1b_Ga=T,f=100;QUJD\x1b\\\xa9X",
+            &leads,
+        ] {
+            let reference = traced(&mut Feeder::new(), stream, &[]);
+            for cut in 0..=stream.len() {
+                assert_eq!(
+                    traced(&mut Feeder::new(), stream, &[cut]),
+                    reference,
+                    "cut at {cut}"
+                );
+            }
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1024))]
 
@@ -886,11 +961,11 @@ mod tests {
 
         #[test]
         fn any_bytes_split_anywhere_reach_the_parser_unchanged(
-            bytes in prop::collection::vec(rich_byte(), 0..256),
+            tokens in prop::collection::vec(stream_token(), 0..128),
             cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..8),
             hold in prop_oneof![Just(HOLD_MAX), 1usize..16],
         ) {
-            let mut bytes = bytes;
+            let mut bytes = tokens.concat();
             bytes.extend_from_slice(SETTLE);
             let cuts = sorted_cuts(bytes.len(), &cuts);
             let mut whole = Feeder::with_bounds(hold, GRAPHIC_PAYLOAD_MAX);

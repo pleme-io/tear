@@ -29,7 +29,7 @@ use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_p
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
-use crate::feeder::{Feeder, Parser, Segment};
+use crate::feeder::Stream;
 
 pub use tear_types::pane_snapshot::{Cell, PaneSnapshot};
 
@@ -53,9 +53,8 @@ pub const DEFAULT_SCROLLBACK_ROWS: usize = usize::MAX;
 /// since multiple PTY-reader threads + the RPC dispatch thread all
 /// race for it).
 pub struct PaneGrid {
-    parser: Parser,
+    stream: Stream,
     pub(crate) state: GridState,
-    feeder: Feeder,
 }
 
 /// Mutable state — separated from the parser so vte's `Perform`
@@ -1490,9 +1489,8 @@ impl PaneGrid {
     #[must_use]
     pub(crate) fn with_scrollback(cols: usize, rows: usize, scrollback_cap: usize) -> Self {
         Self {
-            parser: Parser::new(),
+            stream: Stream::new(),
             state: GridState::new(cols, rows, scrollback_cap),
-            feeder: Feeder::new(),
         }
     }
 
@@ -1502,15 +1500,10 @@ impl PaneGrid {
     /// write verb on a pane's grid, and it is reachable only from inside
     /// `tear-core`, i.e. only through `InProcess`/the daemon.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
-        let Self {
-            parser,
-            state,
-            feeder,
-        } = self;
-        feeder.feed(bytes, |segment| match segment {
-            Segment::Text(chunk) => parser.advance(state, chunk),
-            Segment::Apc { payload, cut } => state.ingest_apc(payload, cut),
-        });
+        self.stream
+            .feed(&mut self.state, bytes, |state, payload, cut| {
+                state.ingest_apc(payload, cut);
+            });
     }
 
     #[cfg(any(test, feature = "bench-probes"))]
@@ -1520,7 +1513,7 @@ impl PaneGrid {
         bytes: &[u8],
     ) {
         splitter.feed(
-            &mut self.parser,
+            &mut self.stream,
             &mut self.state,
             bytes,
             |state, payload, cut| {

@@ -30,10 +30,11 @@ use serde::{Deserialize, Serialize};
 
 /// Largest payload accepted for one image.
 ///
-/// Matches mado's `SIXEL_DCS_MAX` / `APC_MAX`. A terminal image is bounded
-/// by what a program can reasonably paint; anything past this is a runaway
-/// or hostile stream, and accepting it would let a child process drive the
-/// daemon out of memory.
+/// It is the APC bound of `tear_core::feeder`, the one feeder both parsers
+/// share, and the same bound as mado's `SIXEL_DCS_MAX`. A terminal image is
+/// bounded by what a program can reasonably paint; anything past this is a
+/// runaway or hostile stream, and accepting it would let a child process
+/// drive the daemon out of memory.
 pub const GRAPHIC_PAYLOAD_MAX: usize = 8 * 1024 * 1024;
 
 /// Which protocol delivered a payload. The renderer needs this to pick a

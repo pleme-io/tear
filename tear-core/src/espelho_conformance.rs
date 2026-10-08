@@ -281,9 +281,20 @@ mod split_invariance {
         prop_oneof![
             4 => any::<String>().prop_map(String::into_bytes),
             3 => prop::sample::select(CATALOG.to_vec()).prop_map(|q| q.wire().to_vec()),
-            1 => "[A-Za-z0-9+/=]{0,12}".prop_map(|p| {
-                [b"\x1b_Ga=T,f=100;".as_slice(), p.as_bytes(), b"\x1b\\"].concat()
-            }),
+            2 => (
+                prop::collection::vec(0xc2u8..=0xf4, 0..5),
+                "[A-Za-z0-9+/=]{0,12}",
+            )
+                .prop_map(|(leads, p)| {
+                    [
+                        leads.as_slice(),
+                        b"\x1b_Ga=T,f=100;",
+                        p.as_bytes(),
+                        b"\x1b\\",
+                    ]
+                    .concat()
+                }),
+            1 => prop::collection::vec(0x80u8..=0xbf, 1..4),
             1 => (1u8..=5, 1u8..=20).prop_map(|(r, c)| format!("\x1b[{r};{c}H").into_bytes()),
             1 => (30u8..38).prop_map(|c| format!("\x1b[{c}m").into_bytes()),
         ]
@@ -329,6 +340,19 @@ mod split_invariance {
             ]
             .map(|(w, r)| (w.to_owned(), r.to_owned()))
         );
+    }
+
+    #[test]
+    fn an_image_after_characters_ended_invalid_lands_where_it_lands_whole() {
+        for stream in [
+            &b"\xc3\xc3\xe2\x1b_Ga=T,f=100;QUJD\x1b\\\x82\xacX"[..],
+            b"ab\xc3 \xe9\xe9\xe9\x1b_Ga=T,f=100;QUJD\x1b\\\xa9X",
+        ] {
+            let whole = seen(stream, &[], HostRole::Relay);
+            for cut in 0..=stream.len() {
+                assert_eq!(seen(stream, &[cut], HostRole::Relay), whole, "cut at {cut}");
+            }
+        }
     }
 
     proptest! {
