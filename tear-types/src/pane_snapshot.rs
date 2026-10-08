@@ -379,7 +379,9 @@ impl PaneSnapshot {
 
     /// Serialize the snapshot as a stream of ANSI bytes that, when
     /// fed into a fresh VT parser, reproduces the snapshot state
-    /// (cells, colors, attrs, cursor, alt-screen, cursor-visibility).
+    /// (cells, colors, attrs, cursor, and every mode in `modes`, each
+    /// restored absolutely, so feeding it twice leaves a parser where
+    /// feeding it once does).
     ///
     /// The bug class this kills: a producer (tear pane) starts
     /// emitting before a consumer (mado terminal model) attaches via
@@ -398,7 +400,56 @@ impl PaneSnapshot {
     /// live stream.
     #[must_use]
     pub fn to_ansi(&self) -> Vec<u8> {
+        self.write_ansi(&mut Vec::new())
+    }
+
+    #[must_use]
+    pub fn to_ansi_within(&self, max_bytes: usize) -> Replay {
+        let mut rows_at = Vec::with_capacity(self.scrollback.len() + 3);
+        let mut bytes = self.write_ansi(&mut rows_at);
+        if bytes.len() <= max_bytes {
+            return Replay {
+                bytes,
+                history_dropped: 0,
+            };
+        }
+        let Some((&section, rest)) = rows_at.split_first() else {
+            return Replay {
+                bytes,
+                history_dropped: 0,
+            };
+        };
+        let (first, ends) = (rest[0], &rest[1..]);
+        let over = bytes.len() - max_bytes;
+        let rows = self.scrollback.len();
+        let dropped = ends[..rows]
+            .iter()
+            .position(|&end| end - first >= over)
+            .map_or(rows, |i| i + 1);
+        if dropped == rows {
+            bytes.drain(section..ends[rows]);
+        } else {
+            bytes.drain(first..ends[dropped - 1]);
+        }
+        Replay {
+            bytes,
+            history_dropped: dropped,
+        }
+    }
+
+    fn write_ansi(&self, rows_at: &mut Vec<usize>) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::with_capacity(self.rows * self.cols * 4 + 64);
+        let modes = replays_modes();
+        let kitty = &self.modes.kitty_keyboard;
+        if modes {
+            buf.extend_from_slice(b"\x1b[!p\x1b[?1049l");
+            if !self.alt_screen_active && !kitty.alternate.is_empty() {
+                buf.extend_from_slice(b"\x1b[?47h");
+                kitty.alternate.write_restore(&mut buf);
+                buf.extend_from_slice(b"\x1b[?47l");
+            }
+            kitty.main.write_restore(&mut buf);
+        }
         // Enter alt-screen first if the pane is in alt-screen mode
         // (vim / htop / less). Without this the cells would paint over
         // the primary screen, corrupting it when the app exits alt.
@@ -406,25 +457,27 @@ impl PaneSnapshot {
             buf.extend_from_slice(b"\x1b[?1049h");
         }
         // Scrollback restore (primary screen only). Lay each rolled-off
-        // row down as a line, then scroll `rows` blank lines past them so
-        // every scrollback row lands in the CONSUMER's scrollback buffer
-        // BEFORE the visible grid repaints. Without this a re-attach /
+        // row down as a line, then scroll `rows - 1` more lines so every
+        // scrollback row still on screen lands in the CONSUMER's
+        // scrollback buffer BEFORE the visible grid repaints, and no blank
+        // row follows them: a consumer `rows` tall ends holding exactly
+        // `scrollback.len()` rows of history. Without this a re-attach /
         // session switch replays only the visible grid and the history is
-        // lost. The visible-grid emission below is byte-identical to
-        // before, so this can only ADD history, never disturb the screen.
-        // Trailing blanks are trimmed per row, so a full-width row can't
-        // auto-wrap into a spurious blank line.
+        // lost. Trailing blanks are trimmed per row, so a full-width row
+        // can't auto-wrap into a spurious blank line.
         if !self.alt_screen_active && !self.scrollback.is_empty() {
+            rows_at.push(buf.len());
             buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
+            rows_at.push(buf.len());
             for row in &self.scrollback {
                 write_scrollback_row(&mut buf, row, &self.combining);
-                buf.extend_from_slice(b"\x1b[0m\r\n");
+                buf.extend_from_slice(SCROLLBACK_ROW_END);
+                rows_at.push(buf.len());
             }
-            // Push the last `rows` scrollback lines off-screen (into the
-            // scrollback buffer) so the upcoming `\x1b[2J` can't erase them.
-            for _ in 0..self.rows {
+            for _ in 1..self.rows {
                 buf.extend_from_slice(b"\r\n");
             }
+            rows_at.push(buf.len());
         }
         // Reset SGR, clear screen, home cursor.
         buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
@@ -499,12 +552,43 @@ impl PaneSnapshot {
         buf.extend_from_slice(b"\x1b[0m");
         // Position cursor (CSI is 1-based).
         let _ = write!(buf, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        // Cursor visibility.
-        if !self.cursor_visible {
+        if modes {
+            self.modes.write_restore(&mut buf, self.alt_screen_active);
+        } else if !self.cursor_visible {
             buf.extend_from_slice(b"\x1b[?25l");
         }
         buf
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replay {
+    pub bytes: Vec<u8>,
+    pub history_dropped: usize,
+}
+
+#[must_use]
+pub fn scrollback_row_replay_floor(row: &[Cell]) -> usize {
+    let last = replayed_width(row);
+    SCROLLBACK_ROW_END.len() + row[..last].iter().filter(|c| !c.is_continuation()).count()
+}
+
+const SCROLLBACK_ROW_END: &[u8] = b"\x1b[0m\r\n";
+
+fn replayed_width(row: &[Cell]) -> usize {
+    row.iter()
+        .rposition(|c| c.ch != ' ' || c.fg != Color::WHITE || c.bg != Color::BLACK)
+        .map_or(0, |i| i + 1)
+}
+
+#[cfg(feature = "bench-probes")]
+fn replays_modes() -> bool {
+    !crate::probes::active(crate::probes::Fault::ModelessReplay)
+}
+
+#[cfg(not(feature = "bench-probes"))]
+const fn replays_modes() -> bool {
+    true
 }
 
 /// Emit SGR attribute bytes for the given attr set (does NOT include
@@ -521,6 +605,96 @@ mod to_ansi_tests {
             cell.ch = ch;
         }
         snap
+    }
+
+    fn with_history(rows: usize) -> PaneSnapshot {
+        let mut s = snap_with(4, 20, 's');
+        s.modes.cursor_keys = crate::modes::CursorKeys::new(true);
+        s.scrollback = (0..rows)
+            .map(|i| {
+                let mut row = vec![Cell::BLANK; 20];
+                for (c, ch) in row.iter_mut().zip(format!("h{i}").chars()) {
+                    c.ch = ch;
+                    c.fg = if i % 2 == 0 {
+                        Color::BLACK
+                    } else {
+                        Color::WHITE
+                    };
+                }
+                row
+            })
+            .collect();
+        s
+    }
+
+    #[test]
+    fn a_replay_that_fits_is_the_whole_replay() {
+        let s = with_history(50);
+        let full = s.to_ansi();
+        let r = s.to_ansi_within(full.len());
+        assert_eq!(r.history_dropped, 0);
+        assert_eq!(r.bytes, full);
+    }
+
+    #[test]
+    fn a_replay_over_its_budget_drops_the_fewest_oldest_rows_and_keeps_screen_and_modes() {
+        let s = with_history(50);
+        let full = s.to_ansi().len();
+        let empty = {
+            let mut e = s.clone();
+            e.scrollback.clear();
+            e.to_ansi()
+        };
+        for max in (empty.len()..full).step_by(7) {
+            let r = s.to_ansi_within(max);
+            assert!(r.bytes.len() <= max, "{} over {max}", r.bytes.len());
+            let k = r.history_dropped;
+            let mut trimmed = s.clone();
+            trimmed.scrollback.drain(..k);
+            assert_eq!(r.bytes, trimmed.to_ansi(), "at {max}");
+            if k > 0 {
+                let mut one_fewer = s.clone();
+                one_fewer.scrollback.drain(..k - 1);
+                assert!(
+                    one_fewer.to_ansi().len() > max,
+                    "{k} rows were enough at {max}"
+                );
+            }
+        }
+        let none = s.to_ansi_within(empty.len());
+        assert_eq!(none.history_dropped, 50);
+        assert_eq!(none.bytes, empty);
+        let text = String::from_utf8_lossy(&none.bytes).into_owned();
+        assert!(
+            text.contains("\x1b[?1h") && text.contains("ssss"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn a_replay_with_no_history_to_drop_is_returned_whole_even_over_its_budget() {
+        let s = snap_with(4, 20, 'z');
+        let full = s.to_ansi();
+        let r = s.to_ansi_within(10);
+        assert_eq!((r.history_dropped, r.bytes), (0, full));
+    }
+
+    #[test]
+    fn a_row_s_replay_floor_never_exceeds_what_the_row_replays() {
+        let s = with_history(50);
+        for (i, row) in s.scrollback.iter().enumerate() {
+            let mut one = s.clone();
+            one.scrollback = vec![row.clone()];
+            let mut none = s.clone();
+            none.scrollback.clear();
+            let header = b"\x1b[0m\x1b[2J\x1b[H".len() + 3 * b"\r\n".len();
+            let replayed = one.to_ansi().len() - none.to_ansi().len() - header;
+            assert!(
+                scrollback_row_replay_floor(row) <= replayed,
+                "row {i}: floor {} over {replayed}",
+                scrollback_row_replay_floor(row)
+            );
+        }
     }
 
     #[test]
@@ -614,7 +788,9 @@ mod to_ansi_tests {
                 rest.find('m').and_then(|end| {
                     let seq = &rest[..=end];
                     // SGR only: CSI ... m with no intervening CSI final byte.
-                    if seq.starts_with("\u{1b}[") && !seq[2..end].contains(['H', 'J', '?']) {
+                    if seq.starts_with("\u{1b}[")
+                        && !seq[2..end].contains(['H', 'J', '?', '<', '=', '>'])
+                    {
                         Some(seq)
                     } else {
                         None
@@ -685,17 +861,20 @@ mod to_ansi_tests {
     }
 
     #[test]
-    fn alt_screen_active_prepends_csi_1049h() {
-        let mut s = snap_with(1, 1, ' ');
+    fn alt_screen_active_enters_csi_1049h_before_any_cell() {
+        let mut s = snap_with(1, 1, 'q');
         s.alt_screen_active = true;
-        let bytes = s.to_ansi();
-        assert!(bytes.starts_with(b"\x1b[?1049h"));
+        let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
+        let enter = text
+            .find("\x1b[?1049h")
+            .expect("enters the alternate screen");
+        assert!(enter < text.find('q').unwrap(), "{text:?}");
     }
 
     #[test]
     fn invisible_cursor_emits_csi_25l() {
         let mut s = snap_with(1, 1, ' ');
-        s.cursor_visible = false;
+        s.modes.cursor_visible = crate::modes::CursorVisible::new(false);
         let text = String::from_utf8_lossy(&s.to_ansi()).into_owned();
         assert!(text.contains("\x1b[?25l"));
     }
@@ -823,11 +1002,11 @@ mod to_ansi_tests {
     fn alt_screen_plus_cursor_hidden_combine() {
         let mut s = snap_with(1, 1, ' ');
         s.alt_screen_active = true;
-        s.cursor_visible = false;
+        s.modes.cursor_visible = crate::modes::CursorVisible::new(false);
         let bytes = s.to_ansi();
         let text = String::from_utf8_lossy(&bytes);
         // alt-screen prelude first.
-        assert!(bytes.starts_with(b"\x1b[?1049h"));
+        assert!(text.find("\x1b[?1049h").unwrap() < text.find("\x1b[1;1H").unwrap());
         // cursor-hide somewhere after.
         assert!(text.contains("\x1b[?25l"));
         // Ordering invariant: cursor-hide comes after final cursor
@@ -865,10 +1044,7 @@ mod to_ansi_tests {
 /// full-width row can't auto-wrap into a spurious extra blank line and
 /// so mostly-empty history rows stay compact.
 fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell], combining: &[Vec<char>]) {
-    let last = row
-        .iter()
-        .rposition(|c| c.ch != ' ' || c.fg != Color::WHITE || c.bg != Color::BLACK)
-        .map_or(0, |i| i + 1);
+    let last = replayed_width(row);
     let mut cur_fg = Color::WHITE;
     let mut cur_bg = Color::BLACK;
     let mut cur_attrs = CellAttrs::NONE;

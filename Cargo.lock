@@ -736,9 +736,9 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "engate-attach"
-version = "0.1.1"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c27644c2df3ce6bd1f4caf4a95be9726ece4c1e5925fe41e79792e3797f40a5d"
+checksum = "cd29310035d78e902052cc1814a9a88aae2647681062e9c798bc4620054d840b"
 dependencies = [
  "drop_bomb",
  "engate-types",
@@ -750,9 +750,9 @@ dependencies = [
 
 [[package]]
 name = "engate-types"
-version = "0.1.1"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed12cb9044140813154b13ede2739e0768b2256761cbfea6880ae3f4f9d2f77"
+checksum = "5590399e692a7ca4cc21735485111152d949badac73d204bef0e29222fb875c3"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -2995,6 +2995,8 @@ dependencies = [
  "blake3",
  "ciborium",
  "clap",
+ "engate-attach",
+ "engate-types",
  "kotae",
  "libc",
  "nix 0.30.1",

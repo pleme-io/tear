@@ -5,7 +5,8 @@ error[E0004]: non-exhaustive patterns: `Capability::SpawnEnv` not covered
 2 | |     SpawnArgs { wire: "spawn-args", advertised: true },
 3 | |     PaneYurai { wire: "pane-yurai", advertised: true },
 4 | |     Freio { wire: "freio", advertised: true },
-5 | | }
+5 | |     ReplayModes { wire: "replay-modes", advertised: true },
+6 | | }
   | |_^ pattern `Capability::SpawnEnv` not covered
   |
 note: `Capability` defined here

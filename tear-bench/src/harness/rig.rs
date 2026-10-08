@@ -1,11 +1,14 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use engate_attach::{Producer, ReplaySource};
+use tear_client::engate_producer::{PaneProducer, keys_read_the_mirror};
 use tear_client::{Client, SubscribeHandle, Transport};
 use tear_core::InProcess;
 use tear_types::wire::{Request, Response, write_msg};
@@ -27,6 +30,8 @@ pub struct Rig {
     pub daemon_pid: Option<i32>,
     pub auth: Option<String>,
     sessions: Mutex<Vec<SessionId>>,
+    cursor_keys_via_rpc: AtomicBool,
+    snapshot_replay: AtomicBool,
 }
 
 pub type Chunks = Receiver<(Instant, Vec<u8>)>;
@@ -47,6 +52,8 @@ impl Rig {
             daemon_pid: None,
             auth: None,
             sessions: Mutex::new(Vec::new()),
+            cursor_keys_via_rpc: AtomicBool::new(false),
+            snapshot_replay: AtomicBool::new(false),
         }
     }
 
@@ -66,6 +73,8 @@ impl Rig {
             daemon_pid: Some(pid),
             auth: None,
             sessions: Mutex::new(Vec::new()),
+            cursor_keys_via_rpc: AtomicBool::new(false),
+            snapshot_replay: AtomicBool::new(false),
         }
     }
 
@@ -73,6 +82,44 @@ impl Rig {
     pub fn with_auth(mut self, token: Option<String>) -> Self {
         self.auth = token;
         self
+    }
+
+    pub fn configure_cursor_keys_via_rpc(&self, on: bool) {
+        self.cursor_keys_via_rpc.store(on, Ordering::SeqCst);
+    }
+
+    pub fn configure_snapshot_replay(&self, on: bool) {
+        self.snapshot_replay.store(on, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn configured_snapshot_replay(&self) -> bool {
+        self.snapshot_replay.load(Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn configured_cursor_keys_via_rpc(&self) -> bool {
+        self.cursor_keys_via_rpc.load(Ordering::SeqCst)
+    }
+
+    pub fn attach_replay_source(&self, pane: PaneId) -> io::Result<ReplaySource> {
+        if self.transport.is_none() {
+            return Ok(ReplaySource::Snapshot);
+        }
+        let producer =
+            PaneProducer::new(self.fresh_client()?, pane, std::task::Waker::noop().clone());
+        producer
+            .subscribe()
+            .map_err(|e| io::Error::other(format!("attach subscribe: {e}")))?;
+        Ok(producer.replay_source())
+    }
+
+    #[must_use]
+    pub fn mado_key_reads_rpc(&self, pane: PaneId) -> bool {
+        self.configured_cursor_keys_via_rpc()
+            || self.attach_replay_source(pane).map_or(true, |src| {
+                !keys_read_the_mirror(src, &self.ctl().capabilities())
+            })
     }
 
     #[must_use]

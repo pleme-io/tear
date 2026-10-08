@@ -21,8 +21,9 @@ use std::collections::VecDeque;
 use tear_types::graphics::{GRAPHIC_PAYLOAD_MAX, Graphic, GraphicProtocol};
 use tear_types::host_role::{HostRole, TearCaps};
 use tear_types::modes::{
-    AltScreen, AutoWrap, BracketedPaste, CursorKeys, CursorVisible, FocusReporting, ModeSet,
-    MouseSgr, MouseTracking, SyncOutput,
+    AltScreen, AlternateScroll, AutoWrap, BracketedPaste, CursorKeys, CursorStyle, CursorVisible,
+    FocusReporting, KeypadApplication, KittySet, ModeSet, ModifyOtherKeys, MouseTracking,
+    ReverseVideo, SyncOutput,
 };
 use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
 use unicode_width::UnicodeWidthChar;
@@ -100,31 +101,13 @@ pub(crate) struct GridState {
     /// Insert/Replace mode (IRM — CSI 4 h/l). When true, print
     /// shifts existing cells to the right before placement.
     insert_mode: bool,
-    /// Cursor visibility (DEC mode 25 — CSI ? 25 h/l). False hides.
-    cursor_visible: bool,
-    /// DECCKM cursor-keys application mode (DEC mode 1 — CSI ? 1 h/l).
-    /// When set, host keystrokes for Up/Down/Right/Left should be
-    /// encoded as `ESC O A/B/C/D` instead of `ESC [ A/B/C/D`. Reset
-    /// on RIS (ESC c) and DECSTR (CSI ! p).
-    cursor_keys_mode: bool,
+    modes: ModeSet,
     /// Last printed char — REP (CSI b) repeats this.
     last_printed: Option<char>,
     /// Who answers VT queries on this pane. `Relay` (the default) means
     /// tear answers nothing and the attached terminal is the host — the
     /// behaviour tear has always had.
     role: HostRole,
-    /// DEC 7 (DECAWM) — autowrap. On by default, per xterm.
-    autowrap: bool,
-    /// DEC 1004 — focus in/out reporting.
-    focus_reporting: bool,
-    /// DEC 2004 — bracketed paste. Gates paste sanitisation downstream.
-    bracketed_paste: bool,
-    /// DEC 2026 — synchronized output.
-    sync_output: bool,
-    /// DEC 1000/1002/1003 — mouse tracking level (mutually exclusive).
-    mouse: MouseTracking,
-    /// DEC 1006 — SGR extended mouse encoding.
-    mouse_sgr: bool,
     /// Combining-mark table — see [`PaneSnapshot::combining`]. Cells hold a
     /// 1-based index into this; `0` means no marks.
     combining: Vec<Vec<char>>,
@@ -189,17 +172,9 @@ impl GridState {
             scroll_bottom: rows.saturating_sub(1),
             palette: default_ansi_palette(),
             insert_mode: false,
-            cursor_visible: true,
-            cursor_keys_mode: false,
+            modes: ModeSet::default(),
             last_printed: None,
             role: HostRole::default(),
-            // Autowrap is ON by default (xterm); everything else is off.
-            autowrap: true,
-            focus_reporting: false,
-            bracketed_paste: false,
-            sync_output: false,
-            mouse: MouseTracking::Off,
-            mouse_sgr: false,
             combining: Vec::new(),
             graphics: Vec::new(),
             sixel_in_flight: None,
@@ -701,6 +676,9 @@ impl GridState {
     fn enter_alt_screen(&mut self, clear: bool) {
         if !self.alt_active {
             self.alt_active = true;
+            if clear {
+                self.modes.kitty_keyboard.alternate.clear();
+            }
         }
         if clear {
             for row in &mut self.alternate {
@@ -1012,6 +990,11 @@ impl Perform for GridState {
             if prefix == b'>' && c == 'c' {
                 self.answer(TearCaps::SECONDARY_DA);
             }
+            self.private_key_mode(prefix, c, params);
+            return;
+        }
+        if let Some(&first_intermediate) = intermediates.first() {
+            self.intermediate_csi(first_intermediate, c, first);
             return;
         }
         match c {
@@ -1285,7 +1268,11 @@ impl Perform for GridState {
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        if intermediates.is_empty() && matches!(byte, b'=' | b'>') {
+            self.modes.keypad = KeypadApplication::new(byte == b'=');
+            return;
+        }
         match byte {
             b'7' => self.save_cursor(),
             b'8' => self.restore_cursor(),
@@ -1325,8 +1312,7 @@ impl Perform for GridState {
                 self.scroll_bottom = self.rows.saturating_sub(1);
                 self.alt_active = false;
                 self.saved = None;
-                self.cursor_keys_mode = false;
-                self.cursor_visible = true;
+                self.modes = ModeSet::default();
                 self.title = None;
             }
             _ => {}
@@ -1335,6 +1321,65 @@ impl Perform for GridState {
 }
 
 impl GridState {
+    fn private_key_mode(&mut self, prefix: u8, c: char, params: &Params) {
+        let mut values = params.iter().map(|p| p.first().copied().unwrap_or(0));
+        let first = values.next();
+        let second = values.next();
+        let kitty = self.modes.kitty_keyboard.screen_mut(self.alt_active);
+        match (prefix, c) {
+            (b'>', 'u') => kitty.push(first.unwrap_or(0)),
+            (b'<', 'u') => kitty.pop(usize::from(first.unwrap_or(1).max(1))),
+            (b'=', 'u') => {
+                if let Some(how) = KittySet::from_mode(second.unwrap_or(1)) {
+                    kitty.set(first.unwrap_or(0), how);
+                }
+            }
+            (b'>', 'm') => match (first, second) {
+                (None, _) | (Some(4), None) => self.modes.modify_other_keys = ModifyOtherKeys::Off,
+                (Some(4), Some(level)) => {
+                    if let Some(m) = ModifyOtherKeys::from_level(level) {
+                        self.modes.modify_other_keys = m;
+                    }
+                }
+                _ => {}
+            },
+            (b'>', 'n') if first == Some(4) => {
+                self.modes.modify_other_keys = ModifyOtherKeys::Off;
+            }
+            _ => {}
+        }
+    }
+
+    fn intermediate_csi(&mut self, intermediate: u8, c: char, first: u16) {
+        match (intermediate, c) {
+            (b' ', 'q') => {
+                if let Some(style) = CursorStyle::from_ps(first) {
+                    self.modes.cursor_style = style;
+                }
+            }
+            (b'!', 'p') => self.soft_reset(),
+            _ => {}
+        }
+    }
+
+    fn soft_reset(&mut self) {
+        self.sgr_reset();
+        self.insert_mode = false;
+        self.saved = None;
+        self.wrap_pending = false;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows.saturating_sub(1);
+        let m = &mut self.modes;
+        m.cursor_visible = CursorVisible::new(true);
+        m.autowrap = AutoWrap::new(true);
+        m.keypad = KeypadApplication::new(false);
+        m.cursor_keys = CursorKeys::new(false);
+        m.bracketed_paste = BracketedPaste::new(false);
+        m.cursor_style = CursorStyle::Unset;
+        m.kitty_keyboard.main.clear();
+        m.kitty_keyboard.alternate.clear();
+    }
+
     fn apply_dec_mode(&mut self, code: u16, set: bool) {
         match code {
             // 47 / 1047 / 1049 — alternate screen variants. Differences:
@@ -1366,38 +1411,42 @@ impl GridState {
                     self.restore_cursor();
                 }
             }
-            1 => self.cursor_keys_mode = set,   // DECCKM
-            25 => self.cursor_visible = set,    // DECTCEM
-            7 => self.autowrap = set,           // DECAWM
-            1004 => self.focus_reporting = set, // focus in/out reporting
-            2004 => self.bracketed_paste = set, // bracketed paste
-            2026 => self.sync_output = set,     // synchronized output
+            1 => self.modes.cursor_keys = CursorKeys::new(set),
+            5 => self.modes.reverse_video = ReverseVideo::new(set),
+            25 => self.modes.cursor_visible = CursorVisible::new(set),
+            7 => self.modes.autowrap = AutoWrap::new(set),
+            1004 => self.modes.focus_reporting = FocusReporting::new(set),
+            1007 => self.modes.alternate_scroll = AlternateScroll::new(set),
+            2004 => self.modes.bracketed_paste = BracketedPaste::new(set),
+            2026 => self.modes.sync_output = SyncOutput::new(set),
             // Mouse tracking levels are mutually exclusive: the LAST one
             // set wins, and resetting any of them turns tracking off. A
             // set of independent bools would let two levels be true at
             // once, which no terminal can mean.
             1000 => {
-                self.mouse = if set {
+                self.modes.mouse = if set {
                     MouseTracking::Click
                 } else {
                     MouseTracking::Off
                 }
             }
             1002 => {
-                self.mouse = if set {
+                self.modes.mouse = if set {
                     MouseTracking::Drag
                 } else {
                     MouseTracking::Off
                 }
             }
             1003 => {
-                self.mouse = if set {
+                self.modes.mouse = if set {
                     MouseTracking::Motion
                 } else {
                     MouseTracking::Off
                 }
             }
-            1006 => self.mouse_sgr = set, // SGR extended mouse encoding
+            1005 | 1006 | 1015 | 1016 => {
+                self.modes.mouse_encoding = self.modes.mouse_encoding.set(code, set);
+            }
             _ => {}
         }
     }
@@ -1493,17 +1542,9 @@ impl PaneGrid {
     /// client cannot mix modes from two different instants.
     #[must_use]
     pub fn modes(&self) -> ModeSet {
-        let s = &self.state;
         ModeSet {
-            bracketed_paste: BracketedPaste::new(s.bracketed_paste),
-            cursor_keys: CursorKeys::new(s.cursor_keys_mode),
-            focus_reporting: FocusReporting::new(s.focus_reporting),
-            sync_output: SyncOutput::new(s.sync_output),
-            mouse: s.mouse,
-            mouse_sgr: MouseSgr::new(s.mouse_sgr),
-            cursor_visible: CursorVisible::new(s.cursor_visible),
-            autowrap: AutoWrap::new(s.autowrap),
-            alt_screen: AltScreen::new(s.alt_active),
+            alt_screen: AltScreen::new(self.state.alt_active),
+            ..self.state.modes
         }
     }
 
@@ -1544,6 +1585,33 @@ impl PaneGrid {
 
     #[must_use]
     pub fn snapshot(&self) -> PaneSnapshot {
+        self.snapshot_keeping(self.state.scrollback.len())
+    }
+
+    #[must_use]
+    pub fn replay_snapshot(&self, max_bytes: usize) -> (PaneSnapshot, usize) {
+        if self.state.alt_active {
+            return (self.snapshot_keeping(0), 0);
+        }
+        let mut floor = 0usize;
+        let kept = self
+            .state
+            .scrollback
+            .iter()
+            .rev()
+            .take_while(|row| {
+                floor = floor
+                    .saturating_add(tear_types::pane_snapshot::scrollback_row_replay_floor(row));
+                floor <= max_bytes
+            })
+            .count();
+        (
+            self.snapshot_keeping(kept),
+            self.state.scrollback.len() - kept,
+        )
+    }
+
+    fn snapshot_keeping(&self, newest_history: usize) -> PaneSnapshot {
         let cells: Vec<Vec<Cell>> = self.state.active_rows().cloned().collect();
         // Carry the rolled-off scrollback so a re-attach / session switch
         // restores the pane's history (the primary screen only — the
@@ -1552,7 +1620,8 @@ impl PaneGrid {
         let scrollback: Vec<Vec<Cell>> = if self.state.alt_active {
             Vec::new()
         } else {
-            self.state.scrollback.iter().cloned().collect()
+            let skip = self.state.scrollback.len().saturating_sub(newest_history);
+            self.state.scrollback.iter().skip(skip).cloned().collect()
         };
         tear_types::probe!(SnapshotRows, cells.len() + scrollback.len());
         PaneSnapshot {
@@ -1562,9 +1631,9 @@ impl PaneGrid {
             cursor_row: self.state.cursor_row,
             cursor_col: self.state.cursor_col,
             alt_screen_active: self.state.alt_active,
-            cursor_visible: self.state.cursor_visible,
+            cursor_visible: self.state.modes.cursor_visible.enabled(),
             title: self.state.title.clone(),
-            cursor_keys_mode: self.state.cursor_keys_mode,
+            cursor_keys_mode: self.state.modes.cursor_keys.enabled(),
             scrollback,
             combining: self.state.combining.clone(),
             modes: self.modes(),
@@ -1608,7 +1677,7 @@ impl PaneGrid {
     /// `ESC O A/B/C/D` (true) or `ESC [ A/B/C/D` (false).
     #[must_use]
     pub fn cursor_keys_mode(&self) -> bool {
-        self.state.cursor_keys_mode
+        self.state.modes.cursor_keys.enabled()
     }
 
     /// Number of scrollback rows that have rolled off the primary
@@ -2064,7 +2133,7 @@ mod mode_rows {
         let m = g.modes();
         assert!(m.focus_reporting.enabled(), "DEC 1004");
         assert!(m.sync_output.enabled(), "DEC 2026");
-        assert!(m.mouse_sgr.enabled(), "DEC 1006");
+        assert!(m.mouse_sgr().enabled(), "DEC 1006");
         assert!(!m.autowrap.enabled(), "DEC 7 reset");
         assert!(m.cursor_keys.enabled(), "DEC 1 (DECCKM)");
         assert!(!m.cursor_visible.enabled(), "DEC 25 reset");
@@ -2096,6 +2165,230 @@ mod mode_rows {
         assert!(g.modes().alt_screen.enabled());
         g.feed(b"\x1b[?1049l");
         assert!(!g.modes().alt_screen.enabled());
+    }
+}
+
+#[cfg(test)]
+mod key_encoder_modes {
+    use super::*;
+    use tear_types::modes::{KittyFlagStack, MouseEncoding};
+
+    #[test]
+    fn keypad_reverse_video_and_alternate_scroll_are_tracked() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b=\x1b[?5h\x1b[?1007h");
+        let m = g.modes();
+        assert!(m.keypad.enabled() && m.reverse_video.enabled() && m.alternate_scroll.enabled());
+        g.feed(b"\x1b>\x1b[?5l\x1b[?1007l");
+        let m = g.modes();
+        assert!(!m.keypad.enabled() && !m.reverse_video.enabled() && !m.alternate_scroll.enabled());
+    }
+
+    #[test]
+    fn a_designation_with_an_intermediate_is_not_a_keypad_mode() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b(=");
+        assert!(!g.modes().keypad.enabled());
+    }
+
+    #[test]
+    fn mouse_encodings_follow_xterm_one_at_a_time() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b[?1006h\x1b[?1015h");
+        assert_eq!(g.modes().mouse_encoding, MouseEncoding::Urxvt);
+        g.feed(b"\x1b[?1006l");
+        assert_eq!(g.modes().mouse_encoding, MouseEncoding::Urxvt);
+        g.feed(b"\x1b[?1016h\x1b[?1016l");
+        assert_eq!(g.modes().mouse_encoding, MouseEncoding::X10);
+    }
+
+    #[test]
+    fn decscusr_sets_the_cursor_style_and_a_space_intermediate_runs_nothing_else() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"ab\x1b[6 q");
+        assert_eq!(g.modes().cursor_style, CursorStyle::SteadyBar);
+        g.feed(b"\x1b[9 q\x1b[1 @");
+        assert_eq!(g.modes().cursor_style, CursorStyle::SteadyBar);
+        assert_eq!(g.snapshot().to_text_rows()[0].trim_end(), "ab");
+    }
+
+    #[test]
+    fn modify_other_keys_is_set_reset_and_disabled() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b[>4;2m");
+        assert_eq!(g.modes().modify_other_keys, ModifyOtherKeys::All);
+        g.feed(b"\x1b[>4m");
+        assert_eq!(g.modes().modify_other_keys, ModifyOtherKeys::Off);
+        g.feed(b"\x1b[>4;1m\x1b[>4n");
+        assert_eq!(g.modes().modify_other_keys, ModifyOtherKeys::Off);
+        g.feed(b"\x1b[>4;1m\x1b[>1;2m");
+        assert_eq!(
+            g.modes().modify_other_keys,
+            ModifyOtherKeys::ExceptWellKnown
+        );
+    }
+
+    fn stack(entries: &[u16]) -> KittyFlagStack {
+        let mut k = KittyFlagStack::default();
+        for e in entries {
+            k.push(*e);
+        }
+        k
+    }
+
+    #[test]
+    fn kitty_flags_are_kept_per_screen_and_a_clearing_alternate_screen_starts_empty() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b[>1u\x1b[=4;2u");
+        g.feed(b"\x1b[?1049h\x1b[>3u\x1b[>8u\x1b[<u");
+        let k = g.modes().kitty_keyboard;
+        assert_eq!(k.main, stack(&[5]));
+        assert_eq!(k.alternate, stack(&[3]));
+        g.feed(b"\x1b[?1049l\x1b[?1049h");
+        assert!(g.modes().kitty_keyboard.alternate.is_empty());
+        g.feed(b"\x1b[?1049l\x1b[<5u");
+        assert!(g.modes().kitty_keyboard.main.is_empty());
+    }
+
+    #[test]
+    fn decstr_resets_what_mado_resets_and_ris_resets_every_mode() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b[?1h\x1b=\x1b[?2004h\x1b[?25l\x1b[?7l\x1b[3 q\x1b[>1u\x1b[?1000h");
+        g.feed(b"\x1b[!p");
+        let m = g.modes();
+        assert!(!m.cursor_keys.enabled() && !m.keypad.enabled() && !m.bracketed_paste.enabled());
+        assert!(m.cursor_visible.enabled() && m.autowrap.enabled());
+        assert_eq!(m.cursor_style, CursorStyle::Unset);
+        assert!(m.kitty_keyboard.main.is_empty());
+        assert_eq!(m.mouse, MouseTracking::Click);
+        g.feed(b"\x1b[?1006h\x1b[>4;2m\x1b[?1049h\x1b[>2u\x1bc");
+        assert_eq!(g.modes(), ModeSet::default());
+    }
+}
+
+#[cfg(test)]
+mod replay_parity {
+    use super::*;
+    use proptest::prelude::*;
+
+    pub(super) const VIM: &[u8] = b"\x1b[?1049h\x1b[?1h\x1b=\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1004h\x1b[?25l\x1b[2 q\x1b[>1u\x1b[>4;2m\x1b[1;1Hvim";
+
+    fn authority(cols: usize, rows: usize, bytes: &[u8]) -> PaneGrid {
+        let mut g = PaneGrid::new(cols, rows);
+        g.feed(bytes);
+        g
+    }
+
+    fn replayed(source: &PaneGrid, times: usize) -> PaneGrid {
+        let snap = source.snapshot();
+        let mut c = PaneGrid::new(snap.cols, snap.rows);
+        for _ in 0..times {
+            c.feed(&snap.to_ansi());
+        }
+        c
+    }
+
+    fn differing(a: &ModeSet, b: &ModeSet) -> Vec<String> {
+        let a = serde_json::to_value(a).unwrap();
+        let b = serde_json::to_value(b).unwrap();
+        a.as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, v)| b.get(k.as_str()) != Some(v))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    #[test]
+    fn an_attach_into_vim_restores_decckm_bracketed_paste_and_sgr_mouse() {
+        let vim = authority(80, 24, VIM);
+        let c = replayed(&vim, 1);
+        let m = c.modes();
+        assert!(m.cursor_keys.enabled(), "DECCKM");
+        assert!(m.bracketed_paste.enabled(), "2004");
+        assert_eq!(m.mouse, MouseTracking::Click, "1000");
+        assert!(m.mouse_sgr().enabled(), "1006");
+        assert_eq!(differing(&vim.modes(), &m), Vec::<String>::new());
+        assert_eq!(c.snapshot().to_text_rows()[0].trim_end(), "vim");
+    }
+
+    #[test]
+    fn a_replay_lays_history_down_exactly_once_and_answers_nothing() {
+        let mut lines = Vec::new();
+        for i in 0..200 {
+            lines.extend_from_slice(format!("history {i}\r\n").as_bytes());
+        }
+        lines.extend_from_slice(b"\x1b[?2004h\x1b[>3u$ ");
+        let shell = authority(80, 24, &lines);
+        let want = shell.snapshot();
+        assert_eq!(want.scrollback.len(), 177);
+        let mut c = PaneGrid::new(want.cols, want.rows);
+        c.set_host_role(HostRole::Host);
+        c.feed(&want.to_ansi());
+        assert!(c.take_response().is_none(), "a replay asks nothing");
+        let got = c.snapshot();
+        assert_eq!(got.scrollback.len(), want.scrollback.len());
+        let text = |rows: &[Vec<Cell>]| -> Vec<String> {
+            rows.iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|c| c.ch)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect()
+        };
+        assert_eq!(text(&got.scrollback), text(&want.scrollback));
+        assert_eq!(got.to_text(), want.to_text());
+        assert_eq!(got.modes, want.modes);
+    }
+
+    fn mode_bytes() -> impl Strategy<Value = Vec<u8>> {
+        let one = prop_oneof![
+            Just(b"\x1b[?1h".to_vec()),
+            Just(b"\x1b[?1l".to_vec()),
+            Just(b"\x1b=".to_vec()),
+            Just(b"\x1b>".to_vec()),
+            Just(b"\x1b[?5h".to_vec()),
+            Just(b"\x1b[?7l".to_vec()),
+            Just(b"\x1b[?25l".to_vec()),
+            Just(b"\x1b[?1000h".to_vec()),
+            Just(b"\x1b[?1002h".to_vec()),
+            Just(b"\x1b[?1003h".to_vec()),
+            Just(b"\x1b[?1003l".to_vec()),
+            Just(b"\x1b[?1005h".to_vec()),
+            Just(b"\x1b[?1006h".to_vec()),
+            Just(b"\x1b[?1015h".to_vec()),
+            Just(b"\x1b[?1016h".to_vec()),
+            Just(b"\x1b[?1004h".to_vec()),
+            Just(b"\x1b[?1007h".to_vec()),
+            Just(b"\x1b[?2004h".to_vec()),
+            Just(b"\x1b[?2026h".to_vec()),
+            Just(b"\x1b[?1049h".to_vec()),
+            Just(b"\x1b[?1049l".to_vec()),
+            Just(b"\x1b[?47h".to_vec()),
+            Just(b"\x1b[?47l".to_vec()),
+            (0u16..8).prop_map(|p| format!("\x1b[{p} q").into_bytes()),
+            (0u16..4).prop_map(|v| format!("\x1b[>4;{v}m").into_bytes()),
+            (0u16..32).prop_map(|f| format!("\x1b[>{f}u").into_bytes()),
+            (0u16..3).prop_map(|n| format!("\x1b[<{n}u").into_bytes()),
+            ((0u16..32), (1u16..4)).prop_map(|(f, m)| format!("\x1b[={f};{m}u").into_bytes()),
+            Just(b"\x1b[!p".to_vec()),
+            Just(b"text\r\n".to_vec()),
+        ];
+        proptest::collection::vec(one, 0..40).prop_map(|v| v.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn a_replay_restores_every_mode_field_and_twice_equals_once(bytes in mode_bytes()) {
+            let source = authority(40, 8, &bytes);
+            let once = replayed(&source, 1);
+            let twice = replayed(&source, 2);
+            prop_assert_eq!(differing(&source.modes(), &once.modes()), Vec::<String>::new());
+            prop_assert_eq!(differing(&once.modes(), &twice.modes()), Vec::<String>::new());
+        }
     }
 }
 
@@ -2306,6 +2599,36 @@ mod tests {
             .chain(&snap.scrollback)
             .map(Vec::len)
             .sum()
+    }
+
+    #[test]
+    fn a_replay_snapshot_clones_only_history_that_could_fit_and_replays_as_the_full_one_does() {
+        let mut g = PaneGrid::with_scrollback(40, 6, 10_000);
+        for i in 0..400 {
+            g.feed(format!("\x1b[3{}mrow {i}\x1b[0m\r\n", i % 7).as_bytes());
+        }
+        let full = g.snapshot();
+        let whole = full.to_ansi().len();
+        for max in [whole, whole - 1, whole / 2, whole / 9, 200, 0] {
+            let (bounded, left_out) = g.replay_snapshot(max);
+            assert_eq!(left_out + bounded.scrollback.len(), full.scrollback.len());
+            assert_eq!(
+                bounded.scrollback[..],
+                full.scrollback[left_out..],
+                "the newest rows, in order"
+            );
+            assert_eq!(bounded.to_text(), full.to_text());
+            let a = full.to_ansi_within(max);
+            let b = bounded.to_ansi_within(max);
+            assert_eq!(a.bytes, b.bytes, "at {max}");
+            assert_eq!(a.history_dropped, left_out + b.history_dropped);
+        }
+        assert_eq!(g.replay_snapshot(0).1, full.scrollback.len());
+        g.feed(b"\x1b[?1049h");
+        let (alt, left_out) = g.replay_snapshot(0);
+        assert_eq!(left_out, 0);
+        assert!(alt.scrollback.is_empty());
+        assert_eq!(alt.to_ansi(), g.snapshot().to_ansi());
     }
 
     #[test]

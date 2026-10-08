@@ -1005,8 +1005,23 @@ fn serve_subscription<S: io::Read + io::Write>(
 ) -> io::Result<()> {
     // Register the subscriber. On NoSuchPane we still respond with
     // Err so the client knows immediately + closes the connection.
-    let rx = match inproc.subscribe_pane_bytes(pane) {
-        Ok(rx) => rx,
+    //
+    // ── engate M0: initial-grid replay ──────────────────────────────
+    //
+    // Race the daemon used to lose: shell prints prompt at t=0;
+    // mado attaches at t+10ms; mado's subscribe channel only sees
+    // bytes emitted AFTER attach; mado's local terminal model stays
+    // empty even though tear's grid is full. Fix: the first
+    // `PaneBytes` after `Ok` is the pane's grid and modes as ANSI
+    // bytes (`PaneSnapshot::to_ansi()`), taken under the pane's grid
+    // lock together with the registration, and the PTY fan-out runs
+    // under the same lock (grid, then subscribers), so every byte is
+    // either in that frame or in the stream after it, never both.
+    // Consumers that see `replay-modes` take that frame as the attach's
+    // one replay.
+    let max = tear_types::wire::MAX_PANE_BYTES;
+    let (rx, snap, left_out) = match inproc.subscribe_pane_bytes_with_replay(pane, max) {
+        Ok(v) => v,
         Err(e) => {
             write_msg(&mut stream, &Response::Err(WireError::from(e)))?;
             return Ok(());
@@ -1015,44 +1030,22 @@ fn serve_subscription<S: io::Read + io::Write>(
     write_msg(&mut stream, &Response::Ok).inspect_err(|_| {
         tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
     })?;
-    // ── engate M0: initial-grid replay ──────────────────────────────
-    //
-    // Race the daemon used to lose: shell prints prompt at t=0;
-    // mado attaches at t+10ms; mado's subscribe channel only sees
-    // bytes emitted AFTER attach; mado's local terminal model stays
-    // empty even though tear's grid is full. Fix: snapshot the
-    // pane's current grid right after subscribe, serialize as ANSI
-    // bytes (`PaneSnapshot::to_ansi()`), and emit as a single
-    // `PaneBytes` frame BEFORE entering the live stream loop.
-    // Consumers feed it through their VT parser unchanged — their
-    // model converges to the current grid before the first redraw.
-    //
-    // The snapshot+subscribe ordering matters: subscribe FIRST so
-    // no bytes that arrive between snapshot and subscribe-register
-    // are lost. The snapshot may include a few bytes of overlap
-    // with the live stream — harmless, since ANSI sequences are
-    // idempotent at the parser level (re-rendering the same cells
-    // is a no-op).
-    //
-    // Long-term: engate M1 lifts this into a typed
-    // `SubscribeResponse { initial_grid, then_stream }` shape,
-    // statig-enforced typestate, loom-tested across all
-    // (subscribe, emit) interleavings.
-    match inproc.pane_snapshot(pane) {
-        Ok(snap) => {
-            let bytes = snap.to_ansi();
-            if !bytes.is_empty() && write_msg(&mut stream, &Response::PaneBytes(bytes)).is_err() {
-                tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
-                return Ok(());
-            }
+    let replay = snap.to_ansi_within(max);
+    let dropped = left_out + replay.history_dropped;
+    if dropped > 0 {
+        tracing::warn!(
+            %pane,
+            dropped,
+            kept = snap.scrollback.len() - replay.history_dropped,
+            "attach replay over the frame cap: its oldest history rows are left out"
+        );
+    }
+    if let Err(e) = write_msg(&mut stream, &Response::PaneBytes(replay.bytes)) {
+        if tear_types::wire::FrameTooLarge::of(&e).is_some() {
+            tracing::warn!(%pane, error = %e, "the screen alone replays past the frame cap; closing the subscription");
         }
-        Err(e) => {
-            // Pane vanished between subscribe and snapshot — rare,
-            // but possible if the shell exited in that window. Let
-            // the live-stream loop handle the closure path; the
-            // consumer just won't get an initial replay.
-            tracing::debug!(?e, %pane, "pane_snapshot failed at subscribe time — skipping initial replay");
-        }
+        tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
+        return Ok(());
     }
     // Drain the receiver synchronously — recv blocks until either a
     // chunk arrives or every sender has been dropped (pane killed).

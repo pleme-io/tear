@@ -90,6 +90,8 @@ fn with_daemon_opts<T>(
 }
 
 pub const AUDIT_KEYS: usize = 200;
+pub const KEYS_PER_DEPTH: usize = 300;
+pub const CONTROL_KEYS_PER_DEPTH: usize = 40;
 
 fn audited() -> Options {
     Options {
@@ -193,7 +195,19 @@ pub fn control_run(
             "the daemon wrote no probe dump: its build has no bench-probes, so the fault was never armed".into(),
         );
     }
-    grade_control(control, &values, &FloorSet::default(), &Ok(()))
+    let mut floors = FloorSet::default();
+    let collected = h.collected();
+    for f in Floor::ALL {
+        let bench = format!("control:{}:floor:{}", control.name(), f.name());
+        floors.add(
+            *f,
+            collected
+                .iter()
+                .filter(|s| s.bench == bench)
+                .map(|s| s.value),
+        );
+    }
+    grade_control(control, &values, &floors, &Ok(()))
 }
 
 #[must_use]
@@ -306,6 +320,7 @@ pub fn wire_controls(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, Cont
             client,
         };
         let (run, detail) = control_run(h, bands, &spec, |_, rig| {
+            rig.configure_cursor_keys_via_rpc(true);
             keyloss_cells(h, rig, Tag::Control(control))
         });
         out.push((control, run, detail));
@@ -434,6 +449,73 @@ pub fn codec_control(h: &Harness, quiet: &Result<(), String>) -> (ControlRun, St
         Ok(values) => grade_control(control, &values, &floors, quiet),
         Err(e) => (ControlRun::Failed, format!("the control run errored: {e}")),
     }
+}
+
+pub fn cursor_keys_control(h: &Harness, bands: &mut Vec<String>) -> (ControlRun, String) {
+    let control = Control::CursorKeysViaRpc;
+    let spec = ControlSpec {
+        control,
+        variant: Variant::BOUND,
+        opts: Options::default(),
+        daemon: &[],
+        client: &[],
+    };
+    control_run(h, bands, &spec, |_, rig| {
+        rig.configure_cursor_keys_via_rpc(true);
+        let k = cases::keyloss(h, rig, cases::KEYLOSS_ROWS, Tag::Control(control))?;
+        let keys = cases::keys_at_depths(h, rig, CONTROL_KEYS_PER_DEPTH, Tag::Control(control))?;
+        let key = Cell::new(Case::C12(Input::Keys), Metric::Key);
+        Ok(k.rpcs_per_key
+            .map(|r| (Cell::new(Case::C12(Input::Keys), Metric::Rpcs), r))
+            .into_iter()
+            .chain(std::iter::once((
+                Cell::new(Case::C12(Input::Keys), Metric::WireBytes),
+                k.bytes_per_key as f64,
+            )))
+            .chain(keys.into_iter().map(|v| (key, v)))
+            .collect())
+    })
+}
+
+pub fn replay_controls(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, ControlRun, String)> {
+    let mut out = Vec::new();
+    for (control, daemon, metric) in [
+        (
+            Control::ReplayModesUnadvertised,
+            &[Control::ReplayModesUnadvertised][..],
+            Metric::Replays,
+        ),
+        (
+            Control::ModelessReplay,
+            &[Control::ModelessReplay][..],
+            Metric::Modes,
+        ),
+    ] {
+        let spec = ControlSpec {
+            control,
+            variant: Variant::BOUND,
+            opts: Options::default(),
+            daemon,
+            client: &[],
+        };
+        let (run, detail) = control_run(h, bands, &spec, |_, rig| {
+            let cell = Cell::new(Case::C7(Handover::Attach), metric);
+            Ok(cases::replay(h, rig, Tag::Control(control))?
+                .iter()
+                .map(|r| {
+                    (
+                        cell,
+                        match metric {
+                            Metric::Replays => r.replays as f64,
+                            _ => r.modes_off as f64,
+                        },
+                    )
+                })
+                .collect())
+        });
+        out.push((control, run, detail));
+    }
+    out
 }
 
 pub const STALL: Duration = Duration::from_secs(3);
@@ -732,6 +814,9 @@ pub fn structural(
         h,
         "keyloss",
         with_daemon(h, Variant::BOUND, "gate-keyloss", bands, |_, rig| {
+            rig.configure_cursor_keys_via_rpc(true);
+            cases::keyloss(h, rig, cases::KEYLOSS_ROWS, Tag::Cells)?;
+            rig.configure_cursor_keys_via_rpc(false);
             cases::keyloss(h, rig, cases::KEYLOSS_ROWS, Tag::Cells).map(drop)
         }),
     );
@@ -769,6 +854,13 @@ pub fn structural(
             cases::cliff(h, rig, &[0, 1_000, 3_000])
         }),
     );
+    step(
+        h,
+        "replay",
+        with_daemon(h, Variant::BOUND, "gate-replay", bands, |_, rig| {
+            cases::replay(h, rig, Tag::Cells).map(drop)
+        }),
+    );
     step(h, "stall", stall(h, bands));
     step(h, "twin", twin(h, bands));
     muted_holders(h, bands);
@@ -778,7 +870,11 @@ pub fn structural(
     ]
     .into_iter()
     .map(|(control, (run, detail))| (control, run, detail));
-    for (control, run, detail) in wire_controls(h, bands).into_iter().chain(r4) {
+    let (run, detail) = cursor_keys_control(h, bands);
+    let r5 = replay_controls(h, bands)
+        .into_iter()
+        .chain(std::iter::once((Control::CursorKeysViaRpc, run, detail)));
+    for (control, run, detail) in wire_controls(h, bands).into_iter().chain(r4).chain(r5) {
         report_control(h, control, run, &detail);
         controls.push((control, run, detail));
     }
@@ -822,6 +918,7 @@ pub fn timing(h: &Harness, bands: &mut Vec<String>) {
                 cases::flood(h, rig, 3)?;
                 if variant == Variant::BOUND {
                     cases::attach(h, rig, &[262_144, 1_048_576], 3)?;
+                    cases::keys_at_depths(h, rig, KEYS_PER_DEPTH, Tag::Cells)?;
                 }
                 Ok(())
             }),

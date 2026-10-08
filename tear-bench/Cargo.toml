@@ -31,7 +31,9 @@ bench-probes = [
 [dependencies]
 tear-types = { workspace = true }
 tear-core = { workspace = true }
-tear-client = { workspace = true }
+tear-client = { workspace = true, features = ["engate"] }
+engate-attach = "0.1.5"
+engate-types = "0.1"
 tear-config = { workspace = true }
 makimono = { workspace = true }
 kotae = "0.1"

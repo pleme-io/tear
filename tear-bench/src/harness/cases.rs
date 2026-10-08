@@ -108,12 +108,13 @@ fn closed_loop(
 ) -> usize {
     let Keys { n, gap, mode, cell } = *keys;
     let ctl = rig.ctl();
+    let deckm_rpc = mode == "mado-shaped" && rig.mado_key_reads_rpc(pane);
     let mut lost = 0;
     for i in 0..n {
         let b = key_byte(i);
         let t0 = Instant::now();
         let mut deckm_ok = true;
-        if mode == "mado-shaped" {
+        if deckm_rpc {
             deckm_ok = ctl.pane_cursor_keys_mode(pane).is_ok();
         }
         let sent = ctl.send_keys(pane, &[b]).is_ok();
@@ -163,7 +164,6 @@ pub fn echo(h: &Harness, rig: &Rig) -> io::Result<()> {
     h.log(&format!("{} echo plain-gap lost={lost}", rig.label));
     let rpcs_before = client_rpcs();
     let keys = 1_000;
-    let key_cell = is_canonical_bound(rig).then(|| Cell::new(Case::C12(Input::Keys), Metric::Key));
     let lost = closed_loop(
         h,
         rig,
@@ -173,7 +173,7 @@ pub fn echo(h: &Harness, rig: &Rig) -> io::Result<()> {
             n: keys,
             gap: Duration::from_millis(2),
             mode: "mado-shaped",
-            cell: key_cell,
+            cell: None,
         },
     );
     if let (Some(before), Some(after), true) = (rpcs_before, client_rpcs(), is_canonical_bound(rig))
@@ -232,6 +232,360 @@ pub fn echo(h: &Harness, rig: &Rig) -> io::Result<()> {
     drop(sub);
     rig.kill(sid);
     Ok(())
+}
+
+pub const KEY_DEPTHS: [usize; 3] = [0, 1_453, 3_000];
+
+struct DepthKeys {
+    depth: usize,
+    rpc: bool,
+    plain: Vec<f64>,
+    mado: Vec<f64>,
+}
+
+impl DepthKeys {
+    fn ratio(&self) -> f64 {
+        let p = crate::stats::quantile(&self.plain, 0.5).unwrap_or(f64::NAN);
+        let m = crate::stats::quantile(&self.mado, 0.5).unwrap_or(f64::INFINITY);
+        m / p
+    }
+}
+
+fn depth_keys(h: &Harness, rig: &Rig, depth: usize, n: usize) -> io::Result<DepthKeys> {
+    let (sid, pane) = if depth == 0 {
+        let (sid, pane, _) = rig.echo_pane("keys-0")?;
+        (sid, pane)
+    } else {
+        let file = h.files().join(format!("rows_{depth}.txt"));
+        let size = files::rows_file(&file, depth + usize::from(ROWS))?;
+        let (sid, pane, _) = rig.fill_pane(h, &format!("keys-{depth}"), &file, size)?;
+        (sid, pane)
+    };
+    let sub = rig.subscribe(pane)?;
+    drain(&sub.rx, Duration::from_millis(150));
+    let ctl = rig.ctl();
+    let deckm_rpc = rig.mado_key_reads_rpc(pane);
+    let mut out = DepthKeys {
+        depth,
+        rpc: deckm_rpc,
+        plain: Vec::with_capacity(n),
+        mado: Vec::with_capacity(n),
+    };
+    for i in 0..2 * n {
+        let b = key_byte(i);
+        let mado = i % 2 == 1;
+        let t0 = Instant::now();
+        if mado && deckm_rpc {
+            let _ = ctl.pane_cursor_keys_mode(pane);
+        }
+        let sent = ctl.send_keys(pane, &[b]).is_ok();
+        let v = wait_byte(&sub.rx, b, Duration::from_secs(3))
+            .filter(|_| sent)
+            .map_or(f64::NAN, |t| ns(t.saturating_duration_since(t0)));
+        if mado {
+            out.mado.push(v);
+        } else {
+            out.plain.push(v);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    drop(sub);
+    rig.kill(sid);
+    Ok(out)
+}
+
+pub fn keys_at_depths(h: &Harness, rig: &Rig, n: usize, tag: Tag) -> io::Result<Vec<f64>> {
+    let mut all = Vec::new();
+    for depth in KEY_DEPTHS {
+        all.push(depth_keys(h, rig, depth, n)?);
+    }
+    let worst = all
+        .iter()
+        .map(DepthKeys::ratio)
+        .enumerate()
+        .fold((0, f64::NEG_INFINITY), |acc, (i, r)| {
+            if r.is_nan() || r > acc.1 { (i, r) } else { acc }
+        })
+        .0;
+    let ratios = all
+        .iter()
+        .map(|d| format!("{} rows {:.3}", d.depth, d.ratio()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = match (all.iter().all(|d| d.rpc), all.iter().any(|d| d.rpc)) {
+        (true, _) => "daemon-rpc",
+        (false, false) => "mirror",
+        (false, true) => "mixed",
+    };
+    for (k, d) in all.iter().enumerate() {
+        let cell = (k == worst && is_canonical_bound(rig))
+            .then(|| Cell::new(Case::C12(Input::Keys), Metric::Key));
+        for (i, v) in d.mado.iter().enumerate() {
+            let mut s = Sample::new(
+                "keys",
+                &rig.label,
+                &format!("mado-shaped-{}", d.depth),
+                i,
+                *v,
+                Unit::Ns,
+            )
+            .ok(v.is_finite())
+            .detail(format!(
+                "cursor_keys_source {source}; p50 against the same depth's plain key: {ratios}"
+            ));
+            if let Some(c) = cell {
+                s = s.cell(c);
+            }
+            tag.emit(h, s);
+        }
+        for (i, v) in d.plain.iter().enumerate() {
+            tag.emit(
+                h,
+                Sample::new(
+                    &format!("floor:{}", Floor::PlainKeyEcho.name()),
+                    &rig.label,
+                    &format!("{}-{}", Floor::PlainKeyEcho.name(), d.depth),
+                    i,
+                    *v,
+                    Unit::Ns,
+                ),
+            );
+        }
+    }
+    h.log(&format!("{} keys at depth ({source}): {ratios}", rig.label));
+    Ok(all.swap_remove(worst).mado)
+}
+
+pub const VIM_MODES: &str = "\\033[?1049h\\033[?1h\\033=\\033[?2004h\\033[?1000h\\033[?1006h\\033[?1004h\\033[?25l\\033[2 q\\033[>1u\\033[>4;2m";
+pub const SHELL_MODES: &str = "\\033[?2004h\\033[>3u\\033[5 q\\033[?1007h";
+pub const HISTORY_LINES: usize = 200;
+
+pub struct Replay {
+    pub pane: &'static str,
+    pub replays: u64,
+    pub modes_off: u64,
+    pub fields_off: Vec<String>,
+    pub history_rows: usize,
+    pub authority_rows: usize,
+    pub answer_bytes: usize,
+    pub path: String,
+}
+
+#[must_use]
+pub fn modes_off(authority: &tear_types::ModeSet, consumer: &tear_types::ModeSet) -> Vec<String> {
+    let a = serde_json::to_value(authority).unwrap_or_default();
+    let c = serde_json::to_value(consumer).unwrap_or_default();
+    let (Some(a), Some(c)) = (a.as_object(), c.as_object()) else {
+        return vec!["<not a map>".into()];
+    };
+    let mut keys: Vec<&String> = a.keys().chain(c.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .filter(|k| a.get(*k) != c.get(*k))
+        .cloned()
+        .collect()
+}
+
+#[cfg(feature = "bench-probes")]
+type Frames = Arc<Mutex<Vec<(&'static str, Vec<u8>)>>>;
+
+#[cfg(feature = "bench-probes")]
+struct ReplayProbe(Frames);
+
+#[cfg(feature = "bench-probes")]
+impl engate_attach::Consumer for ReplayProbe {
+    type Item = Vec<u8>;
+    type Snap = tear_types::engate_wrap::PaneSnapshotWrap;
+
+    fn replay(&mut self, snapshot: Self::Snap) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(("snapshot", snapshot.0.to_ansi()));
+    }
+
+    fn consume(&mut self, item: Self::Item) {
+        self.0.lock().unwrap().push(("live", item));
+    }
+
+    fn replay_item(&mut self, item: Self::Item) {
+        self.0.lock().unwrap().push(("stream", item));
+    }
+}
+
+#[cfg(feature = "bench-probes")]
+struct SnapshotReplay(tear_client::engate_producer::PaneProducer);
+
+#[cfg(feature = "bench-probes")]
+impl engate_attach::Producer for SnapshotReplay {
+    type Item = Vec<u8>;
+    type Snap = tear_types::engate_wrap::PaneSnapshotWrap;
+
+    fn snapshot(&self) -> Result<Self::Snap, engate_types::AttachError> {
+        self.0.snapshot()
+    }
+
+    fn subscribe(
+        &self,
+    ) -> Result<std::sync::mpsc::Receiver<Self::Item>, engate_types::AttachError> {
+        self.0.subscribe()
+    }
+}
+
+#[cfg(feature = "bench-probes")]
+fn engate_attach_once<P>(producer: P, probe: ReplayProbe) -> io::Result<engate_attach::ReplaySource>
+where
+    P: engate_attach::Producer<Item = Vec<u8>, Snap = tear_types::engate_wrap::PaneSnapshotWrap>,
+{
+    use engate_attach::{Attach, Polled, ReplaySource};
+    let (subscribed, history) = Attach::builder()
+        .producer(producer)
+        .consumer(probe)
+        .build()
+        .subscribe()
+        .map_err(|e| io::Error::other(format!("engate subscribe: {e}")))?;
+    let source = history.source();
+    let mut live = subscribed
+        .replay(history)
+        .map_err(|e| io::Error::other(format!("engate replay: {e}")))?
+        .start_live();
+    if source == ReplaySource::Snapshot {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            match live.poll() {
+                Polled::Item => break,
+                Polled::Closed => {
+                    return Err(io::Error::other("the stream closed before its first frame"));
+                }
+                Polled::Empty if Instant::now() > deadline => {
+                    return Err(io::Error::other("no first frame on the stream"));
+                }
+                Polled::Empty => thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+    Ok(source)
+}
+
+#[cfg(feature = "bench-probes")]
+fn attach_replay(rig: &Rig, pane: PaneId, name: &'static str) -> io::Result<Replay> {
+    let client = rig.fresh_client()?;
+    let producer = tear_client::engate_producer::PaneProducer::new(
+        Arc::clone(&client),
+        pane,
+        std::task::Waker::noop().clone(),
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let rpcs_before = client_rpcs();
+    let source = if rig.configured_snapshot_replay() {
+        engate_attach_once(SnapshotReplay(producer), ReplayProbe(Arc::clone(&seen)))?
+    } else {
+        engate_attach_once(producer, ReplayProbe(Arc::clone(&seen)))?
+    };
+    let snapshot_rpcs = client_rpcs()
+        .zip(rpcs_before)
+        .map_or(0, |(after, before)| after - before);
+    let frames: Vec<(&'static str, Vec<u8>)> = std::mem::take(&mut *seen.lock().unwrap());
+    let authority = client
+        .pane_snapshot(pane)
+        .map_err(|e| io::Error::other(format!("authority snapshot: {e}")))?;
+    let refs: Vec<&[u8]> = frames.iter().map(|(_, f)| f.as_slice()).collect();
+    let consumer = tear_core::probes::consume_replays(authority.cols, authority.rows, &refs);
+    let fields_off = modes_off(&authority.modes, &consumer.modes);
+    Ok(Replay {
+        pane: name,
+        replays: frames.len() as u64,
+        modes_off: fields_off.len() as u64,
+        fields_off,
+        history_rows: consumer.scrollback_rows,
+        authority_rows: authority.scrollback.len(),
+        answer_bytes: consumer.answers,
+        path: format!(
+            "engate {source:?} attach through tear-client's PaneProducer{}: {} ({snapshot_rpcs} PaneSnapshot RPC)",
+            if rig.configured_snapshot_replay() {
+                " behind a producer that declares no replay source (an old consumer)"
+            } else {
+                ""
+            },
+            frames
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    })
+}
+
+#[cfg(not(feature = "bench-probes"))]
+fn attach_replay(_rig: &Rig, _pane: PaneId, _name: &'static str) -> io::Result<Replay> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        without_probes(Cell::new(Case::C7(Handover::Attach), Metric::Modes)),
+    ))
+}
+
+pub fn replay(h: &Harness, rig: &Rig, tag: Tag) -> io::Result<Vec<Replay>> {
+    let vim = format!("stty raw -echo; printf '{VIM_MODES}'; printf READY; exec cat");
+    let shell = format!(
+        "stty raw -echo; i=0; while [ $i -lt {HISTORY_LINES} ]; do printf 'history %d\\r\\n' $i; i=$((i+1)); done; printf '{SHELL_MODES}'; printf READY; exec cat"
+    );
+    let mut out = Vec::new();
+    for (name, script) in [("vim", vim), ("shell", shell)] {
+        let (sid, pane) = rig.new_pane(&format!("replay-{name}"), &script, &[])?;
+        rig.wait_text(pane, "READY", Duration::from_secs(10))?;
+        let r = attach_replay(rig, pane, name);
+        rig.kill(sid);
+        let r = r?;
+        let detail = format!(
+            "a mado-shaped attach to the {name} pane, {}: {} replay frame(s) applied to a fresh grid; ModeSet fields off the authority's: {:?}; history rows {} against the authority's {}; {} answer bytes written",
+            r.path, r.replays, r.fields_off, r.history_rows, r.authority_rows, r.answer_bytes
+        );
+        for (metric, value, unit) in [
+            (Metric::Replays, r.replays as f64, Unit::Count),
+            (Metric::Modes, r.modes_off as f64, Unit::Count),
+        ] {
+            tag.emit(
+                h,
+                Sample::new(
+                    "replay",
+                    &rig.label,
+                    &format!("{}-{name}", metric.name()),
+                    0,
+                    value,
+                    unit,
+                )
+                .cell(Cell::new(Case::C7(Handover::Attach), metric))
+                .detail(detail.clone()),
+            );
+        }
+        tag.emit(
+            h,
+            Sample::new(
+                "replay",
+                &rig.label,
+                &format!("history-rows-over-{name}"),
+                0,
+                r.history_rows as f64 - r.authority_rows as f64,
+                Unit::Count,
+            )
+            .detail(detail.clone()),
+        );
+        tag.emit(
+            h,
+            Sample::new(
+                "replay",
+                &rig.label,
+                &format!("answer-bytes-{name}"),
+                0,
+                r.answer_bytes as f64,
+                Unit::Bytes,
+            )
+            .detail(detail),
+        );
+        out.push(r);
+    }
+    Ok(out)
 }
 
 fn client_rpcs() -> Option<u64> {
@@ -819,6 +1173,7 @@ fn frame_bytes<T: serde::Serialize>(msg: &T) -> io::Result<u64> {
     Ok(v.len() as u64)
 }
 
+#[derive(Default)]
 pub struct KeyLoss {
     pub delivered: usize,
     pub sent: usize,
@@ -826,6 +1181,8 @@ pub struct KeyLoss {
     pub control_sent: usize,
     pub snapshot_frame: u64,
     pub redials: Option<u64>,
+    pub rpcs_per_key: Option<f64>,
+    pub bytes_per_key: u64,
 }
 
 impl KeyLoss {
@@ -862,6 +1219,80 @@ impl KeyLoss {
     }
 }
 
+fn bytes_per_mado_key(
+    h: &Harness,
+    label: &str,
+    tag: Tag,
+    (pane, rows): (PaneId, usize),
+    (deckm_rpc, grades_keys): (bool, bool),
+    snapshot_frame: u64,
+) -> io::Result<u64> {
+    let (snapshot_request, snapshot_reply) = if deckm_rpc {
+        (
+            frame_bytes(&Request::PaneSnapshot(pane))?,
+            4 + snapshot_frame,
+        )
+    } else {
+        (0, 0)
+    };
+    let keys_request = frame_bytes(&Request::SendKeys {
+        id: pane,
+        bytes: vec![b'A'],
+    })?;
+    let keys_reply = frame_bytes(&Response::Ok)?;
+    let total = snapshot_request + snapshot_reply + keys_request + keys_reply;
+    let s = Sample::new(
+        "keyloss",
+        label,
+        "bytes-per-mado-key",
+        0,
+        total as f64,
+        Unit::Bytes,
+    );
+    tag.emit(
+        h,
+        if grades_keys {
+            s.cell(Cell::new(Case::C12(Input::Keys), Metric::WireBytes))
+        } else {
+            s
+        }
+        .detail(format!(
+                "every frame of one mado-shaped key at {rows} rows (cursor_keys_source {}), each with its 4 B length header: PaneSnapshot request {snapshot_request} B, its reply {snapshot_reply} B, SendKeys {keys_request} B, its reply {keys_reply} B",
+                if deckm_rpc { "daemon-rpc" } else { "mirror" }
+            )),
+    );
+    Ok(total)
+}
+
+fn emit_rpcs_per_key(
+    h: &Harness,
+    label: &str,
+    tag: Tag,
+    (per_key, keys, rows): (f64, usize, usize),
+    (deckm_rpc, grades_keys): (bool, bool),
+) {
+    let s = Sample::new(
+        "keyloss",
+        label,
+        "rpcs-per-mado-key",
+        0,
+        per_key,
+        Unit::Ratio,
+    );
+    tag.emit(
+        h,
+        if grades_keys {
+            s.cell(Cell::new(Case::C12(Input::Keys), Metric::Rpcs))
+        } else {
+            s
+        }
+        .detail(format!(
+                "tear-client probe: ClientRpcs over {keys} mado-shaped keys at {rows} rows, cursor_keys_source {}",
+                if deckm_rpc { "daemon-rpc" } else { "mirror" }
+            )),
+    );
+}
+
 pub fn keyloss(h: &Harness, rig: &Rig, rows: usize, tag: Tag) -> io::Result<KeyLoss> {
     let t = rig
         .transport
@@ -879,50 +1310,34 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize, tag: Tag) -> io::Result<KeyL
     ));
     let probe = raw_frame_probe(&t, &Request::PaneSnapshot(pane))?;
     let mut out = KeyLoss {
-        delivered: 0,
-        sent: 0,
-        control_delivered: 0,
-        control_sent: 0,
         snapshot_frame: probe.bytes,
-        redials: None,
+        ..KeyLoss::default()
     };
-    let snapshot_request = frame_bytes(&Request::PaneSnapshot(pane))?;
-    let keys_request = frame_bytes(&Request::SendKeys {
-        id: pane,
-        bytes: vec![b'A'],
-    })?;
-    let keys_reply = frame_bytes(&Response::Ok)?;
-    let snapshot_reply = 4 + probe.bytes;
-    tag.emit(
+    let deckm_rpc = rig.mado_key_reads_rpc(pane);
+    let grades_keys = !rig.configured_cursor_keys_via_rpc();
+    let at = (pane, rows);
+    out.bytes_per_key = bytes_per_mado_key(
         h,
-        Sample::new(
-            "keyloss",
-            &rig.label,
-            "bytes-per-mado-key",
-            0,
-            (snapshot_request + snapshot_reply + keys_request + keys_reply) as f64,
-            Unit::Bytes,
-        )
-        .cell(Cell::new(Case::C12(Input::Keys), Metric::WireBytes))
-        .detail(format!(
-            "every frame of one mado-shaped key at {rows} rows, each with its 4 B length header: PaneSnapshot request {snapshot_request} B, its reply {snapshot_reply} B, SendKeys {keys_request} B, its reply {keys_reply} B; §2's convention (the SendKeys frame plus the snapshot body) reads {} B",
-            keys_request + probe.bytes
-        )),
-    );
+        &rig.label,
+        tag,
+        at,
+        (deckm_rpc, grades_keys),
+        probe.bytes,
+    )?;
     for (phase, count) in [("send-only-control", 5usize), ("mado-shaped", KEYLOSS_KEYS)] {
         let client = rig.fresh_client()?;
         let redials_before = client_count(ClientCount::Redials);
+        let rpcs_before = client_rpcs();
         for i in 0..count {
             let b = if phase == "mado-shaped" {
                 b'A' + u8::try_from(i).unwrap_or(0)
             } else {
                 b'0' + u8::try_from(i).unwrap_or(0)
             };
-            let deckm = if phase == "mado-shaped" {
-                match client.pane_cursor_keys_mode(pane) {
-                    Ok(v) => format!("ok:{v}"),
-                    Err(e) => format!("err:{e}"),
-                }
+            let deckm = if phase == "mado-shaped" && deckm_rpc {
+                client
+                    .pane_cursor_keys_mode(pane)
+                    .map_or_else(|e| format!("err:{e}"), |v| format!("ok:{v}"))
             } else {
                 "skipped".into()
             };
@@ -958,6 +1373,19 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize, tag: Tag) -> io::Result<KeyL
                 (redials_before, client_count(ClientCount::Redials))
         {
             out.redials = Some(after - before);
+        }
+        if phase == "mado-shaped"
+            && let (Some(before), Some(after)) = (rpcs_before, client_rpcs())
+        {
+            let per_key = (after - before) as f64 / count as f64;
+            out.rpcs_per_key = Some(per_key);
+            emit_rpcs_per_key(
+                h,
+                &rig.label,
+                tag,
+                (per_key, count, rows),
+                (deckm_rpc, grades_keys),
+            );
         }
     }
     out.emit(h, &rig.label, rows, tag);
@@ -1296,6 +1724,9 @@ pub fn audit(h: &Harness, d: &Daemon, rig: &Rig, keys: usize) -> io::Result<Audi
 pub const PROBE_BACKED: &[Cell] = &[
     Cell::new(Case::C9, Metric::Loss),
     Cell::new(Case::C9, Metric::Allocations),
+    Cell::new(Case::C12(Input::Keys), Metric::Rpcs),
+    Cell::new(Case::C7(Handover::Attach), Metric::Replays),
+    Cell::new(Case::C7(Handover::Attach), Metric::Modes),
 ];
 
 fn without_probes(cell: Cell) -> String {
@@ -1996,6 +2427,25 @@ pub fn replay_file(h: &Harness, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mirror_key_s_frames_fit_the_bytes_budget_and_a_daemon_rpc_key_s_do_not() {
+        let pane = PaneId::from_seed("budget");
+        let keys = frame_bytes(&Request::SendKeys {
+            id: pane,
+            bytes: vec![b'A'],
+        })
+        .unwrap()
+            + frame_bytes(&Response::Ok).unwrap();
+        assert!(keys <= crate::matrix::SEND_KEYS_FRAMES, "{keys}");
+        let refused = frame_bytes(&Request::PaneSnapshot(pane)).unwrap()
+            + frame_bytes(&Response::Err(tear_types::wire::response_too_large(
+                "PaneSnapshot",
+                tear_types::wire::FrameSize::AtLeast(29_356_065),
+            )))
+            .unwrap();
+        assert!(keys + refused > crate::matrix::SEND_KEYS_FRAMES);
+    }
 
     #[test]
     fn posix_cksum_matches_the_posix_check_value() {

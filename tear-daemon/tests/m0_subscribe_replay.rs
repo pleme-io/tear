@@ -98,18 +98,17 @@ fn subscribe_emits_snapshot_replay_before_live_stream() {
     let inproc_for_server = Arc::clone(&inproc);
     let _server_handle = thread::spawn(move || {
         let mut stream = server_half;
-        // Subscribe FIRST (the ordering invariant the M0 fix enforces).
-        let rx = inproc_for_server
-            .subscribe_pane_bytes(pid)
+        // Register and snapshot under the pane's grid lock (the fence
+        // serve_subscription relies on), then reply Ok and the replay.
+        let (rx, snap, _) = inproc_for_server
+            .subscribe_pane_bytes_with_replay(pid, tear_types::wire::MAX_PANE_BYTES)
             .expect("subscribe");
         write_msg(&mut stream, &Response::Ok).unwrap();
-        // Replay snapshot bytes.
-        if let Ok(snap) = inproc_for_server.pane_snapshot(pid) {
-            let bytes = snap.to_ansi();
-            if !bytes.is_empty() {
-                write_msg(&mut stream, &Response::PaneBytes(bytes)).ok();
-            }
-        }
+        write_msg(
+            &mut stream,
+            &Response::PaneBytes(snap.to_ansi_within(tear_types::wire::MAX_PANE_BYTES).bytes),
+        )
+        .ok();
         // Forward exactly one live frame (or timeout fast).
         if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(500)) {
             write_msg(&mut stream, &Response::PaneBytes(bytes)).ok();
@@ -152,8 +151,9 @@ fn to_ansi_emits_known_byte_sequence_for_known_grid() {
     snap.cursor_col = 5;
     let bytes = snap.to_ansi();
     let s = String::from_utf8_lossy(&bytes).into_owned();
-    // Prelude
-    assert!(s.starts_with("\x1b[0m\x1b[2J\x1b[H"));
+    // Prelude: a soft reset and the primary screen, then a clear.
+    assert!(s.starts_with("\x1b[!p\x1b[?1049l"));
+    assert!(s.contains("\x1b[0m\x1b[2J\x1b[H"));
     // Row 1 cursor move
     assert!(s.contains("\x1b[1;1H"));
     // Visible text
@@ -162,7 +162,7 @@ fn to_ansi_emits_known_byte_sequence_for_known_grid() {
     assert!(s.contains("\x1b[1;6H"));
 
     // Cursor-hide flag
-    snap.cursor_visible = false;
+    snap.modes.cursor_visible = tear_types::modes::CursorVisible::new(false);
     let bytes_hidden = snap.to_ansi();
     let s_hidden = String::from_utf8_lossy(&bytes_hidden);
     assert!(s_hidden.contains("\x1b[?25l"));

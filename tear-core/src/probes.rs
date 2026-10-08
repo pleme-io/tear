@@ -97,3 +97,26 @@ pub fn feed_allocations(
     std::hint::black_box(&grid);
     n
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replayed {
+    pub modes: tear_types::ModeSet,
+    pub scrollback_rows: usize,
+    pub answers: usize,
+}
+
+#[must_use]
+pub fn consume_replays(cols: usize, rows: usize, frames: &[&[u8]]) -> Replayed {
+    let mut grid = PaneGrid::new(cols, rows);
+    grid.set_host_role(tear_types::host_role::HostRole::Host);
+    let mut answers = 0;
+    for f in frames {
+        grid.feed(f);
+        answers += grid.take_response().map_or(0, |r| r.len());
+    }
+    Replayed {
+        modes: grid.modes(),
+        scrollback_rows: grid.scrollback_len(),
+        answers,
+    }
+}

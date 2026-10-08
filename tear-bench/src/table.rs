@@ -351,7 +351,7 @@ crate::bench_matrix! {
         controls: &[],
     },
     Case::C7(Handover::Attach) => Row {
-        receipt: "§2 C7: H-f (n=3), C, S; Gate 0 class 8",
+        receipt: "§2 C7: H-f (n=3), C, S; Gate 0 class 8; replays and modes: an engate attach over tear-client's PaneProducer to a pane in vim's modes and to a shell with history, 2 replays and 4–12 modes off before R5 (R5)",
         budgets: Budgets {
             echo_warm: ELSEWHERE,
             echo_gap: ELSEWHERE,
@@ -384,12 +384,14 @@ crate::bench_matrix! {
             present: MADO,
             loss: pending(Rung::R20, "duplicated output on attach mid-flood: >0", "S daemon lib.rs:964-996; target 0"),
             answers: ELSEWHERE,
-            replays: pending(Rung::R5, "2 history replays per daemon attach: engate's snapshot RPC and the daemon's first frame", "S daemon lib.rs:1002-1016; Gate 0 class 8; target 1"),
-            modes: pending(Rung::R5, "defaults after a replay", "S pane_snapshot.rs:372-480; target equal to the authority's ModeSet"),
+            replays: Budget::Exactly { n: 1 },
+            modes: Budget::Count { max: 0 },
             authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::SnapshotHistoryAll, metrics: &[Metric::Keyframe] },
+            Red { control: Control::ReplayModesUnadvertised, metrics: &[Metric::Replays] },
+            Red { control: Control::ModelessReplay, metrics: &[Metric::Modes] },
         ],
     },
     Case::C7(Handover::Switch) => Row {
@@ -680,7 +682,7 @@ crate::bench_matrix! {
         controls: &[],
     },
     Case::C12(Input::Keys) => Row {
-        receipt: "§2 C12 keys: H-b (n=1,000), H cliff (n=10 per depth), H",
+        receipt: "§2 C12 keys: H-b (n=1,000), H cliff (n=10 per depth), H; key: the worst of 0, 1,453 and 3,000 rows against the same run's plain key; rpcs and wire-bytes: a mado-shaped key at 3,000 rows, 2 RPCs and a refused snapshot before R5; the key's path is keys_read_the_mirror over the PaneProducer's own replay source, and mado's use of it is gated by mado's CursorKeys tests (R3, R5)",
         budgets: Budgets {
             echo_warm: ELSEWHERE,
             echo_gap: ELSEWHERE,
@@ -688,7 +690,7 @@ crate::bench_matrix! {
             echo_pause_hop: ELSEWHERE,
             round_trip: ELSEWHERE,
             round_trip_tail: ELSEWHERE,
-            key: pending(Rung::R5, "3.41 ms p50 at PRI 31; 7.6–8.6 ms with the daemon and holder at PRI 4; its DECCKM snapshot RPC alone 4.5 ms at 0 rows → 91.4 ms at 1,453; keys lost past ~1,667 rows", "H-b, H cliff; floor a plain key's echo, 0.12–0.16 ms (H-b); target ≤1.25× plain (R5), then ~1.2–2.3 µs of UI per key (R13)"),
+            key: Budget::Floor { floor: Floor::PlainKeyEcho, stat: Stat::P50, k: 1.25 },
             throughput: ELSEWHERE,
             attach: ELSEWHERE,
             startup: ELSEWHERE,
@@ -700,8 +702,8 @@ crate::bench_matrix! {
             resize: ELSEWHERE,
             memory: ELSEWHERE,
             keyframe: ELSEWHERE,
-            rpcs: pending(Rung::R5, "2 RPCs per mado-shaped key: a DECCKM snapshot and SendKeys", "S mado gui_tear_attach.rs:891-899, H; target 0 snapshot RPCs per key"),
-            wire_bytes: pending(Rung::R5, "469,852 B per mado-shaped key: 36 B SendKeys + a 469,816 B snapshot", "H; target the SendKeys frame alone"),
+            rpcs: Budget::Count { max: 1 },
+            wire_bytes: Budget::Bytes { max: crate::matrix::SEND_KEYS_FRAMES },
             frames: ELSEWHERE,
             flushes: ELSEWHERE,
             parses: ELSEWHERE,
@@ -718,8 +720,7 @@ crate::bench_matrix! {
             authorities: ELSEWHERE,
         },
         controls: &[
-            Red { control: Control::BandBackground, metrics: &[Metric::Key] },
-            Red { control: Control::CursorKeysViaRpc, metrics: &[Metric::Rpcs, Metric::WireBytes] },
+            Red { control: Control::CursorKeysViaRpc, metrics: &[Metric::Key, Metric::Rpcs, Metric::WireBytes] },
         ],
     },
     Case::C12(Input::Paste) => Row {

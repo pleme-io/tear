@@ -10,7 +10,7 @@ use tear_client::Transport;
 use tear_config::SessionDurability;
 use tear_types::{Durability, HostRole};
 
-const PENDING_CELLS: usize = 59;
+const PENDING_CELLS: usize = 54;
 const BUDGETED_CELLS: &[(Case, Metric)] = &[
     (Case::C2, Metric::WireBytes),
     (Case::C2, Metric::Encodes),
@@ -19,8 +19,13 @@ const BUDGETED_CELLS: &[(Case, Metric)] = &[
     (Case::C3, Metric::Loss),
     (Case::C4, Metric::Loss),
     (Case::C6(Remote::Tcp), Metric::Loss),
+    (Case::C7(Handover::Attach), Metric::Replays),
+    (Case::C7(Handover::Attach), Metric::Modes),
     (Case::C7(Handover::Readopt), Metric::Authorities),
     (Case::C9, Metric::Loss),
+    (Case::C12(Input::Keys), Metric::Key),
+    (Case::C12(Input::Keys), Metric::Rpcs),
+    (Case::C12(Input::Keys), Metric::WireBytes),
     (Case::C12(Input::Paste), Metric::Loss),
     (Case::C13, Metric::Flushes),
 ];
@@ -46,7 +51,15 @@ fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
 fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
     assert_eq!(
         LANDED,
-        &[Rung::R1, Rung::R3, Rung::R4, Rung::R6, Rung::R7, Rung::R10]
+        &[
+            Rung::R1,
+            Rung::R3,
+            Rung::R4,
+            Rung::R5,
+            Rung::R6,
+            Rung::R7,
+            Rung::R10
+        ]
     );
     let mut pending = 0;
     let mut budgeted = Vec::new();
@@ -84,7 +97,17 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
                 k: 310.0,
             },
             (Case::C4, Metric::Loss) => Budget::Bytes { max: 0 },
-            (Case::C7(Handover::Readopt), Metric::Authorities) => Budget::Exactly { n: 1 },
+            (Case::C7(Handover::Readopt), Metric::Authorities)
+            | (Case::C7(Handover::Attach), Metric::Replays) => Budget::Exactly { n: 1 },
+            (Case::C12(Input::Keys), Metric::Key) => Budget::Floor {
+                floor: Floor::PlainKeyEcho,
+                stat: Stat::P50,
+                k: 1.25,
+            },
+            (Case::C12(Input::Keys), Metric::Rpcs) => Budget::Count { max: 1 },
+            (Case::C12(Input::Keys), Metric::WireBytes) => Budget::Bytes {
+                max: tear_bench::matrix::SEND_KEYS_FRAMES,
+            },
             _ => Budget::Count { max: 0 },
         };
         assert_eq!(Cell::new(*case, *metric).budget(), want);

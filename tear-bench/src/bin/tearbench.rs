@@ -369,6 +369,8 @@ const STANDALONE: &[&str] = &[
     "mute-sink",
     "store-lease-off",
     "window",
+    "cursor-keys-via-rpc",
+    "replay-controls",
 ];
 
 fn control_case(name: &str, (run, detail): (gate::ControlRun, String)) -> std::io::Result<()> {
@@ -402,6 +404,10 @@ fn standalone_case(h: &Harness, v: Variant, name: &str) -> std::io::Result<()> {
         "mute-sink" => control_case(name, gate::mute_sink_control(h, &mut Vec::new())),
         "store-lease-off" => control_case(name, gate::store_lease_off_control(h, &mut Vec::new())),
         "window" => gate::window(h, &mut Vec::new()).map_err(std::io::Error::other),
+        "cursor-keys-via-rpc" => control_case(name, gate::cursor_keys_control(h, &mut Vec::new())),
+        "replay-controls" => gate::replay_controls(h, &mut Vec::new())
+            .into_iter()
+            .try_for_each(|(c, run, detail)| control_case(c.name(), (run, detail))),
         other => Err(std::io::Error::other(format!("unknown case {other}"))),
     }
 }
@@ -467,6 +473,12 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
                 &[0, 100, 250, 500, 750, 1_000, 1_500, 2_000, 3_000],
             ),
             "keyloss" => cases::keyloss(h, &rig, cases::KEYLOSS_ROWS, Tag::Cells).map(drop),
+            "replay" => cases::replay(h, &rig, Tag::Cells).map(drop),
+            "replay-snapshot" => {
+                rig.configure_snapshot_replay(true);
+                cases::replay(h, &rig, Tag::Cells).map(drop)
+            }
+            "keys" => cases::keys_at_depths(h, &rig, gate::KEYS_PER_DEPTH, Tag::Cells).map(drop),
             "tokened" => cases::tokened(h, &rig, cases::TOKENED_KEYS, Tag::Cells).map(drop),
             "paste" => cases::paste(h, &rig, cases::PASTE_BYTES, Tag::Cells).map(drop),
             "connect" => cases::connect(h, &rig, 30),

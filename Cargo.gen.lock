@@ -1,14 +1,14 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "17ab4bec2770562d87a2da5326a8e1297fe93ea61c80c01b627de90db1d7b52e",
+  "cargo_lock_sha256": "54564bb61eadff90583ae78710690d113c74e277cd4354afd555a35287566aef",
   "manifest_sha256": {
     "Cargo.toml": "7bd0fc7dbb9c9238f31702ec8a7c6178fa29e5761fc6b8129b44cd4576c9c0a9",
     "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
     "makimono/Cargo.toml": "79d7fd484a7567980cbf9206d15cd5a11b75b24484651dc32e22056cca225f4d",
     "praca/Cargo.toml": "8a65097e5c25ead6f7c9e53f1fac5aeccccb24bb6d0d967e258b3246b33855f4",
     "tamotsu/Cargo.toml": "0d17c9fcfbb7fa777f1e67e8b7d2027506c68345cdabc46ea4be944958a4540c",
-    "tear-bench/Cargo.toml": "db9b436df78108269b4892641718b9654d9648d3c1f9c44c710f7e224d971d7f",
-    "tear-client/Cargo.toml": "8526719e00619c03278ec86b2f8ae00d892292dea5e8662c4655615268c3aed5",
+    "tear-bench/Cargo.toml": "fce7a7569f1cab633995a707c66bf26dc46916c11d49784c6ba80760f54e9c76",
+    "tear-client/Cargo.toml": "2d252a97346e2979a47851d00e085374202d2e948c293f4630ce3d1e163622b1",
     "tear-config/Cargo.toml": "36b5d7b438eba05504078bbd3267d7258dc93ccd954f9e931b142e97b3cd5a22",
     "tear-core/Cargo.toml": "7ff90004235276c2c2b69a008108107cec42e60d2bd763cde95c07dd279af16e",
     "tear-daemon/Cargo.toml": "61b011a40a6acafb2521a5919f2191800bcd8a01dbd3a569d43f4835e95f929c",
@@ -1731,6 +1731,11 @@
           "std"
         ]
       },
+      "drop_bomb-0.1.5": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
       "dyn-clone-1.0.20": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -1743,6 +1748,104 @@
           "std",
           "use_std"
         ]
+      },
+      "engate-attach-0.1.5": {
+        "runtime_dependencies": [
+          {
+            "name": "drop_bomb",
+            "package_key": "drop_bomb-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "engate_types",
+            "package_key": "engate-types-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.229",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.19",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "typed_builder",
+            "package_key": "typed-builder-0.21.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default"
+        ]
+      },
+      "engate-types-0.1.5": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.229",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.19",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "equivalent-1.0.2": {
         "runtime_dependencies": [],
@@ -8547,6 +8650,26 @@
             "tree": "target"
           },
           {
+            "name": "engate_attach",
+            "package_key": "engate-attach-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "engate_types",
+            "package_key": "engate-types-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "kotae",
             "package_key": "kotae-0.1.1",
             "kind": "normal",
@@ -8631,7 +8754,9 @@
             "name": "tear_client",
             "package_key": "tear-client-0.1.40",
             "kind": "normal",
-            "features": [],
+            "features": [
+              "engate"
+            ],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -8686,6 +8811,26 @@
       "tear-client-0.1.40": {
         "runtime_dependencies": [
           {
+            "name": "engate_attach",
+            "package_key": "engate-attach-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "engate_types",
+            "package_key": "engate-types-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "parking_lot",
             "package_key": "parking_lot-0.12.5",
             "kind": "normal",
@@ -8728,7 +8873,8 @@
         ],
         "build_dependencies": [],
         "features": [
-          "default"
+          "default",
+          "engate"
         ]
       },
       "tear-config-0.1.40": {
@@ -9457,6 +9603,16 @@
             "tree": "target"
           },
           {
+            "name": "engate_types",
+            "package_key": "engate-types-0.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "ishou_tokens",
             "package_key": "ishou-tokens-0.1.14",
             "kind": "normal",
@@ -9531,7 +9687,8 @@
         ],
         "build_dependencies": [],
         "features": [
-          "default"
+          "default",
+          "engate"
         ]
       },
       "tear-ws-bridge-0.1.40": {
@@ -11462,6 +11619,61 @@
           "httparse",
           "sha1"
         ]
+      },
+      "typed-builder-0.21.2": {
+        "runtime_dependencies": [
+          {
+            "name": "typed_builder_macro",
+            "package_key": "typed-builder-macro-0.21.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "typed-builder-macro-0.21.2": {
+        "runtime_dependencies": [
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.107",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.47",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "syn",
+            "package_key": "syn-2.0.119",
+            "kind": "normal",
+            "features": [
+              "extra-traits",
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "typenum-1.20.1": {
         "runtime_dependencies": [],
@@ -16549,11 +16761,20 @@
     "downcast-rs-1.2.1": {
       "edition": "2015"
     },
+    "drop_bomb-0.1.5": {
+      "edition": "2015"
+    },
     "dyn-clone-1.0.20": {
       "edition": "2018"
     },
     "either-1.17.0": {
       "edition": "2021"
+    },
+    "engate-attach-0.1.5": {
+      "edition": "2024"
+    },
+    "engate-types-0.1.5": {
+      "edition": "2024"
     },
     "equivalent-1.0.2": {
       "edition": "2015"
@@ -17493,6 +17714,13 @@
     },
     "tungstenite-0.27.0": {
       "edition": "2021"
+    },
+    "typed-builder-0.21.2": {
+      "edition": "2021"
+    },
+    "typed-builder-macro-0.21.2": {
+      "edition": "2021",
+      "proc_macro": true
     },
     "typenum-1.20.1": {
       "edition": "2018"

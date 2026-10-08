@@ -237,9 +237,15 @@ pub struct SubscribeHandle {
     /// (the `stop` AtomicBool only fires *between* reads).
     socket: TransportStream,
     join: Option<thread::JoinHandle<()>>,
+    daemon: DaemonIdentity,
 }
 
 impl SubscribeHandle {
+    #[must_use]
+    pub fn daemon(&self) -> &DaemonIdentity {
+        &self.daemon
+    }
+
     /// Signal the reader thread to stop and join it. Idempotent —
     /// safe to call multiple times.
     pub fn stop(mut self) {
@@ -599,8 +605,12 @@ impl Client {
         &self.transport
     }
 
-    fn subscription(&self, req: &Request, label: &str) -> ControlResult<(Conn, TransportStream)> {
-        let mut conn = self
+    fn subscription(
+        &self,
+        req: &Request,
+        label: &str,
+    ) -> ControlResult<(Conn, TransportStream, DaemonIdentity)> {
+        let (mut conn, daemon) = self
             .subscription_conn()
             .map_err(|e| ControlError::Transport(e.to_string()))?;
         let socket = conn
@@ -610,7 +620,7 @@ impl Client {
         let ack: Response =
             read_msg(&mut conn.reader).map_err(|e| ControlError::Transport(e.to_string()))?;
         match ack {
-            Response::Ok => Ok((conn, socket)),
+            Response::Ok => Ok((conn, socket, daemon)),
             Response::Err(we) => Err(ControlError::from(we)),
             other => Err(ControlError::Transport(format!(
                 "unexpected ack to {label}: {other:?}"
@@ -618,12 +628,12 @@ impl Client {
         }
     }
 
-    fn subscription_conn(&self) -> io::Result<Conn> {
+    fn subscription_conn(&self) -> io::Result<(Conn, DaemonIdentity)> {
         #[cfg(feature = "bench-probes")]
         if tear_types::probes::active(tear_types::probes::Fault::RawSubscribe) {
-            return Conn::open(&self.transport);
+            return Conn::open(&self.transport).map(|c| (c, DaemonIdentity::pre_capability()));
         }
-        Self::handshake(&self.transport, self.auth_token.as_deref(), None).map(|(conn, _)| conn)
+        Self::handshake(&self.transport, self.auth_token.as_deref(), None)
     }
 
     /// Subscribe to a pane's PTY byte stream. Opens a fresh connection
@@ -645,7 +655,7 @@ impl Client {
     where
         F: FnMut(&[u8]) + Send + 'static,
     {
-        let (conn, socket) = self.subscription(&Request::Subscribe(pane), "Subscribe")?;
+        let (conn, socket, daemon) = self.subscription(&Request::Subscribe(pane), "Subscribe")?;
         let mut reader = conn.reader;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
@@ -666,6 +676,7 @@ impl Client {
             stop,
             socket,
             join: Some(join),
+            daemon,
         })
     }
 
@@ -691,7 +702,7 @@ impl Client {
     where
         F: FnMut(Arc<tear_config::TearConfig>) + Send + 'static,
     {
-        let (conn, socket) =
+        let (conn, socket, daemon) =
             self.subscription(&Request::SubscribeConfigChange, "SubscribeConfigChange")?;
         let mut reader = conn.reader;
         let stop = Arc::new(AtomicBool::new(false));
@@ -717,6 +728,7 @@ impl Client {
             stop,
             socket,
             join: Some(join),
+            daemon,
         })
     }
 

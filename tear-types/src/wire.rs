@@ -544,6 +544,10 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 pub const INPUT_CHUNK_BYTES: usize = 64 * 1024;
 
+pub const PANE_BYTES_OVERHEAD: usize = 16;
+
+pub const MAX_PANE_BYTES: usize = MAX_FRAME_BYTES - PANE_BYTES_OVERHEAD;
+
 pub const RESPONSE_TOO_LARGE: &str = "response-too-large";
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -763,6 +767,14 @@ pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Result<
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn a_pane_bytes_body_of_max_pane_bytes_fills_the_frame_cap_exactly() {
+        let full = encode(&Response::PaneBytes(vec![b'x'; MAX_PANE_BYTES])).unwrap();
+        assert_eq!(full.len(), MAX_FRAME_BYTES);
+        let over = encode(&Response::PaneBytes(vec![b'x'; MAX_PANE_BYTES + 1])).unwrap_err();
+        assert_eq!(FrameTooLarge::of(&over), Some(MAX_FRAME_BYTES + 1));
+    }
 
     #[test]
     fn roundtrip_list_sessions_request() {

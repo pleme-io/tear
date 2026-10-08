@@ -159,6 +159,7 @@ pub enum Capability {
     /// spawns in its own cwd — the silent wrong-directory session this
     /// capability exists to refuse legibly instead.
     SpawnEnv,
+    ReplayModes,
 }
 
 capabilities! {
@@ -166,6 +167,7 @@ capabilities! {
     PaneYurai { wire: "pane-yurai", advertised: true },
     Freio { wire: "freio", advertised: true },
     SpawnEnv { wire: "spawn-env", advertised: true },
+    ReplayModes { wire: "replay-modes", advertised: true },
 }
 
 impl Capability {
@@ -227,10 +229,22 @@ impl DaemonHello {
                 .iter()
                 .copied()
                 .filter(|c| c.advertised())
+                .filter(|c| !unadvertised_by_fault(*c))
                 .map(|c| c.wire_name().to_owned())
                 .collect(),
         }
     }
+}
+
+#[cfg(feature = "bench-probes")]
+fn unadvertised_by_fault(c: Capability) -> bool {
+    c == Capability::ReplayModes
+        && crate::probes::active(crate::probes::Fault::ReplayModesUnadvertised)
+}
+
+#[cfg(not(feature = "bench-probes"))]
+const fn unadvertised_by_fault(_: Capability) -> bool {
+    false
 }
 
 /// A client's typed view of the daemon it is connected to.
@@ -382,6 +396,7 @@ mod tests {
                 "pane-yurai".to_owned(),
                 "freio".to_owned(),
                 "spawn-env".to_owned(),
+                "replay-modes".to_owned(),
             ]
         );
     }

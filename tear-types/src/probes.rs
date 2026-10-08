@@ -15,6 +15,8 @@ crate::closed_vocabulary! {
         StoreLeaseOff => "store-lease-off",
         WakeOff => "wake-off",
         ArrayEncoder => "array-encoder",
+        ReplayModesUnadvertised => "replay-modes-unadvertised",
+        ModelessReplay => "modeless-replay",
     }
 }
 

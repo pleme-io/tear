@@ -351,21 +351,54 @@ impl InProcess {
         if !self.ptys.lock().contains_key(&pane) {
             return Err(ControlError::NoSuchPane(pane));
         }
-        let (tx, rx) = tear_types::waking::WakingSender::channel(waker);
-        let refused = {
-            let mut subs = self.subscribers.lock();
-            let ps = subs.entry(pane).or_default();
-            if ps.closed.is_none() {
-                ps.senders.push(tx);
-                None
-            } else {
-                Some(tx)
-            }
-        };
+        Ok(self.register_subscriber(pane, waker))
+    }
+
+    pub fn subscribe_pane_bytes_with_replay(
+        &self,
+        pane: PaneId,
+        max_replay_bytes: usize,
+    ) -> ControlResult<(mpsc::Receiver<Vec<u8>>, tear_types::PaneSnapshot, usize)> {
+        if !self.ptys.lock().contains_key(&pane) {
+            return Err(ControlError::NoSuchPane(pane));
+        }
+        let (rx, (snap, left_out), refused) = self.read_pane(pane, |grid| {
+            let (rx, refused) = self.register_locked(pane, std::task::Waker::noop().clone());
+            Ok((rx, grid.replay_snapshot(max_replay_bytes), refused))
+        })?;
+        drop(refused);
+        Ok((rx, snap, left_out))
+    }
+
+    fn register_subscriber(
+        &self,
+        pane: PaneId,
+        waker: std::task::Waker,
+    ) -> mpsc::Receiver<Vec<u8>> {
+        let (rx, refused) = self.register_locked(pane, waker);
         // A stream already closed: `tx` drops here, outside the lock, so
         // `rx` is disconnected and its waker rung.
         drop(refused);
-        Ok(rx)
+        rx
+    }
+
+    fn register_locked(
+        &self,
+        pane: PaneId,
+        waker: std::task::Waker,
+    ) -> (
+        mpsc::Receiver<Vec<u8>>,
+        Option<tear_types::waking::WakingSender<Vec<u8>>>,
+    ) {
+        let (tx, rx) = tear_types::waking::WakingSender::channel(waker);
+        let mut subs = self.subscribers.lock();
+        let ps = subs.entry(pane).or_default();
+        if ps.closed.is_none() {
+            ps.senders.push(tx);
+            (rx, None)
+        } else {
+            (rx, Some(tx))
+        }
     }
 
     /// Borrow the registry read-only — useful for callers that want
@@ -670,7 +703,10 @@ impl InProcess {
         let subscribers_for_callback = self.subscribers.clone();
         let recordings_for_callback = self.recordings.clone();
         let on_bytes = Box::new(move |bytes: &[u8]| {
-            grid_for_callback.lock().feed(bytes);
+            let mut grid = grid_for_callback.lock();
+            grid.feed(bytes);
+            #[cfg(test)]
+            fence_park::after_feed(pane_id, bytes);
             // Fan out to subscribers (Phase-2.5 push subscriptions).
             // Cheap when there are zero subscribers; per-subscriber
             // cost is a Vec clone + mpsc::send. On send error the
@@ -679,6 +715,7 @@ impl InProcess {
                 .lock()
                 .get_mut(&pane_id)
                 .map(|ps| fan_out(&mut ps.senders, bytes));
+            drop(grid);
             if let Some(fanned) = fanned {
                 fanned.ring();
             }
@@ -1522,6 +1559,74 @@ impl InProcess {
 }
 
 #[cfg(test)]
+mod fence_park {
+    use std::sync::{Condvar, Mutex};
+    use std::time::{Duration, Instant};
+
+    use tear_types::PaneId;
+
+    struct State {
+        pane: Option<PaneId>,
+        marker: u8,
+        parked: bool,
+        released: bool,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        pane: None,
+        marker: 0,
+        parked: false,
+        released: false,
+    });
+    static CHANGED: Condvar = Condvar::new();
+
+    pub(super) fn arm(pane: PaneId, marker: u8) {
+        *STATE.lock().unwrap() = State {
+            pane: Some(pane),
+            marker,
+            parked: false,
+            released: false,
+        };
+    }
+
+    pub(super) fn after_feed(pane: PaneId, bytes: &[u8]) {
+        let mut s = STATE.lock().unwrap();
+        if s.pane != Some(pane) || s.parked || !bytes.contains(&s.marker) {
+            return;
+        }
+        s.parked = true;
+        CHANGED.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !s.released {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            s = CHANGED.wait_timeout(s, left).unwrap().0;
+        }
+        s.pane = None;
+    }
+
+    pub(super) fn wait_parked(within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        let mut s = STATE.lock().unwrap();
+        while !s.parked {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            s = CHANGED.wait_timeout(s, left).unwrap().0;
+        }
+        true
+    }
+
+    pub(super) fn release() {
+        STATE.lock().unwrap().released = true;
+        CHANGED.notify_all();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1950,6 +2055,140 @@ mod tests {
         let inproc = InProcess::new();
         let err = inproc.get_session(SessionId(99)).unwrap_err();
         assert!(matches!(err, ControlError::NoSuchSession(_)));
+    }
+
+    #[test]
+    fn a_subscribe_landing_between_a_feed_and_its_fan_out_waits_for_the_fan_out() {
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session_with_source_and_size(
+                "fence-park",
+                "/bin/sh",
+                &[
+                    "-c".to_string(),
+                    "stty raw -echo; printf READY; exec cat".to_string(),
+                ],
+                tear_types::SessionSource::Human,
+                (80, 24),
+            )
+            .expect("new session");
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
+        while !inproc
+            .pane_snapshot(pane)
+            .unwrap()
+            .to_text()
+            .contains("READY")
+        {
+            assert!(std::time::Instant::now() < deadline, "no READY");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        fence_park::arm(pane, b'Q');
+        inproc.send_keys(pane, b"Q").expect("type the marker");
+        assert!(
+            fence_park::wait_parked(CHILD_OUTPUT_TIMEOUT),
+            "the marker's feed never reached the park"
+        );
+        let (done_tx, done_rx) = mpsc::channel();
+        let subscriber = {
+            let inproc = Arc::clone(&inproc);
+            std::thread::spawn(move || {
+                let got = inproc.subscribe_pane_bytes_with_replay(pane, usize::MAX);
+                let _ = done_tx.send(());
+                got
+            })
+        };
+        let landed_inside = done_rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_ok();
+        fence_park::release();
+        let (rx, snap, _) = subscriber.join().unwrap().expect("subscribe");
+        assert!(snap.to_text().contains("READYQ"), "{}", snap.to_text());
+        inproc.send_keys(pane, b"Z").expect("type the end");
+        let mut stream = Vec::new();
+        while !stream.contains(&b'Z') {
+            stream.extend(
+                rx.recv_timeout(CHILD_OUTPUT_TIMEOUT)
+                    .expect("the stream runs"),
+            );
+        }
+        assert!(
+            !stream.contains(&b'Q'),
+            "the marker reached both the replay and the stream: {stream:?}"
+        );
+        assert!(
+            !landed_inside,
+            "a subscribe completed between a feed and its fan-out"
+        );
+        inproc.kill_session(sid).unwrap();
+    }
+
+    #[test]
+    fn a_replay_and_the_stream_after_it_never_carry_the_same_byte() {
+        let inproc = InProcess::new();
+        let script = "stty raw -echo; i=0; while [ $i -lt 3000 ]; do printf 'n%05d\\r\\n' $i; i=$((i+1)); done; printf DONE; exec cat";
+        let sid = inproc
+            .new_session_with_source_and_size(
+                "fence",
+                "/bin/sh",
+                &["-c".to_string(), script.to_string()],
+                tear_types::SessionSource::Human,
+                (80, 24),
+            )
+            .expect("new session");
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
+        while inproc.pane_snapshot(pane).unwrap().scrollback.len() < 200 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the flood never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let (rx, snap, _) = inproc
+            .subscribe_pane_bytes_with_replay(pane, usize::MAX)
+            .expect("subscribe");
+        let mut consumer = PaneGrid::new(snap.cols, snap.rows);
+        consumer.feed(&snap.to_ansi());
+        let mut tail = Vec::new();
+        while !tail.windows(4).any(|w| w == b"DONE") {
+            let chunk = rx
+                .recv_timeout(CHILD_OUTPUT_TIMEOUT)
+                .expect("the flood ends with DONE");
+            consumer.feed(&chunk);
+            tail.extend_from_slice(&chunk);
+            let keep = tail.len().saturating_sub(4);
+            tail.drain(..keep);
+        }
+        let want = inproc.pane_snapshot(pane).unwrap();
+        let got = consumer.snapshot();
+        let text = |rows: &[Vec<tear_types::pane_snapshot::Cell>]| -> Vec<String> {
+            rows.iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|c| c.ch)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect()
+        };
+        assert_eq!(got.to_text(), want.to_text());
+        assert_eq!(got.scrollback.len(), want.scrollback.len());
+        assert_eq!(text(&got.scrollback), text(&want.scrollback));
+        inproc.kill_session(sid).unwrap();
     }
 
     #[test]

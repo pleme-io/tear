@@ -71,14 +71,20 @@ fn the_fixture_covers_every_byte_field_and_payload_and_crosses_encodings() {
         .collect();
     assert_eq!(have, want);
     for r in f.rows.iter().filter(|r| r.payload_len > 0) {
+        let empty = f
+            .rows
+            .iter()
+            .find(|e| e.shape == r.shape && e.payload_len == 0)
+            .expect("every shape has an empty-payload row");
+        let published = r.published_len - empty.published_len;
+        let head = r.head_len - empty.head_len;
         assert!(
-            r.published_len > r.head_len,
-            "{} {}: {PUBLISHED} wrote {} B and this tree {} B, so the probe would read a byte \
-             string with a byte-string reader and prove nothing",
+            published > head,
+            "{} {}: the byte field grew {PUBLISHED}'s message by {published} B and this tree's \
+             by {head} B, so the probe would read a byte string with a byte-string reader and \
+             prove nothing",
             r.shape,
             r.payload,
-            r.published_len,
-            r.head_len
         );
     }
     let pane = f

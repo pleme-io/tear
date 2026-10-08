@@ -33,6 +33,7 @@ pub fn key_loss(h: &Harness) -> io::Result<Check> {
     };
     let (mut d, rig) = isolated_rig_with(h, Variant::BOUND, "reproduce-keyloss", &opts)?;
     arm_client(&[Control::LegacyReplay]);
+    rig.configure_cursor_keys_via_rpc(true);
     let r = cases::keyloss(h, &rig, KEYLOSS_ROWS, Tag::Control(Control::LegacyReplay));
     arm_client(&[]);
     rig.kill_all();
@@ -40,7 +41,7 @@ pub fn key_loss(h: &Harness) -> io::Result<Check> {
     d.stop(h);
     let r = r?;
     Ok(Check {
-        name: "keys delivered at 3,000 rows via the mado-shaped path, on the pre-R3 wire's fault double",
+        name: "keys delivered at 3,000 rows via the mado-shaped path under cursor_keys_source daemon-rpc, on the pre-R3 wire's fault double",
         receipt: "§2 C3: 0 of 20 (H)",
         expected: format!("0 of {KEYLOSS_KEYS}, with the send-only control delivered"),
         measured: format!(

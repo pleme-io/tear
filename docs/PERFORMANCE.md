@@ -923,6 +923,155 @@ negative control is a fault injector compiled only for tests (§6).
   bytes-per-key cells.
 - **Old behaviour:** `input.cursor_keys_source: daemon-rpc`, chosen
   automatically against a daemon without `replay-modes`.
+- **As built (2026-10-08).** `ModeSet` carries every mode a key encoder
+  reads: `keypad` (DECKPAM/DECKPNM), `reverse_video` (DECSCNM),
+  `alternate_scroll` (1007), `cursor_style` (DECSCUSR, with `Unset` for a
+  pane no program has set it in, which mado tells from `CSI 0 SP q`),
+  `modify_other_keys` (XTMODKEYS resource 4, `CSI > 4 ; v m`, reset by
+  `CSI > 4 m`, `CSI > m` and `CSI > 4 n`), `kitty_keyboard` (one bounded stack
+  per screen) and `mouse_encoding`. The encodings 1005, 1006, 1015 and 1016
+  are one enum, because xterm makes them exclusive and lets a reset clear
+  only its own mode; `mouse_sgr` stays on the wire, written from the enum and
+  read back when an older peer sends no `mouse_encoding`, so neither
+  direction loses the field (a nine-field `ModeSet` decodes, and a
+  nine-field reader decodes this one, both pinned). A kitty stack holds
+  kitty's eight entries and evicts the oldest; `CSI = flags ; mode u` is
+  modelled as kitty does, creating an entry on an empty stack; entering a
+  clearing alternate screen (1047, 1049) starts it empty. `ModeSet::default()`
+  is now a fresh terminal — cursor visible, autowrap on — where it read both
+  off. `PaneGrid` tracks all of it, and gained DECSTR (`CSI ! p`, resetting
+  what mado's `soft_reset` resets) and a full reset of every mode on RIS; a
+  CSI with an intermediate byte now runs only DECSCUSR or DECSTR, where it
+  used to fall through to the final byte's command (`CSI 1 SP @` ran ICH).
+  `to_ansi` opens with `CSI ! p` and `CSI ? 1049 l`, so the cursor style a
+  program never set and the screen are absolute too; restores the main
+  screen's kitty stack there (`CSI < 99 u`, then each push) and the
+  alternate one after entering it, or, on the primary screen, through
+  `CSI ? 47 h … l` only when that stack holds entries, because entering the
+  alternate screen in mado saves the cursor and marks a TUI as having run;
+  emits every other mode after the cursor; and closes with DEC 2026. The
+  text's "`rows` blank lines it scrolls past today" measured as one: a
+  consumer as tall as the pane held N + 1 history rows after one replay
+  (178 for 177 in tear's grid) and 2N + 2 after the daemon path's two (308
+  for 153), because the last of the `rows` line feeds scrolls an empty line;
+  `rows − 1` lay exactly N. A consumer of another height still receives the
+  history laid for the pane's. The daemon registers and snapshots under the
+  pane's grid lock (`InProcess::subscribe_pane_bytes_with_replay`), and
+  `on_bytes` fans out before releasing the grid, ringing R10's wakers after
+  both locks, so the first frame after `Ok` is the replay and no byte is in
+  both; capability `replay-modes`. That frame always carries the screen and
+  the modes and fits the frame cap (`wire::MAX_PANE_BYTES`, the cap less
+  `PaneBytes`' 16 B of framing): the grid clones only the newest history
+  rows whose replay floor (`scrollback_row_replay_floor`, the row's
+  characters plus its 6 B line end) could fit, and `to_ansi_within` drops
+  the fewest oldest of those until the replay fits, byte for byte the
+  replay of the shorter history; the daemon logs how many it left out.
+  Before this the frame was refused past the cap and the subscription closed
+  after `Ok`, a dead stream for every consumer of a pane whose replay passes
+  16 MiB (14,000 rows of two-colour text in the test, about 195,000 rows of
+  plain 80-column text), which an unlimited scrollback reaches. engate grew
+  `Producer::replay_source` (`Snapshot` by default, so every producer is
+  unchanged) and `Consumer::replay_item`: for a `Stream` producer
+  `Attach::subscribe` takes no snapshot and `replay` hands the stream's first
+  item to `replay_item`. `Attach::subscribe` asks `replay_source` right after
+  `subscribe()`, and tear-client's producer answers from the subscription it
+  just opened: that connection's own handshake identity, now carried on the
+  `SubscribeHandle` (§7 rule 3), never the control connection's, which a
+  daemon swap can leave stale; it says `Stream` when that daemon advertises
+  `replay-modes`, and mado feeds the item through `feed_silent`.
+  `History::into_inner` keeps its 0.1.4 signature, and `into_snapshot` is
+  the total read. mado's `input.cursor_keys_source` is `mirror` (default) or
+  `daemon-rpc`; at each attach `mirror` resolves through
+  `tear_client::engate_producer::keys_read_the_mirror(replay, control)`:
+  the mirror answers after a stream-carried replay, or after a snapshot
+  replay from a backend that advertises `replay-modes` (the embedded
+  `InProcess`, whose snapshot mado replays through this `to_ansi`), and the
+  RPC answers after a snapshot replay from a daemon without it. The
+  `cursor_keys_mode` closure, which alt-scroll's arrows read too, is
+  `gui_tear_attach::CursorKeys::read`. Embedded attach (C1) keeps engate's
+  snapshot, still unfenced against the stream (R20).
+  Gate, against isolated daemons from the workspace build and from
+  `origin/main` at `d7a2b82` with this gate applied (the pre-rung code),
+  load averages 8–16: C7-attach `replays` (`Exactly{n: 1}`, a mado-shaped
+  attach to a pane in vim's modes and to a shell with 153 history rows) read
+  1 and 1 against 2 and 2 before; `modes` (`Count{max: 0}`, `ModeSet` fields
+  off the authority's after the replay, applied to a fresh grid) 0 and 0
+  against 5 (bracketed paste, DECCKM, focus, mouse, SGR mouse) and 1 before,
+  with 0 answer bytes and 0 history rows over the authority's; C12-keys
+  `rpcs` (`Count{max: 1}`) 1 per key against 2, and `wire-bytes`
+  (`Bytes{max: 64}`) 43 B per key at 3,000 rows (`SendKeys` and its `Ok`)
+  against 195 B (R3's refused snapshot); `key` (`Floor{plain-key-echo, p50,
+  k: 1.25}`, the worst of 0, 1,453 and 3,000 rows against the same run's
+  plain key at that depth) read 1.004, 1.011 and 0.994× through
+  `tearbench case keys` against 78.4, 2,289.7 and 1.41× before — the gate's
+  verdict on it read `Blind`, as every timing cell does without a quiet
+  reference host. Controls, all `Over`: `replay-modes-unadvertised` (the
+  daemon hides the capability) 2 replays and 306 history rows for 153;
+  `modeless-replay` (the replay without modes) 10 and 4 fields; and the kept
+  configuration `daemon-rpc` (tearbench's `cursor-keys-via-rpc`) 2 RPCs and
+  195 B per key, and the key at 3.0 ms against a 51.5 µs plain key at 0
+  rows, 87.5 ms at 1,453. Rebased onto R6's byte strings (`9c09c05`), the
+  same gate read every R5 cell `Within` again: `wire-bytes` 42 B (194 B
+  under `daemon-rpc`), the rest unchanged, the key 0.966, 0.978 and 1.059×
+  its plain echo. That control reddens the key as a timing cell —
+  beyond the noise band — and exactly the RPCs-per-key and bytes-per-key
+  cells among the counts; the R1 table had given the key cell the background
+  band (R2) as its control, which no tear-bench run can arm while R2 has no
+  cell in the matrix, so the key's control moved here. Because the oversized
+  DECCKM read exists only on the `daemon-rpc` path since this rung, C3
+  `loss`, R3's `response-size-unchecked` and `legacy-replay` and the R1
+  reproduction run on that path (they read `Within` with the mirror, against
+  nothing). §7, each pairing run: a pre-rung daemon with this client takes
+  `daemon-rpc` (20 of 20 keys, 2 RPCs a key) and two replays with the modes
+  right, its history 2N + 1; this daemon with a consumer that always
+  snapshot-replays through the pre-rung `to_ansi`, as an old mado does, gets
+  every mode right, because the daemon's frame restores them absolutely, and
+  2N + 1 rows, the old mado's own double replay; a pre-rung holder under this
+  daemon, muted and read every 250 ms, lost 0 B (3,866,624 of 3,866,624).
+  Not done here: mado's mirror keeps one kitty stack, not one per screen, and
+  ignores `CSI = … u`, 1005, 1015, 1016, 1007, DECSCNM and XTMODKEYS, so the
+  replay sets in it what it parses; the mirror is deleted at R38. DECOM, IRM
+  and the scroll region are not in `ModeSet` and are reset by the replay's
+  DECSTR, as a fresh consumer had them.
+- **Review (2026-10-08).** The cells above were first graded on
+  tearbench's own copy of mado's choice: the harness decided from its own
+  capability check whether to take a snapshot and whether a key read
+  DECCKM over RPC, so reverting mado's closure or dropping
+  `CountedProducer::replay_source` left every cell green. Now C7-attach runs
+  a real engate `Attach` over tear-client's `PaneProducer` into a recording
+  consumer (`replay`, `replay_item`, and on the snapshot path the stream's
+  first item, which is the daemon's replay by protocol), and the old
+  consumer is a producer that declares no replay source, as a pre-R5 mado's
+  `CountedProducer` does; C12-keys takes its key path from that producer's
+  own `replay_source` through `keys_read_the_mirror`, the function mado's
+  resolution calls. What tear-bench still cannot see is mado choosing that
+  path; mado's own tests carry it:
+  `n_arrow_keys_read_decckm_from_the_mirror_with_no_rpc_and_n_rpcs_under_daemon_rpc`
+  (0 `pane_cursor_keys_mode` calls over 40 keys from the mirror, 40 under
+  `daemon-rpc`, red with `read` reverted to the RPC) and
+  `an_attach_to_a_replay_modes_daemon_takes_no_snapshot_and_its_keys_make_no_rpc`
+  (a real daemon through `CountedProducer<PaneProducer>`: 0
+  `producer_snapshot`, DECCKM and 2004 from the one replay, 0 RPCs over 40
+  keys; red with `CountedProducer::replay_source` removed, 1 snapshot for 0).
+  The gate, re-run on that path (`tearbench gate --tier structural`,
+  isolated daemons, load average 7–9): C7-attach `replays` 1 and 1, each an
+  engate `Stream` attach with 0 `PaneSnapshot` RPCs; `modes` 0 and 0, 0
+  history rows over the authority's; C12-keys `rpcs` 1 and `wire-bytes`
+  42 B, `Within`; `key` `Blind` (no reference host), and through `tearbench
+  case keys` 0.982, 1.007 and 1.040× the same depth's plain key. Controls,
+  all reddened: `replay-modes-unadvertised` 2 and 2 replays, now an engate
+  `Snapshot` attach with 1 `PaneSnapshot` RPC, the shell's history 306 rows
+  for 153; `modeless-replay` 10 and 4 fields; `cursor-keys-via-rpc` 2 RPCs,
+  194 B, and the key at 86.1 ms p50 against a 36.5 µs limit. The fence's
+  second half, the fan-out under the grid lock, has its own red run:
+  `a_subscribe_landing_between_a_feed_and_its_fan_out_waits_for_the_fan_out`
+  parks `on_bytes` (a test-only hook after the feed) and subscribes into
+  the park; with the feed's guard dropped before the fan-out, the pre-R5
+  shape, the marker byte reached both the replay and the stream in 8 of 8
+  runs. The over-cap frame's red run is
+  `a_replay_over_the_frame_cap_leaves_out_the_oldest_history_and_the_stream_stays_live`
+  (14,000 coloured rows, a ~19 MB whole replay): against the unbounded
+  replay the first frame never comes and the subscription reads EOF.
 
 #### R42 · One answerer per pane
 *Destination · after R5 · the multi-window half needs R15; the post-flip
@@ -2229,13 +2378,18 @@ switches on every control whose rung has landed: R1's `audit-every-key`,
 R3's four (§5 R3), R4's `mute-sink` (the holder leaves a failed sink's
 socket open, as every holder before R4 does) and `store-lease-off` (the
 daemon declares no incarnation and never checks the lease), R6's
-`array-encoder`, R7's `old-splitter`, and R10's two in the window cells
-below, the kept configuration `pane-fate-poll` and the `wake-off` fault. One
+`array-encoder`, R7's `old-splitter`, R10's two in the window cells
+below, the kept configuration `pane-fate-poll` and the `wake-off` fault, and
+R5's three, the kept configuration `cursor-keys-via-rpc` (mado's
+`input.cursor_keys_source: daemon-rpc`) and the faults
+`replay-modes-unadvertised` and `modeless-replay`, each run through a real
+engate `Attach` over tear-client's `PaneProducer`. One
 `grade_control` derives every control's red set and audits it, whether the
 control's bad state needs a daemon (`control_run`), a mado window (R10) or
 only tearbench's own process (R6's codec control, R7's split control). A
 timing cell in a control's red set needs quiet sentinels, reads `Blind`
-without them, and grades against a floor measured in the control's own run;
+without them, and grades against a floor measured in the control's own run
+(for `control_run`, the samples it tagged `control:<name>:floor:<floor>`);
 the sentinels never gate its count cells, so a count cell that does not
 redden fails the control on a loud host too, and a control whose only
 unproven cells are blind timing cells reads `Blind`, naming the count cells
@@ -2515,7 +2669,10 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways; for older holders, a pane snapshot or an unechoed key makes the daemon compare `Status.end` and re-attach | a `Sink::drop` without the shutdown reddens the sink's own test and three tamotsu `never_mute` tests (shut-down, stall, displaced); the mute-sink fault on C4 `loss` (3,660,800 B lost); the shut-down and stall tests, red against v0.1.34's holder; tear's daemon-process test of a muted holder recovered by wire snapshots, red with the edge off the wire read (1 attach, the marker never shown) | holders spawned before R4, which the daemon's `Status.end` check only mitigates, on an edge; a holder that writes through a raw stream again (the `trybuild` case pins `Sink::new`, a definition, not the holder's use); a deliberate `Sink::leave_silent` on the failure path, which is what the fault does | only-mitigated (C1) |
 | a byte payload written as a CBOR integer array | every `Vec<u8>` field of a serde type in tear-types goes through `tear_types::byte_string` (serde_bytes); a scan of tear-types' sources refuses one that does not, and counts three so a broken parser cannot read as safe | the `array-encoder` fault: C2 `wire-bytes` 2,042 against 1,044 and `encodes` 465× its floor in a run with quiet sentinels, and `wire-bytes` alone on a loud host, where `encodes` reads `Blind` (`encodes` has no pre-rung red with quiet sentinels yet); tear-types' `array_encoder` test; `the_scan_sees_a_bare_byte_field`; the 65,552 B pin; the 18 head-to-published cross-version rows, red with the three attributes removed (six with `Graphic.data`'s alone, six with `SendKeys.bytes`') | a byte field of a serde type outside tear-types; a type the scan does not read, one declared inside a macro or an indented module | only-mitigated (C1) |
 | a UTF-8 character split across two of a parser's chunks | both parsers advance only through `feeder::Parser`, which takes a `Chunk` only the feeder mints, and the feeder cuts text only at rest, or, past the hold bound in ground state, before the last incomplete character, so no chunk ends where the next byte continues one | `trybuild`: a `Chunk` minted outside the feeder, E0451, and raw bytes to the parser, E0308; the old splitter as a test double (`old-splitter`, C9 `loss`); the espelho split proptest; a run of lead bytes past the bound, red at bounds 4 and 4 KiB before the cut with two lead-heavy proptests | where the feeder rests is its own state machine, held to vte's by proptests, not by the type | parse-time-rejected |
-| modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451; the `daemon-rpc` control | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does | truly-unrep (at R38) |
+| modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451 (at R38); before it the `daemon-rpc` control (`cursor-keys-via-rpc`: 2 RPCs and 194 B a key); mado's `n_arrow_keys_read_decckm_from_the_mirror_with_no_rpc_and_n_rpcs_under_daemon_rpc` (0 RPCs over 40 keys, red with `CursorKeys::read` reverted to the RPC) and the resolution test over `keys_read_the_mirror` | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does; against a daemon without `replay-modes` mado reads DECCKM over RPC, a mode at another instant than the mirror's cells | truly-unrep (at R38) |
+| a replay that leaves the consumer's modes or history unlike the authority's | `to_ansi` writes every `ModeSet` field as an absolute restore after a soft reset, stacks emptied before their pushes, and history with `rows − 1` line feeds | the `modeless-replay` fault on C7-attach `modes` (10 and 4 fields); `a_replay_restores_every_mode_field_and_twice_equals_once` (proptest over mode sequences) and the vim and history rows in tear-core, red against the pre-rung `to_ansi` (178 rows for 177, `mouse_encoding` off); tear-daemon's `replay_modes` tests through the real subscribe | a consumer of another height than the pane; modes outside `ModeSet` (DECOM, IRM, the scroll region); mado's single kitty stack | only-mitigated (C1) |
+| two history replays per attach | the daemon's first frame is the fenced replay, `replay-modes` says so on the subscription's own handshake, and engate takes no snapshot for a producer whose stream carries it | the `replay-modes-unadvertised` fault on C7-attach `replays` (2, through engate and the real producer); engate's `subscribe` mutated to ignore `replay_source` reddens 5 engate tests, and asked before `subscribe` reddens the ordering test; tear-client's producer mutated to say `Snapshot` takes a snapshot (1 for 0), and mutated to read the control connection's identity reddens `the_replay_source_is_the_subscription_s_own_daemon_s_not_the_control_connection_s`; mado's real-daemon attach, red with `CountedProducer::replay_source` removed (1 snapshot for 0); the fence tests in tear-core, red 5 of 5 with the old unfenced subscribe and 8 of 8 with the feed's guard dropped before the fan-out | a daemon without `replay-modes` (two replays, the old path); embedded attach (R20) | only-mitigated (C1) |
+| an attach replay refused for its size, closing the subscription | the replay always carries the screen and the modes; the grid clones only the newest history rows whose replay floor fits `MAX_PANE_BYTES`, and `to_ansi_within` drops the fewest oldest of those until it fits | `a_replay_over_the_frame_cap_leaves_out_the_oldest_history_and_the_stream_stays_live`, red against the unbounded replay (the first frame never comes, EOF); `a_replay_over_its_budget_drops_the_fewest_oldest_rows_and_keeps_screen_and_modes` (byte-identical to the shorter history's replay, and one row fewer would not fit); `a_pane_bytes_body_of_max_pane_bytes_fills_the_frame_cap_exactly` | a screen whose replay alone passes the cap still closes the subscription; the rows left out are logged by the daemon, not told to the consumer | only-mitigated (C1) |
 | a flush on the byte path that nobody chose | `NonZero` intervals; only `write_ahead` flushes before forwarding; rotation and eviction run on the syncer | control `write_ahead{persisted}`; the pump-thread flush counter | a kernel stall of appends behind an in-flight flush (unmeasured; R17's gate) | parse-time-rejected |
 | a crash loses more than the declared window | `group_commit{persisted}`; a directory flush after every tombstone and `session.json` rename | a NixOS VM hard reset mid-flood, with a `page_cache` control | macOS has no crash harness; the drive's honesty about its cache | only-mitigated (C2) |
 | an unbounded backlog per viewer | bounded rings and a resync; a held pane's byte consumers read the journal; a process-bound pane's keep a capped backlog | `trybuild`: the unbounded queue named without `bench-probes`, pinned stderr; the unbounded-queue fault | a resynced legacy consumer's history has a gap | truly-unrep (no unbounded queue in the production build) |
@@ -2649,7 +2806,7 @@ All land with R0 unless named; each corrects the body, not a footnote.
 | SHUKEN §3 | `PaneView<'_>` borrowed in process | C1 reads an `Arc<OwnedPaneView>` published per parse batch; a borrowed view would hold the parser's lock while a renderer reads — the amendment named in the status block | R26 |
 | SHUKEN §5, DSR/DA row | "NOT CORNERED" | partly cornered since `de5afbd`: `PaneGrid` answers DSR 5/6, DA1 and DA2 under the host role, but nothing outside tests sets the role or drains the answers (S `pane_grid.rs:1615, 1625`) | R42, R43 |
 | SHUKEN §5, modes-instant row | "`ModeSet` is a field of `PaneView`, never a separate request" | `ModeSet` is pub-field, `Default` and `Deserialize`, and a separate fetch exists (S `modes.rs:124-135`, `control.rs:311-327`) | R38 |
-| SHUKEN §5-C | "what is left is the migration itself" | six more preconditions: kitty keyboard flags and their siblings untracked (S `modes.rs:125-135`); resize truncates (S `pane_grid.rs:1729-1731`); the host role is never set outside tests (S `pane_grid.rs:1615`); nothing drains `take_response` (S `:1625`); answer parity — DECRQSS misrouted to sixel, 18t, the OSC colour and clipboard queries, `CSI ? u`, DECRQM; state parity — 14 OSC codes beyond SHUKEN's own OSC 8, and BEL (S `pane_grid.rs:1039-1042, 1075, 1368-1404`). The repoint counts re-measure at 25 `term.*` calls behind 4 lock sites in `render.rs` and 87 behind 36 in `ux/engine.rs` (70 through a binding, 17 chained) | R5, R26, R42, R43 |
+| SHUKEN §5-C | "what is left is the migration itself" | six more preconditions: kitty keyboard flags and their siblings untracked (S `modes.rs:125-135`; tracked since R5, 2026-10-08, so five remain); resize truncates (S `pane_grid.rs:1729-1731`); the host role is never set outside tests (S `pane_grid.rs:1615`); nothing drains `take_response` (S `:1625`); answer parity — DECRQSS misrouted to sixel, 18t, the OSC colour and clipboard queries, `CSI ? u`, DECRQM; state parity — 14 OSC codes beyond SHUKEN's own OSC 8, and BEL (S `pane_grid.rs:1039-1042, 1075, 1368-1404`). The repoint counts re-measure at 25 `term.*` calls behind 4 lock sites in `render.rs` and 87 behind 36 in `ux/engine.rs` (70 through a binding, 17 chained) | R5 (done), R26, R42, R43 |
 | mado GRID-THREADING-CONTRACT | parsing is off the main thread; the mailbox is the next step | in the tear runtimes chunks are parsed on the AppKit thread, up to 4,096 messages a tick (S `gui_tear_attach.rs:1137-1141`); this plan implements `PauseReader` at the source (R21) and the document points here | R0 |
 | mado GRID-THREADING-CONTRACT | "the terminal NEVER drops bytes" | that binds the authority; a view resyncs from it (R22, R34) | R0 |
 | mado REMEDIATION-PLAN §M7 and GRID-THREADING-CONTRACT's "never restructured again" | M7 owns the render decouple, damage and the mailbox | on the tear path these are R13, R30 and R31; M7 keeps the local-PTY path until R38 | R0 |

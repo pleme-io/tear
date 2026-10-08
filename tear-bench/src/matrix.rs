@@ -15,7 +15,17 @@ tear_types::closed_vocabulary! {
     }
 }
 
-pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R4, Rung::R6, Rung::R7, Rung::R10];
+pub const SEND_KEYS_FRAMES: u64 = 64;
+
+pub const LANDED: &[Rung] = &[
+    Rung::R1,
+    Rung::R3,
+    Rung::R4,
+    Rung::R5,
+    Rung::R6,
+    Rung::R7,
+    Rung::R10,
+];
 
 #[must_use]
 pub const fn landed(rung: Rung) -> bool {
@@ -431,6 +441,8 @@ tear_types::closed_vocabulary! {
         OldSplitter => "old-splitter",
         StoreLeaseOff => "store-lease-off",
         WakeOff => "wake-off",
+        ReplayModesUnadvertised => "replay-modes-unadvertised",
+        ModelessReplay => "modeless-replay",
     }
 }
 
@@ -465,7 +477,9 @@ impl Control {
             | Control::RawSubscribe
             | Control::UnchunkedInput
             | Control::StoreLeaseOff
-            | Control::WakeOff => ControlKind::Fault,
+            | Control::WakeOff
+            | Control::ReplayModesUnadvertised
+            | Control::ModelessReplay => ControlKind::Fault,
         }
     }
 
@@ -474,7 +488,9 @@ impl Control {
         match self {
             Control::BandBackground => Rung::R2,
             Control::JournalWriteAhead => Rung::R17,
-            Control::CursorKeysViaRpc => Rung::R5,
+            Control::CursorKeysViaRpc
+            | Control::ReplayModesUnadvertised
+            | Control::ModelessReplay => Rung::R5,
             Control::PaneFatePoll | Control::WakeOff => Rung::R10,
             Control::ArrayEncoder => Rung::R6,
             Control::UdsBufferOsDefault | Control::TwoWriteFraming => Rung::R8,
@@ -502,7 +518,7 @@ impl Control {
                 "sessions.journal.fsync_interval_ms: 0 flushes on every PTY read (S journal.rs:149-158)"
             }
             Control::CursorKeysViaRpc => {
-                "the mado-shaped key: pane_cursor_keys_mode over RPC, then SendKeys (S mado gui_tear_attach.rs:891-899)"
+                "mado's input.cursor_keys_source: daemon-rpc, the only source before R5: pane_cursor_keys_mode over RPC, then SendKeys (S mado gui_tear_attach.rs:891-899)"
             }
             Control::PaneFatePoll => {
                 "mado's tear.pane_fate: poll, one get_pane per idle tick as before R10 (S mado gui_tear_attach.rs:1372 at ec50bfb)"
@@ -548,6 +564,12 @@ impl Control {
             }
             Control::WakeOff => {
                 "no wake from output: a byte waits for mado's next Capped(60) tick, 0–16.7 ms (S mado gui_tear_attach.rs at de5949e); the fault hands mado's attach a no-op waker"
+            }
+            Control::ReplayModesUnadvertised => {
+                "the daemon advertises no replay-modes, as every daemon before R5: a consumer takes engate's snapshot RPC and then the daemon's first frame, two history replays per attach (S daemon lib.rs:1002-1016)"
+            }
+            Control::ModelessReplay => {
+                "the replay carries no modes, as to_ansi did before R5: only ?1049h and ?25l (S pane_snapshot.rs:372-480)"
             }
         }
     }
@@ -962,5 +984,7 @@ product_rows! {
         tear_types::probes::Fault::StoreLeaseOff => Control::StoreLeaseOff,
         tear_types::probes::Fault::WakeOff => Control::WakeOff,
         tear_types::probes::Fault::ArrayEncoder => Control::ArrayEncoder,
+        tear_types::probes::Fault::ReplayModesUnadvertised => Control::ReplayModesUnadvertised,
+        tear_types::probes::Fault::ModelessReplay => Control::ModelessReplay,
     }
 }
