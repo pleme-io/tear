@@ -88,7 +88,7 @@ fn a_stalled_daemon_loses_nothing_and_resumes_by_offset() {
     let rv = revival(&t.0);
     let seen: Seen = Arc::default();
     let stall_once = Arc::new(AtomicBool::new(true));
-    let (s, stall) = (Arc::clone(&seen), Arc::clone(&stall_once));
+    let (s, stall, stalled_rv) = (Arc::clone(&seen), Arc::clone(&stall_once), rv.clone());
     let on_bytes: OnBytes = Box::new(move |b: &[u8]| {
         let total = {
             let mut v = s.lock().unwrap();
@@ -96,7 +96,7 @@ fn a_stalled_daemon_loses_nothing_and_resumes_by_offset() {
             v.len()
         };
         if total > 1_000_000 && stall.swap(false, Ordering::SeqCst) {
-            thread::sleep(Duration::from_secs(3));
+            eventually(|| holder_log(&stalled_rv).contains("shut down both ways"));
         }
     });
     let held = HeldPty::launch(rv.clone(), &authority(&t.0), on_bytes, Box::new(|_| {})).unwrap();
@@ -481,7 +481,11 @@ fn the_mute_sink_fault_reproduces_the_pre_r4_holder_and_a_read_edge_recovers_it(
     ));
     let seen: Seen = Arc::default();
     let stall_once = Arc::new(AtomicBool::new(true));
-    let (s, stall) = (Arc::clone(&seen), Arc::clone(&stall_once));
+    let (s, stall, socket) = (
+        Arc::clone(&seen),
+        Arc::clone(&stall_once),
+        rv.args.socket.clone(),
+    );
     let on_bytes: OnBytes = Box::new(move |b: &[u8]| {
         let total = {
             let mut v = s.lock().unwrap();
@@ -489,7 +493,7 @@ fn the_mute_sink_fault_reproduces_the_pre_r4_holder_and_a_read_edge_recovers_it(
             v.len()
         };
         if total > 1_000_000 && stall.swap(false, Ordering::SeqCst) {
-            thread::sleep(Duration::from_secs(3));
+            eventually(|| status_end(&socket) >= 6_000_000);
         }
     });
     let held = HeldPty::launch(rv.clone(), &authority(&t.0), on_bytes, Box::new(|_| {})).unwrap();
