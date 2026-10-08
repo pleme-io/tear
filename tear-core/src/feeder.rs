@@ -185,6 +185,7 @@ pub struct Feeder {
     apc: Vec<u8>,
     apc_cut: bool,
     held: Vec<u8>,
+    streamed: bool,
     vt: Vt,
     ground_from: usize,
     hold_max: usize,
@@ -210,6 +211,7 @@ impl Feeder {
             apc: Vec::new(),
             apc_cut: false,
             held: Vec::new(),
+            streamed: false,
             vt: Vt::Ground,
             ground_from: 0,
             hold_max: hold_max.max(4),
@@ -326,39 +328,56 @@ impl Feeder {
             return;
         }
         let s = scan(self.vt, run, self.hold_max);
-        let mut cut = match (s.end, s.departure) {
-            (Vt::Ground, _) => run.len() - utf8_tail(&run[s.ground_from..]),
+        let (mut cut, anchored) = match (s.end, s.departure) {
+            (Vt::Ground, _) => (run.len() - utf8_tail(&run[s.ground_from..]), true),
             (_, Some((ground_from, esc))) => {
                 let from = esc - utf8_tail(&run[ground_from..esc]);
                 if run.len() - from <= self.hold_max {
-                    from
+                    (from, true)
                 } else {
-                    run.len()
+                    (run.len(), false)
                 }
             }
-            (_, None) => run.len(),
+            (_, None) => (run.len(), false),
         };
-        if cut == run.len() && s.end != Vt::Ground && run[cut - 1] == ESC {
+        if !anchored && run[cut - 1] == ESC {
             cut -= 1;
         }
         if cut > 0 {
             sink(Segment::Text(Chunk { bytes: &run[..cut] }));
         }
         self.held.extend_from_slice(&run[cut..]);
+        self.streamed = !anchored && cut < run.len();
         self.vt = s.end;
         self.ground_from = 0;
     }
 
+    fn hand_over(&mut self, sink: &mut impl FnMut(Segment<'_>)) {
+        sink(Segment::Text(Chunk { bytes: &self.held }));
+        self.held.clear();
+        self.streamed = false;
+        self.ground_from = 0;
+    }
+
     fn resolve<'r>(&mut self, run: &'r [u8], sink: &mut impl FnMut(Segment<'_>)) -> &'r [u8] {
-        if self.held.is_empty() {
-            return run;
-        }
-        for (k, &b) in run.iter().enumerate() {
+        let mut run = run;
+        while let Some((&b, rest)) = run.split_first() {
+            if self.held.is_empty() {
+                return run;
+            }
+            if self.streamed {
+                if b == ESC {
+                    self.hand_over(sink);
+                    return run;
+                }
+                self.held.push(b);
+                self.vt = step(self.vt, b);
+                self.hand_over(sink);
+                return rest;
+            }
             if self.vt == Vt::Ground && b & 0xc0 != 0x80 && b != ESC {
-                sink(Segment::Text(Chunk { bytes: &self.held }));
-                self.held.clear();
-                self.ground_from = 0;
-                return &run[k..];
+                self.hand_over(sink);
+                return run;
             }
             self.held.push(b);
             let next = step(self.vt, b);
@@ -366,11 +385,10 @@ impl Feeder {
                 self.ground_from = self.held.len();
             }
             self.vt = next;
+            run = rest;
             if self.vt == Vt::Ground && utf8_tail(&self.held[self.ground_from..]) == 0 {
-                sink(Segment::Text(Chunk { bytes: &self.held }));
-                self.held.clear();
-                self.ground_from = 0;
-                return &run[k + 1..];
+                self.hand_over(sink);
+                return run;
             }
             if self.held.len() > self.hold_max {
                 let keep = usize::from(b == ESC);
@@ -380,12 +398,10 @@ impl Feeder {
                 }));
                 self.held.drain(..emit);
                 self.ground_from = 0;
-                if self.held.is_empty() {
-                    return &run[k + 1..];
-                }
+                self.streamed = keep == 1;
             }
         }
-        &[]
+        run
     }
 }
 
@@ -895,6 +911,11 @@ mod tests {
             4 => rich_byte().prop_map(|b| vec![b]),
             3 => lead_heavy_byte().prop_map(|b| vec![b]),
             3 => any::<char>().prop_map(|c| c.to_string().into_bytes()),
+            2 => prop::sample::select(vec![
+                b"\x1b]0;".to_vec(),
+                b"\x1bP1".to_vec(),
+                b"\x1b[".to_vec(),
+            ]),
             1 => "[A-Za-z0-9+/=]{0,6}".prop_map(|p| {
                 [b"\x1b_G".as_slice(), p.as_bytes(), b"\x1b\\"].concat()
             }),
@@ -917,6 +938,37 @@ mod tests {
                     reference,
                     "cut at {cut}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn an_esc_that_ends_a_streamed_escape_reaches_vte_before_the_apc_after_it() {
+        for hold in [4, HOLD_MAX] {
+            for after in [&b"\x1b\x1b"[..], b"\x1b[1", b"\x1bP1"] {
+                let mut stream = b"\x1b]0;".to_vec();
+                stream.extend(std::iter::repeat_n(b'x', hold + 4));
+                stream.extend_from_slice(after);
+                stream.extend_from_slice(b"\x1b_G\x1b\\mZ");
+                let reference = traced(
+                    &mut Feeder::with_bounds(hold, GRAPHIC_PAYLOAD_MAX),
+                    &stream,
+                    &[],
+                );
+                assert!(
+                    reference
+                        .events
+                        .first()
+                        .is_some_and(|e| e.starts_with("osc"))
+                );
+                for cut in 0..=stream.len() {
+                    let mut f = Feeder::with_bounds(hold, GRAPHIC_PAYLOAD_MAX);
+                    assert_eq!(
+                        traced(&mut f, &stream, &[cut]),
+                        reference,
+                        "hold {hold}, {after:?}, cut at {cut}"
+                    );
+                }
             }
         }
     }
