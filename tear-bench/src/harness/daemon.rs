@@ -27,6 +27,7 @@ pub struct Daemon {
     pub socket_dir: PathBuf,
     pub audit_log: Option<PathBuf>,
     pub auth_token: Option<String>,
+    pub log: PathBuf,
     pub daemon_dump_rows: usize,
 }
 
@@ -35,6 +36,8 @@ pub struct Options {
     pub audit_log: bool,
     pub faults: Option<String>,
     pub auth_token: Option<String>,
+    pub holder_program: Option<PathBuf>,
+    pub socket_suffix: Option<String>,
 }
 
 pub const AUTH_TOKEN_ENV: &str = "TEARBENCH_AUTH_TOKEN";
@@ -185,6 +188,11 @@ impl Daemon {
         fs::create_dir_all(iso.join("config").join("tear"))?;
         let audit_log = opts.audit_log.then(|| iso.join(format!("audit-{tag}.log")));
         let mut yaml = variant.config_yaml();
+        if let Some(program) = &opts.holder_program {
+            yaml.push_str("  holder_program:\n    - ");
+            yaml.push_str(&program.to_string_lossy());
+            yaml.push_str("\n    - hold\n");
+        }
         if let Some(p) = &audit_log {
             yaml.push_str("audit_log: ");
             yaml.push_str(&p.to_string_lossy());
@@ -196,15 +204,19 @@ impl Daemon {
             yaml.push('\n');
         }
         fs::write(iso.join("config").join("tear").join("tear.yaml"), yaml)?;
-        let socket_dir = PathBuf::from("run").join(&label);
+        let socket_dir = PathBuf::from("run").join(
+            opts.socket_suffix
+                .as_ref()
+                .map_or_else(|| label.clone(), |suffix| format!("{label}-{suffix}")),
+        );
         fs::create_dir_all(h.settings.root.join(&socket_dir))?;
         let (transport, args) = Self::listen_on(variant, &socket_dir)?;
-        let log = File::create(
-            h.settings
-                .root
-                .join("logs")
-                .join(format!("daemon-{label}-{tag}.log")),
-        )?;
+        let log_path = h
+            .settings
+            .root
+            .join("logs")
+            .join(format!("daemon-{label}-{tag}.log"));
+        let log = File::create(&log_path)?;
         let faults = opts.faults.as_deref().unwrap_or(&h.settings.faults);
         let mut cmd = Self::command(
             h,
@@ -242,6 +254,7 @@ impl Daemon {
             socket_dir,
             audit_log,
             auth_token: opts.auth_token.clone(),
+            log: log_path,
             daemon_dump_rows: 0,
         })
     }

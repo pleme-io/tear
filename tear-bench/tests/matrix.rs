@@ -9,10 +9,12 @@ use tear_client::Transport;
 use tear_config::SessionDurability;
 use tear_types::{Durability, HostRole};
 
-const PENDING_CELLS: usize = 62;
+const PENDING_CELLS: usize = 61;
 const BUDGETED_CELLS: &[(Case, Metric)] = &[
     (Case::C3, Metric::Loss),
+    (Case::C4, Metric::Loss),
     (Case::C6(Remote::Tcp), Metric::Loss),
+    (Case::C7(Handover::Readopt), Metric::Authorities),
     (Case::C9, Metric::Loss),
     (Case::C12(Input::Paste), Metric::Loss),
     (Case::C13, Metric::Flushes),
@@ -37,7 +39,7 @@ fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
 
 #[test]
 fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
-    assert_eq!(LANDED, &[Rung::R1, Rung::R3, Rung::R7]);
+    assert_eq!(LANDED, &[Rung::R1, Rung::R3, Rung::R4, Rung::R7]);
     let mut pending = 0;
     let mut budgeted = Vec::new();
     for cell in cells() {
@@ -61,7 +63,12 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
         "only landed rungs' cells carry budgets"
     );
     for (case, metric) in BUDGETED_CELLS {
-        assert_eq!(Cell::new(*case, *metric).budget(), Budget::Count { max: 0 });
+        let want = match (case, metric) {
+            (Case::C4, Metric::Loss) => Budget::Bytes { max: 0 },
+            (Case::C7(Handover::Readopt), Metric::Authorities) => Budget::Exactly { n: 1 },
+            _ => Budget::Count { max: 0 },
+        };
+        assert_eq!(Cell::new(*case, *metric).budget(), want);
     }
 }
 
@@ -300,4 +307,48 @@ fn every_product_fault_has_a_control() {
         assert_eq!(c.kind(), ControlKind::Fault);
         assert_eq!(c.name(), f.name());
     }
+}
+
+#[test]
+fn r4_s_controls_redden_exactly_its_two_cells() {
+    let loss = Cell::new(Case::C4, Metric::Loss);
+    let authorities = Cell::new(Case::C7(Handover::Readopt), Metric::Authorities);
+    assert_eq!(red_set(Control::MuteSink), vec![loss]);
+    assert_eq!(red_set(Control::StoreLeaseOff), vec![authorities]);
+    let floors = FloorSet::default();
+    let muted = derive(
+        loss.budget(),
+        &[2_621_440.0],
+        &floors,
+        &Preconditions::met(1),
+    );
+    assert!(tear_bench::verdict::audit_control(Control::MuteSink, &[(loss, muted)]).is_ok());
+    let whole = derive(loss.budget(), &[0.0], &floors, &Preconditions::met(1));
+    assert!(matches!(whole, Verdict::Within { .. }));
+    let two = derive(
+        authorities.budget(),
+        &[2.0],
+        &floors,
+        &Preconditions::met(1),
+    );
+    assert!(
+        tear_bench::verdict::audit_control(Control::StoreLeaseOff, &[(authorities, two)]).is_ok()
+    );
+    let one = derive(
+        authorities.budget(),
+        &[1.0],
+        &floors,
+        &Preconditions::met(1),
+    );
+    assert!(matches!(one, Verdict::Within { .. }));
+    let orphaned = derive(
+        authorities.budget(),
+        &[0.0],
+        &floors,
+        &Preconditions::met(1),
+    );
+    assert!(
+        orphaned.is_red(),
+        "a pane no daemon takes input through is red, not within: {orphaned:?}"
+    );
 }

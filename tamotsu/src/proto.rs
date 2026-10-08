@@ -12,7 +12,7 @@ const MAX_FRAME: usize = 16 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToHolder {
     Hello { proto: u32 },
-    Attach { from: u64 },
+    Attach { from: u64, incarnation: Option<u64> },
     Write(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     End,
@@ -45,14 +45,26 @@ pub enum FromHolder {
     Refused {
         reason: String,
     },
+    Displaced {
+        by: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 enum ToControl {
-    Hello { proto: u32 },
-    Attach { from: u64 },
-    Resize { cols: u16, rows: u16 },
+    Hello {
+        proto: u32,
+    },
+    Attach {
+        from: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        incarnation: Option<u64>,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     End,
     Status,
 }
@@ -72,13 +84,19 @@ enum FromControl {
     Refused {
         reason: String,
     },
+    Displaced {
+        by: u64,
+    },
 }
 
 pub fn write_to_holder<W: Write>(w: &mut W, msg: &ToHolder) -> io::Result<()> {
     let control = match msg {
         ToHolder::Write(data) => return write_frame(w, TAG_DATA, &[data]),
         ToHolder::Hello { proto } => ToControl::Hello { proto: *proto },
-        ToHolder::Attach { from } => ToControl::Attach { from: *from },
+        ToHolder::Attach { from, incarnation } => ToControl::Attach {
+            from: *from,
+            incarnation: *incarnation,
+        },
         ToHolder::Resize { cols, rows } => ToControl::Resize {
             cols: *cols,
             rows: *rows,
@@ -95,7 +113,7 @@ pub fn read_to_holder<R: Read>(r: &mut R) -> io::Result<ToHolder> {
         TAG_DATA => Ok(ToHolder::Write(body)),
         TAG_CONTROL => Ok(match uncbor::<ToControl>(&body)? {
             ToControl::Hello { proto } => ToHolder::Hello { proto },
-            ToControl::Attach { from } => ToHolder::Attach { from },
+            ToControl::Attach { from, incarnation } => ToHolder::Attach { from, incarnation },
             ToControl::Resize { cols, rows } => ToHolder::Resize { cols, rows },
             ToControl::End => ToHolder::End,
             ToControl::Status => ToHolder::Status,
@@ -125,6 +143,7 @@ pub fn write_from_holder<W: Write>(w: &mut W, msg: &FromHolder) -> io::Result<()
         FromHolder::Refused { reason } => FromControl::Refused {
             reason: reason.clone(),
         },
+        FromHolder::Displaced { by } => FromControl::Displaced { by: *by },
     };
     write_frame(w, TAG_CONTROL, &[&cbor(&control)?])
 }
@@ -159,6 +178,7 @@ pub fn read_from_holder<R: Read>(r: &mut R) -> io::Result<FromHolder> {
             FromControl::Exited { ending } => FromHolder::Exited { ending },
             FromControl::Status(s) => FromHolder::Status(s),
             FromControl::Refused { reason } => FromHolder::Refused { reason },
+            FromControl::Displaced { by } => FromHolder::Displaced { by },
         }),
         other => Err(bad_tag(other)),
     }
@@ -227,7 +247,14 @@ mod tests {
     fn every_message_to_the_holder_round_trips() {
         let msgs = [
             ToHolder::Hello { proto: PROTO },
-            ToHolder::Attach { from: 42 },
+            ToHolder::Attach {
+                from: 42,
+                incarnation: None,
+            },
+            ToHolder::Attach {
+                from: 7,
+                incarnation: Some(3),
+            },
             ToHolder::Write(b"ls -la\r".to_vec()),
             ToHolder::Write(Vec::new()),
             ToHolder::Resize {
@@ -275,6 +302,7 @@ mod tests {
             FromHolder::Refused {
                 reason: "proto".into(),
             },
+            FromHolder::Displaced { by: 12 },
         ];
         let mut wire = Vec::new();
         for m in &msgs {
@@ -289,12 +317,67 @@ mod tests {
     #[test]
     fn a_truncated_or_oversized_frame_is_an_error_not_a_message() {
         let mut wire = Vec::new();
-        write_to_holder(&mut wire, &ToHolder::Attach { from: 1 }).unwrap();
+        write_to_holder(
+            &mut wire,
+            &ToHolder::Attach {
+                from: 1,
+                incarnation: None,
+            },
+        )
+        .unwrap();
         wire.truncate(wire.len() - 1);
         assert!(read_to_holder(&mut wire.as_slice()).is_err());
         let huge = (u32::MAX).to_be_bytes();
         assert!(read_to_holder(&mut huge.as_slice()).is_err());
         let zero = 0u32.to_be_bytes();
         assert!(read_from_holder(&mut zero.as_slice()).is_err());
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "t", rename_all = "snake_case")]
+    enum PreR4ToControl {
+        Hello { proto: u32 },
+        Attach { from: u64 },
+        Resize { cols: u16, rows: u16 },
+        End,
+        Status,
+    }
+
+    #[test]
+    fn an_attach_without_an_incarnation_is_byte_identical_to_the_pre_r4_frame() {
+        let mut ours = Vec::new();
+        write_to_holder(
+            &mut ours,
+            &ToHolder::Attach {
+                from: 99,
+                incarnation: None,
+            },
+        )
+        .unwrap();
+        let theirs = cbor(&PreR4ToControl::Attach { from: 99 }).unwrap();
+        assert_eq!(&ours[5..], theirs.as_slice());
+        let mut declared = Vec::new();
+        write_to_holder(
+            &mut declared,
+            &ToHolder::Attach {
+                from: 99,
+                incarnation: Some(4),
+            },
+        )
+        .unwrap();
+        let body = &declared[5..];
+        match uncbor::<PreR4ToControl>(body).unwrap() {
+            PreR4ToControl::Attach { from } => assert_eq!(from, 99),
+            _ => panic!("a pre-R4 holder must read a declared attach as an attach"),
+        }
+        let mut legacy = Vec::new();
+        write_frame(&mut legacy, TAG_CONTROL, &[&theirs]).unwrap();
+        assert_eq!(
+            read_to_holder(&mut legacy.as_slice()).unwrap(),
+            ToHolder::Attach {
+                from: 99,
+                incarnation: None
+            }
+        );
     }
 }

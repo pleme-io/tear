@@ -184,13 +184,18 @@ impl Verdict {
 
     #[must_use]
     pub fn answer(&self, cell: Cell) -> kotae::Answer {
+        self.answer_named(&cell.name())
+    }
+
+    #[must_use]
+    pub fn answer_named(&self, name: &str) -> kotae::Answer {
         match self {
-            Verdict::Blind { reason } => kotae::Answer::blind(format!("{}: {reason}", cell.name())),
+            Verdict::Blind { reason } => kotae::Answer::blind(format!("{name}: {reason}")),
             Verdict::Errored { reason } => {
-                kotae::Answer::blind(format!("{}: errored, {reason}", cell.name()))
+                kotae::Answer::blind(format!("{name}: errored, {reason}"))
             }
             other => kotae::Answer::found(&serde_json::json!({
-                "cell": cell.name(),
+                "cell": name,
                 "verdict": other,
             })),
         }
@@ -241,6 +246,29 @@ pub fn derive(budget: Budget, samples: &[f64], floors: &FloorSet, pre: &Precondi
         Budget::Count { max } | Budget::Bytes { max } => {
             let worst = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             (worst, max as f64)
+        }
+        Budget::Exactly { n: want } => {
+            let want = want as f64;
+            let worst = finite.iter().copied().fold(want, |w, x| {
+                if (x - want).abs() > (w - want).abs() {
+                    x
+                } else {
+                    w
+                }
+            });
+            return if (worst - want).abs() < 0.5 {
+                Verdict::Within {
+                    n,
+                    value: worst,
+                    limit: want,
+                }
+            } else {
+                Verdict::Over {
+                    n,
+                    value: worst,
+                    limit: want,
+                }
+            };
         }
         Budget::NotApplicable { .. } | Budget::Pending { .. } => unreachable!(),
     };
@@ -306,7 +334,10 @@ pub fn audit_control(control: Control, with_control_on: &[(Cell, Verdict)]) -> R
     for (cell, v) in with_control_on {
         if matches!(v, Verdict::Over { .. })
             && !declared.contains(cell)
-            && matches!(cell.budget(), Budget::Count { .. } | Budget::Bytes { .. })
+            && matches!(
+                cell.budget(),
+                Budget::Count { .. } | Budget::Bytes { .. } | Budget::Exactly { .. }
+            )
         {
             problems.push(format!(
                 "{} reddened {}, which it does not declare",
@@ -354,6 +385,29 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(derive(b, &[40_000.0, 40_000.0, 40_000.0], &floors(), &pre).is_red());
+    }
+
+    #[test]
+    fn an_exact_budget_is_red_on_either_side_of_its_count() {
+        let b = Budget::Exactly { n: 1 };
+        let pre = Preconditions::met(1);
+        let graded = |x: f64| derive(b, &[x], &floors(), &pre);
+        assert!(matches!(graded(1.0), Verdict::Within { .. }));
+        for off in [0.0, 2.0] {
+            match graded(off) {
+                Verdict::Over { value, limit, .. } => {
+                    assert!(
+                        (value - off).abs() < f64::EPSILON && (limit - 1.0).abs() < f64::EPSILON
+                    );
+                }
+                other => panic!("{off}: {other:?}"),
+            }
+            assert!(reddened(b, &graded(off)).is_ok());
+        }
+        assert!(matches!(
+            derive(b, &[1.0, 0.0, 1.0], &floors(), &Preconditions::met(3)),
+            Verdict::Over { value, .. } if value == 0.0
+        ));
     }
 
     #[test]
@@ -434,13 +488,15 @@ mod tests {
             limit: 0.0,
         };
         assert!(audit_control(Control::MuteSink, &[(cell, within)]).is_err());
-        let pending = derive(
+        let pending = Verdict::Pending { rung: "R4", n: 1 };
+        assert!(audit_control(Control::MuteSink, &[(cell, pending)]).is_err());
+        let muted = derive(
             cell.budget(),
             &[2_880_000.0],
             &floors(),
             &Preconditions::met(1),
         );
-        assert!(audit_control(Control::MuteSink, &[(cell, pending)]).is_err());
+        assert!(audit_control(Control::MuteSink, &[(cell, muted)]).is_ok());
         for cannot_see in [
             Verdict::Blind {
                 reason: "loud".into(),

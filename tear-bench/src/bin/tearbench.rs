@@ -25,6 +25,10 @@ struct Cli {
     #[arg(long, global = true)]
     tear_bin: Option<PathBuf>,
     #[arg(long, global = true)]
+    prev_tear_bin: Option<PathBuf>,
+    #[arg(long, global = true)]
+    oldest_tear_bin: Option<PathBuf>,
+    #[arg(long, global = true)]
     forbid: Option<PathBuf>,
     #[arg(long, global = true)]
     path_env: Option<String>,
@@ -172,6 +176,8 @@ fn main() -> ExitCode {
     let settings = Settings {
         root,
         tear_bin: cli.tear_bin.clone().unwrap_or_else(default_tear_bin),
+        prev_tear_bin: cli.prev_tear_bin.clone(),
+        oldest_tear_bin: cli.oldest_tear_bin.clone(),
         forbid,
         path_env,
         faults: cli.faults.clone(),
@@ -345,6 +351,54 @@ fn note(h: &Harness, name: &str, r: std::io::Result<()>) -> bool {
     }
 }
 
+const STANDALONE: &[&str] = &[
+    "wire",
+    "ptyraw",
+    "startup",
+    "restart",
+    "allocations",
+    "split",
+    "audit",
+    "stall",
+    "twin",
+    "muted-holder",
+    "mute-sink",
+    "store-lease-off",
+];
+
+fn control_case(name: &str, (run, detail): (gate::ControlRun, String)) -> std::io::Result<()> {
+    println!("control {name}: {} — {detail}", run.name());
+    if run == gate::ControlRun::Reddened {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "control {name}: {}",
+            run.name()
+        )))
+    }
+}
+
+fn standalone_case(h: &Harness, v: Variant, name: &str) -> std::io::Result<()> {
+    match name {
+        "wire" => cases::wire(h),
+        "ptyraw" => cases::ptyraw(h, 3),
+        "startup" => cases::startup(h, v, 5),
+        "restart" => cases::restart(h, v, 8_388_608, 3),
+        "allocations" => cases::allocations(h).map(drop),
+        "split" => cases::split(h).map(drop),
+        "audit" => gate::audit(h, &mut Vec::new()),
+        "stall" => gate::stall(h, &mut Vec::new()),
+        "twin" => gate::twin(h, &mut Vec::new()),
+        "muted-holder" => {
+            gate::muted_holders(h, &mut Vec::new());
+            Ok(())
+        }
+        "mute-sink" => control_case(name, gate::mute_sink_control(h, &mut Vec::new())),
+        "store-lease-off" => control_case(name, gate::store_lease_off_control(h, &mut Vec::new())),
+        other => Err(std::io::Error::other(format!("unknown case {other}"))),
+    }
+}
+
 fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
     let Some(v) = Variant::preset(variant) else {
         let names: Vec<&str> = Variant::PRESETS.iter().map(|(n, _)| *n).collect();
@@ -352,28 +406,13 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
     };
     let names: Vec<&str> = names.split(',').collect();
     let mut failed = false;
-    for name in &names {
-        let r = match *name {
-            "wire" => cases::wire(h),
-            "ptyraw" => cases::ptyraw(h, 3),
-            "startup" => cases::startup(h, v, 5),
-            "restart" => cases::restart(h, v, 8_388_608, 3),
-            "allocations" => cases::allocations(h).map(drop),
-            "split" => cases::split(h).map(drop),
-            "audit" => gate::audit(h, &mut Vec::new()),
-            _ => continue,
-        };
-        failed |= !note(h, name, r);
+    for name in names.iter().filter(|n| STANDALONE.contains(n)) {
+        failed |= !note(h, name, standalone_case(h, v, name));
     }
     let per_rig: Vec<&str> = names
         .iter()
         .copied()
-        .filter(|n| {
-            !matches!(
-                *n,
-                "wire" | "ptyraw" | "startup" | "restart" | "allocations" | "split" | "audit"
-            )
-        })
+        .filter(|n| !STANDALONE.contains(n))
         .collect();
     if per_rig.is_empty() {
         return if failed {
@@ -424,10 +463,6 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
             "tokened" => cases::tokened(h, &rig, cases::TOKENED_KEYS, Tag::Cells).map(drop),
             "paste" => cases::paste(h, &rig, cases::PASTE_BYTES, Tag::Cells).map(drop),
             "connect" => cases::connect(h, &rig, 30),
-            "stall" => match &daemon {
-                Some(d) => cases::stall(h, d, &rig, std::time::Duration::from_secs(3)).map(drop),
-                None => Err(std::io::Error::other("stall needs a held daemon")),
-            },
             other => Err(std::io::Error::other(format!("unknown case {other}"))),
         };
         failed |= !note(h, name, r);

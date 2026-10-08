@@ -33,6 +33,10 @@ impl Place {
     }
 
     fn start(&self) -> (DaemonHandle, Arc<InProcess>) {
+        self.start_at(&self.socket())
+    }
+
+    fn start_at(&self, socket: &Path) -> (DaemonHandle, Arc<InProcess>) {
         let live = Arc::new(LiveConfig::default());
         live.replace(TearConfig {
             sessions: SessionsConfig {
@@ -44,15 +48,16 @@ impl Place {
             ..TearConfig::default()
         });
         let inproc = Arc::new(InProcess::new());
-        inproc.set_socket_path(self.socket());
+        inproc.set_socket_path(socket.to_path_buf());
         tear_daemon::durability::enable_and_restore(
             &inproc,
             &live.load().sessions,
-            Some(&self.socket()),
+            Some(socket),
             None,
         );
-        let handle = tear_daemon::start_with_config(self.socket(), Arc::clone(&inproc), live)
-            .expect("daemon start");
+        let handle =
+            tear_daemon::start_with_config(socket.to_path_buf(), Arc::clone(&inproc), live)
+                .expect("daemon start");
         std::thread::sleep(Duration::from_millis(50));
         (handle, inproc)
     }
@@ -299,4 +304,129 @@ fn a_library_started_daemon_never_turns_durable_from_ambient_config() {
     c.kill_session(sid).unwrap();
     drop(c);
     stop(handle, inproc);
+}
+
+#[test]
+fn a_lease_that_is_corrupt_or_cannot_be_taken_never_costs_the_held_store() {
+    let place = Place::new("lease");
+    let (handle, inproc) = place.start();
+    let (sid, pane, before) = {
+        let c = Client::connect(place.socket()).unwrap();
+        let (sid, pane) = new_session(&c, "leased");
+        let before = shell_pid(&c, pane, "before");
+        (sid, pane, before)
+    };
+    stop(handle, inproc);
+
+    std::fs::write(place.store().join("authority.json"), b"{not json").unwrap();
+    let (handle, inproc) = place.start();
+    assert!(
+        inproc
+            .durability()
+            .is_some_and(|d| d.authority.is_declared()),
+        "a corrupt lease is rewritten, and the daemon still declares an incarnation"
+    );
+    {
+        let c = Client::connect(place.socket()).unwrap();
+        assert_eq!(
+            c.list_sessions()
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>(),
+            vec![sid]
+        );
+        assert_eq!(
+            shell_pid(&c, pane, "rewritten"),
+            before,
+            "the pane was adopted, not resurrected"
+        );
+    }
+    stop(handle, inproc);
+
+    let _ = std::fs::remove_file(place.store().join("authority.lock"));
+    std::fs::create_dir(place.store().join("authority.lock")).unwrap();
+    let (handle, inproc) = place.start();
+    assert!(
+        inproc
+            .durability()
+            .is_some_and(|d| !d.authority.is_declared()),
+        "a lease that cannot be taken leaves the store held, declaring no incarnation"
+    );
+    let c = Client::connect(place.socket()).unwrap();
+    assert_eq!(
+        shell_pid(&c, pane, "undeclared"),
+        before,
+        "the pane was adopted, not resurrected"
+    );
+    c.kill_session(sid).unwrap();
+    drop(c);
+    stop(handle, inproc);
+}
+
+#[test]
+fn two_daemons_on_one_store_leave_each_pane_one_authority_and_the_loser_ends_nothing() {
+    let place = Place::new("twin");
+    let (h1, first) = place.start();
+    let c1 = Client::connect(place.socket()).unwrap();
+    let (sid, pane) = new_session(&c1, "shared");
+    c1.send_keys(pane, b"while :; do echo tick-$$; sleep 0.05; done\r")
+        .unwrap();
+    assert!(screen_has(&c1, pane, "tick-"));
+
+    std::fs::create_dir_all(place.root.join("b")).unwrap();
+    let second_socket = place.root.join("b").join("tear.sock");
+    let (h2, second) = place.start_at(&second_socket);
+    let c2 = Client::connect(&second_socket).unwrap();
+    assert!(
+        screen_has(&c2, pane, "tick-"),
+        "the second daemon adopted the pane"
+    );
+    let until = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < until {
+        let _ = c1.pane_snapshot(pane);
+        let _ = c2.pane_snapshot(pane);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        first.durability().is_none(),
+        "the older daemon learnt it was displaced and released its held panes"
+    );
+    assert!(second.durability().is_some());
+    assert!(
+        c1.send_keys(pane, b"").is_err(),
+        "the pane takes no input through the displaced daemon"
+    );
+    c1.kill_session(sid).unwrap();
+    c2.send_keys(pane, b"\x03").unwrap();
+    c2.send_keys(pane, b"echo after-$((7*6))\r").unwrap();
+    assert!(
+        screen_has(&c2, pane, "after-42"),
+        "the displaced daemon's kill reached neither the shell nor its tombstone"
+    );
+    let log = std::fs::read_to_string(
+        place
+            .store()
+            .join("sessions")
+            .join(sid.to_string())
+            .join("panes")
+            .join(pane.to_string())
+            .join("holder.log"),
+    )
+    .unwrap_or_default();
+    assert_eq!(
+        log.matches("tamotsu: attached from offset").count(),
+        2,
+        "{log}"
+    );
+    assert!(
+        log.contains("incarnation 1 Displaced by incarnation 2"),
+        "{log}"
+    );
+
+    c2.kill_session(sid).unwrap();
+    drop(c1);
+    drop(c2);
+    stop(h2, second);
+    stop(h1, first);
 }

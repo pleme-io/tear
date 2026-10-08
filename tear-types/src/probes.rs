@@ -12,6 +12,7 @@ crate::closed_vocabulary! {
         LegacyReplay => "legacy-replay",
         RawSubscribe => "raw-subscribe",
         UnchunkedInput => "unchunked-input",
+        StoreLeaseOff => "store-lease-off",
     }
 }
 
@@ -24,6 +25,9 @@ crate::closed_vocabulary! {
         JournalSyncsInAppend => "journal-syncs-in-append",
         JournalUnlinksInAppend => "journal-unlinks-in-append",
         HolderSinksMuted => "holder-sinks-muted",
+        HolderSinksShut => "holder-sinks-shut",
+        HolderAttaches => "holder-attaches",
+        HolderDisplaced => "holder-displaced",
         SnapshotRows => "snapshot-rows",
         AuditWrites => "audit-writes",
     }

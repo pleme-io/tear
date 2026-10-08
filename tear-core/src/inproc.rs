@@ -366,14 +366,7 @@ impl InProcess {
     /// installed (which can only happen if it never had a PTY —
     /// every PTY-spawning code path also installs a grid).
     pub fn pane_snapshot(&self, pane_id: PaneId) -> ControlResult<tear_types::PaneSnapshot> {
-        let grid_arc = {
-            let map = self.grids.lock();
-            map.get(&pane_id)
-                .cloned()
-                .ok_or(ControlError::NoSuchPane(pane_id))?
-        };
-        let grid = grid_arc.lock();
-        Ok(grid.snapshot())
+        self.read_pane(pane_id, |grid| Ok(grid.snapshot()))
     }
 
     pub fn pane_snapshot_within(
@@ -381,21 +374,34 @@ impl InProcess {
         pane_id: PaneId,
         max_bytes: usize,
     ) -> ControlResult<tear_types::PaneSnapshot> {
-        let grid_arc = {
-            let map = self.grids.lock();
-            map.get(&pane_id)
-                .cloned()
-                .ok_or(ControlError::NoSuchPane(pane_id))?
-        };
-        let grid = grid_arc.lock();
-        let floor = grid.snapshot_wire_floor();
-        if floor > max_bytes {
-            return Err(ControlError::Rejected(tear_types::wire::too_large(
-                "PaneSnapshot",
-                tear_types::wire::FrameSize::AtLeast(floor),
-            )));
+        self.read_pane(pane_id, |grid| {
+            let floor = grid.snapshot_wire_floor();
+            if floor > max_bytes {
+                return Err(ControlError::Rejected(tear_types::wire::too_large(
+                    "PaneSnapshot",
+                    tear_types::wire::FrameSize::AtLeast(floor),
+                )));
+            }
+            Ok(grid.snapshot())
+        })
+    }
+
+    fn read_pane<T>(
+        &self,
+        pane_id: PaneId,
+        read: impl FnOnce(&PaneGrid) -> ControlResult<T>,
+    ) -> ControlResult<T> {
+        let grid_arc = self
+            .grids
+            .lock()
+            .get(&pane_id)
+            .cloned()
+            .ok_or(ControlError::NoSuchPane(pane_id))?;
+        let out = read(&grid_arc.lock());
+        if let Some(io) = self.ptys.lock().get(&pane_id) {
+            io.read_edge();
         }
-        Ok(grid.snapshot())
+        out
     }
 
     /// No-alloc DECCKM lookup — reads one `bool` off the live

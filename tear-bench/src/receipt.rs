@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::compat::CompatCell;
 use crate::matrix::Cell;
 use crate::verdict::Verdict;
 
@@ -37,6 +38,7 @@ pub struct Sample {
     pub bench: String,
     pub variant: String,
     pub cell: Option<Cell>,
+    pub compat: Option<CompatCell>,
     pub i: usize,
     pub name: String,
     pub value: f64,
@@ -52,6 +54,7 @@ impl Sample {
             bench: bench.to_string(),
             variant: variant.to_string(),
             cell: None,
+            compat: None,
             i,
             name: name.to_string(),
             value,
@@ -64,6 +67,12 @@ impl Sample {
     #[must_use]
     pub fn cell(mut self, cell: Cell) -> Self {
         self.cell = Some(cell);
+        self
+    }
+
+    #[must_use]
+    pub fn compat(mut self, cell: CompatCell) -> Self {
+        self.compat = Some(cell);
         self
     }
 
@@ -134,9 +143,11 @@ impl Receipt {
     }
 
     pub fn sample(&self, s: &Sample) -> io::Result<()> {
-        let (case, metric) = s.cell.map_or((String::new(), String::new()), |c| {
-            (c.case.name(), c.metric.name().to_string())
-        });
+        let (case, metric) = match (s.cell, s.compat) {
+            (Some(c), _) => (c.case.name(), c.metric.name().to_string()),
+            (None, Some(c)) => (c.case_name(), c.check.name().to_string()),
+            (None, None) => (String::new(), String::new()),
+        };
         self.samples
             .lock()
             .map_err(|_| io::Error::other("samples lock poisoned"))?
@@ -163,6 +174,19 @@ impl Receipt {
     }
 
     pub fn verdict(&self, cell: Cell, v: &Verdict) -> io::Result<()> {
+        self.verdict_row(
+            cell.case.name(),
+            cell.metric.name(),
+            cell.budget().kind(),
+            v,
+        )
+    }
+
+    pub fn compat_verdict(&self, cell: CompatCell, v: &Verdict) -> io::Result<()> {
+        self.verdict_row(cell.case_name(), cell.check.name(), cell.budget().kind(), v)
+    }
+
+    fn verdict_row(&self, case: String, metric: &str, kind: &str, v: &Verdict) -> io::Result<()> {
         let (n, value, limit, detail) = match v {
             Verdict::Within { n, value, limit } | Verdict::Over { n, value, limit } => (
                 n.to_string(),
@@ -188,9 +212,9 @@ impl Receipt {
             .map_err(|_| io::Error::other("verdicts lock poisoned"))?
             .row(&[
                 self.run.clone(),
-                cell.case.name(),
-                cell.metric.name().to_string(),
-                cell.budget().kind().to_string(),
+                case,
+                metric.to_string(),
+                kind.to_string(),
                 v.name().to_string(),
                 n,
                 value,

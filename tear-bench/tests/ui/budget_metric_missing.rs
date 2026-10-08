@@ -35,5 +35,6 @@ fn main() {
         answers: N,
         replays: N,
         modes: N,
+        authorities: N,
     };
 }

@@ -4,14 +4,16 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::compat::{self, CompatCell, HolderPeer};
 use crate::floor::{self, Plan, Suite};
-use crate::harness::cases;
+use crate::harness::cases::{self, AfterStall};
 use crate::harness::daemon::Daemon;
 use crate::harness::daemon::Options;
 use crate::harness::rig::Rig;
 use crate::harness::{Harness, Tag, arm_client, isolated_rig_with, procs};
 use crate::matrix::{
-    Band, Budget, Case, Cell, Control, Floor, Input, JournalSync, Metric, Remote, Variant, cells,
+    Band, Budget, Case, Cell, Control, Floor, Handover, Input, JournalSync, Metric, Remote,
+    Variant, cells,
 };
 use crate::receipt::{RUNS, Sample, Unit};
 use crate::verdict::{
@@ -28,6 +30,7 @@ tear_types::closed_vocabulary! {
 
 pub struct Outcome {
     pub verdicts: Vec<(Cell, Verdict)>,
+    pub compat: Vec<(CompatCell, Verdict)>,
     pub sentinels: Result<(), String>,
     pub blind_streak: bool,
     pub controls: Vec<(Control, ControlRun, String)>,
@@ -38,6 +41,7 @@ impl Outcome {
     pub fn red(&self) -> bool {
         self.blind_streak
             || self.verdicts.iter().any(|(_, v)| v.is_red())
+            || self.compat.iter().any(|(_, v)| v.is_red())
             || self
                 .controls
                 .iter()
@@ -131,6 +135,29 @@ pub struct ControlSpec {
     pub client: &'static [Control],
 }
 
+impl ControlSpec {
+    #[must_use]
+    pub fn daemon_options(&self) -> Options {
+        Options {
+            faults: Some(
+                self.daemon
+                    .iter()
+                    .map(|c| c.name())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            ..self.opts.clone()
+        }
+    }
+}
+
+fn graded(h: &Harness, control: Control, cell: Cell, mut sample: Sample) -> (Cell, f64) {
+    sample.bench = format!("control:{}", control.name());
+    let value = sample.value;
+    h.emit(sample);
+    (cell, value)
+}
+
 pub fn control_run(
     h: &Harness,
     bands: &mut Vec<String>,
@@ -144,16 +171,7 @@ pub fn control_run(
             "this tearbench has no bench-probes, so it cannot arm a fault".into(),
         );
     }
-    let opts = Options {
-        faults: Some(
-            spec.daemon
-                .iter()
-                .map(|c| c.name())
-                .collect::<Vec<_>>()
-                .join(","),
-        ),
-        ..spec.opts.clone()
-    };
+    let opts = spec.daemon_options();
     arm_client(spec.client);
     let res = with_daemon_opts(
         h,
@@ -348,6 +366,115 @@ pub fn split_control(h: &Harness) -> (ControlRun, String) {
     }
 }
 
+pub const STALL: Duration = Duration::from_secs(3);
+pub const TWIN_WINDOW: Duration = Duration::from_secs(10);
+
+pub fn stall(h: &Harness, bands: &mut Vec<String>) -> io::Result<()> {
+    with_daemon(h, Variant::HELD, "gate-stall", bands, |d, rig| {
+        let s = cases::stall(h, d, rig, STALL, AfterStall::Silence)?;
+        h.emit(
+            s.sample(&rig.label, AfterStall::Silence)
+                .cell(Cell::new(Case::C4, Metric::Loss)),
+        );
+        Ok(())
+    })
+}
+
+pub fn mute_sink_control(h: &Harness, bands: &mut Vec<String>) -> (ControlRun, String) {
+    let control = Control::MuteSink;
+    let spec = ControlSpec {
+        control,
+        variant: Variant::HELD,
+        opts: Options::default(),
+        daemon: &[Control::MuteSink],
+        client: &[],
+    };
+    control_run(h, bands, &spec, |d, rig| {
+        let s = cases::stall(h, d, rig, STALL, AfterStall::Silence)?;
+        Ok(vec![graded(
+            h,
+            control,
+            Cell::new(Case::C4, Metric::Loss),
+            s.sample(&rig.label, AfterStall::Silence),
+        )])
+    })
+}
+
+pub fn twin(h: &Harness, bands: &mut Vec<String>) -> io::Result<()> {
+    with_daemon(h, Variant::HELD, "gate-twin", bands, |d, rig| {
+        let t = cases::twin(h, d, rig, &Options::default(), TWIN_WINDOW)?;
+        h.emit(
+            t.sample(&rig.label, TWIN_WINDOW)
+                .cell(Cell::new(Case::C7(Handover::Readopt), Metric::Authorities)),
+        );
+        Ok(())
+    })
+}
+
+pub fn store_lease_off_control(h: &Harness, bands: &mut Vec<String>) -> (ControlRun, String) {
+    let control = Control::StoreLeaseOff;
+    let spec = ControlSpec {
+        control,
+        variant: Variant::HELD,
+        opts: Options::default(),
+        daemon: &[Control::StoreLeaseOff],
+        client: &[],
+    };
+    control_run(h, bands, &spec, |d, rig| {
+        let t = cases::twin(h, d, rig, &spec.daemon_options(), TWIN_WINDOW)?;
+        Ok(vec![graded(
+            h,
+            control,
+            Cell::new(Case::C7(Handover::Readopt), Metric::Authorities),
+            t.sample(&rig.label, TWIN_WINDOW),
+        )])
+    })
+}
+
+#[must_use]
+pub fn holder_program(h: &Harness, peer: HolderPeer) -> Option<Option<std::path::PathBuf>> {
+    match peer {
+        HolderPeer::Head => Some(None),
+        HolderPeer::Prev => h.settings.prev_tear_bin.clone().map(Some),
+        HolderPeer::Oldest => h.settings.oldest_tear_bin.clone().map(Some),
+    }
+}
+
+pub fn muted_holders(h: &Harness, bands: &mut Vec<String>) {
+    for peer in HolderPeer::ALL {
+        let Some(program) = holder_program(h, *peer) else {
+            h.log(&format!(
+                "compat muted-holder/{}: no {} build was given, so its cell reads blind",
+                peer.name(),
+                peer.name()
+            ));
+            continue;
+        };
+        let opts = Options {
+            holder_program: program,
+            ..Options::default()
+        };
+        let cell = CompatCell::muted_holder(*peer);
+        step(
+            h,
+            &format!("muted-holder-{}", peer.name()),
+            with_daemon_opts(
+                h,
+                Variant::HELD,
+                &format!("gate-compat-{}", peer.name()),
+                &opts,
+                bands,
+                |d, rig| {
+                    let s = cases::stall(h, d, rig, STALL, AfterStall::ReadEdges)?;
+                    h.emit(s.sample(&rig.label, AfterStall::ReadEdges).compat(cell));
+                    Ok(())
+                },
+            )
+            .map(drop),
+        );
+    }
+}
+
 fn step(h: &Harness, name: &str, r: io::Result<()>) {
     match r {
         Ok(()) => h.log(&format!("case {name}: done")),
@@ -414,14 +541,16 @@ pub fn structural(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, Control
             cases::cliff(h, rig, &[0, 1_000, 3_000])
         }),
     );
-    step(
-        h,
-        "stall",
-        with_daemon(h, Variant::HELD, "gate-stall", bands, |d, rig| {
-            cases::stall(h, d, rig, Duration::from_secs(3)).map(drop)
-        }),
-    );
-    for (control, run, detail) in wire_controls(h, bands) {
+    step(h, "stall", stall(h, bands));
+    step(h, "twin", twin(h, bands));
+    muted_holders(h, bands);
+    let r4 = [
+        (Control::MuteSink, mute_sink_control(h, bands)),
+        (Control::StoreLeaseOff, store_lease_off_control(h, bands)),
+    ]
+    .into_iter()
+    .map(|(control, (run, detail))| (control, run, detail));
+    for (control, run, detail) in wire_controls(h, bands).into_iter().chain(r4) {
         report_control(h, control, run, &detail);
         controls.push((control, run, detail));
     }
@@ -605,6 +734,34 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
         h.receipt.verdict(cell, &v)?;
         verdicts.push((cell, v));
     }
+    let mut compat_verdicts = Vec::new();
+    for cell in compat::cells() {
+        let budget = cell.budget();
+        let peer = if holder_program(h, cell.pairing.holder).is_some() {
+            Ok(())
+        } else {
+            Err(format!(
+                "no {} holder build was given (--{}-tear-bin); `nix run .#bench` builds none yet",
+                cell.pairing.holder.name(),
+                cell.pairing.holder.name()
+            ))
+        };
+        let pre = Preconditions {
+            quiet: Ok(()),
+            peer,
+            band: band.clone(),
+            probes: Ok(()),
+            min_samples: 1,
+        };
+        let values: Vec<f64> = all
+            .iter()
+            .filter(|s| s.compat == Some(cell))
+            .map(|s| s.value)
+            .collect();
+        let v = derive(budget, &values, &floors, &pre);
+        h.receipt.compat_verdict(cell, &v)?;
+        compat_verdicts.push((cell, v));
+    }
     h.receipt.flush()?;
     let mut history = blind_history(h, host);
     if history.is_empty() {
@@ -612,6 +769,7 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
     }
     Ok(Outcome {
         verdicts,
+        compat: compat_verdicts,
         sentinels: quiet,
         blind_streak: blind_streak_is_red(&history),
         controls,
@@ -646,6 +804,18 @@ pub fn summary(outcome: &Outcome) -> kotae::Answer {
             }));
         }
     }
+    let compat: Vec<serde_json::Value> = outcome
+        .compat
+        .iter()
+        .filter(|(_, v)| !matches!(v, Verdict::NotApplicable { .. } | Verdict::Pending { .. }))
+        .map(|(cell, v)| {
+            serde_json::json!({
+                "cell": cell.name(),
+                "outcome": v.answer_named(&cell.name()).outcome(),
+                "verdict": v,
+            })
+        })
+        .collect();
     let controls: Vec<serde_json::Value> = outcome
         .controls
         .iter()
@@ -657,6 +827,7 @@ pub fn summary(outcome: &Outcome) -> kotae::Answer {
         "controls": controls,
         "tally": t,
         "cells": graded,
+        "compat": compat,
     });
     if outcome.verdicts.iter().all(|(_, v)| {
         matches!(
@@ -704,6 +875,7 @@ fn budget_json(b: Budget) -> serde_json::Value {
         }
         Budget::Count { max } => serde_json::json!({"count_max": max}),
         Budget::Bytes { max } => serde_json::json!({"bytes_max": max}),
+        Budget::Exactly { n } => serde_json::json!({"exactly": n}),
         Budget::NotApplicable { why } => serde_json::json!({"not_applicable": why}),
         Budget::Pending {
             rung,

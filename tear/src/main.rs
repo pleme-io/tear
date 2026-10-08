@@ -648,10 +648,12 @@ fn parse_session_id(s: &str, label: &str) -> Result<tear_types::SessionId> {
 fn init_tracing(verbose: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = if verbose {
-        EnvFilter::new("tear=debug,tear_core=debug,tear_config=debug,tear_tmux_backend=debug")
+        EnvFilter::new(
+            "tear=debug,tear_core=debug,tear_config=debug,tear_tmux_backend=debug,tamotsu=debug",
+        )
     } else {
         EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("tear=info,tear_core=warn"))
+            .unwrap_or_else(|_| EnvFilter::new("tear=info,tear_core=warn,tamotsu=info"))
     };
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)

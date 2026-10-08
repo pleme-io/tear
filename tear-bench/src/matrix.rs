@@ -15,7 +15,7 @@ tear_types::closed_vocabulary! {
     }
 }
 
-pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R7];
+pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R4, Rung::R7];
 
 #[must_use]
 pub const fn landed(rung: Rung) -> bool {
@@ -282,6 +282,9 @@ pub enum Budget {
     Bytes {
         max: u64,
     },
+    Exactly {
+        n: u64,
+    },
     NotApplicable {
         why: &'static str,
     },
@@ -299,6 +302,7 @@ impl Budget {
             Budget::Floor { .. } => "floor",
             Budget::Count { .. } => "count",
             Budget::Bytes { .. } => "bytes",
+            Budget::Exactly { .. } => "exactly",
             Budget::NotApplicable { .. } => "not-applicable",
             Budget::Pending { .. } => "pending",
         }
@@ -308,7 +312,10 @@ impl Budget {
     pub const fn is_budgeted(self) -> bool {
         matches!(
             self,
-            Budget::Floor { .. } | Budget::Count { .. } | Budget::Bytes { .. }
+            Budget::Floor { .. }
+                | Budget::Count { .. }
+                | Budget::Bytes { .. }
+                | Budget::Exactly { .. }
         )
     }
 }
@@ -397,6 +404,7 @@ metrics! {
     answers => Answers, "answers", "answers per terminal query";
     replays => Replays, "replays", "history replays per attach";
     modes => Modes, "modes", "ModeSet fields that differ from the authority's after a replay";
+    authorities => Authorities, "authorities", "daemons a held pane still takes input through after a second daemon on the same store adopts it: exactly one, so none and two are both red";
 }
 
 tear_types::closed_vocabulary! {
@@ -419,6 +427,7 @@ tear_types::closed_vocabulary! {
         RawSubscribe => "raw-subscribe",
         UnchunkedInput => "unchunked-input",
         OldSplitter => "old-splitter",
+        StoreLeaseOff => "store-lease-off",
     }
 }
 
@@ -450,7 +459,8 @@ impl Control {
             | Control::ResponseSizeUnchecked
             | Control::LegacyReplay
             | Control::RawSubscribe
-            | Control::UnchunkedInput => ControlKind::Fault,
+            | Control::UnchunkedInput
+            | Control::StoreLeaseOff => ControlKind::Fault,
         }
     }
 
@@ -463,7 +473,7 @@ impl Control {
             Control::PaneFatePoll => Rung::R10,
             Control::ArrayEncoder => Rung::R6,
             Control::UdsBufferOsDefault | Control::TwoWriteFraming => Rung::R8,
-            Control::MuteSink => Rung::R4,
+            Control::MuteSink | Control::StoreLeaseOff => Rung::R4,
             Control::LeaseOff => Rung::R42,
             Control::SnapshotHistoryAll => Rung::R9,
             Control::UnboundedSubscriberQueue => Rung::R22,
@@ -494,7 +504,7 @@ impl Control {
             Control::UdsBufferOsDefault => "8 KiB AF_UNIX buffers (net.local.stream.sendspace)",
             Control::TwoWriteFraming => "a length write, then a body write (S wire.rs:523-533)",
             Control::MuteSink => {
-                "a failed sink is dropped while its socket stays open (S holder.rs:181-183): today's only behaviour"
+                "a failed sink is dropped while its socket stays open, as every holder before R4 does (S holder.rs:181-183 at v0.1.34)"
             }
             Control::LeaseOff => {
                 "no lease: a pane no window shows answers nothing (S pane_grid.rs:1615)"
@@ -523,6 +533,9 @@ impl Control {
             }
             Control::OldSplitter => {
                 "the pre-R7 APC scanner hands vte each read's tail, and vte 0.15 drops what follows a completed partial character: 3 of 3 corpora lose one (G)"
+            }
+            Control::StoreLeaseOff => {
+                "no store lease: both daemons keep the pane, and either one's mute check re-attaches it from the other (SESSION-DURABILITY §7)"
             }
         }
     }
@@ -611,7 +624,7 @@ pub fn red_set(control: Control) -> Vec<Cell> {
     out
 }
 
-const fn check_budget(b: Budget) {
+pub(crate) const fn check_budget(b: Budget) {
     match b {
         Budget::Floor { floor, stat, k } => {
             assert!(
@@ -627,7 +640,7 @@ const fn check_budget(b: Budget) {
                 "a mado floor cannot grade a tear cell"
             );
         }
-        Budget::Count { .. } | Budget::Bytes { .. } => {}
+        Budget::Count { .. } | Budget::Bytes { .. } | Budget::Exactly { .. } => {}
         Budget::NotApplicable { why } => {
             assert!(!why.is_empty(), "NotApplicable needs a reason");
         }
@@ -929,5 +942,6 @@ product_rows! {
         tear_types::probes::Fault::LegacyReplay => Control::LegacyReplay,
         tear_types::probes::Fault::RawSubscribe => Control::RawSubscribe,
         tear_types::probes::Fault::UnchunkedInput => Control::UnchunkedInput,
+        tear_types::probes::Fault::StoreLeaseOff => Control::StoreLeaseOff,
     }
 }

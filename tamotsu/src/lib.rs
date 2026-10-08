@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod args;
+mod authority;
 mod held;
 mod holder;
 pub mod proto;
+pub mod sink;
 
 pub use args::HoldArgs;
+pub use authority::Authority;
 pub use held::{HeldPty, HoldProgram, OnBytes, OnExit, Revival};
 pub use holder::run;
 

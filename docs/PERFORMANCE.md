@@ -727,6 +727,96 @@ negative control is a fault injector compiled only for tests (§6).
 - **Old behaviour:** none to keep: a mute pane is a bad state. Holders spawned
   before R4 keep today's sink handling until their shell exits; the
   daemon-side check covers them.
+- **As built (2026-10-07).** tamotsu's `sink::Sink` owns the holder's write
+  half of a daemon connection and shuts it down both ways when dropped; a
+  failed write, a failed replay and a displacement drop it. `Sink::new`
+  takes only an owned `UnixStream`, so a sink cannot be built around the
+  shared `Arc<Mutex<UnixStream>>` the holder kept before (S `holder.rs:28-33`
+  at v0.1.34; `tear-bench/tests/ui/sink_around_shared_connection.rs`, pinned
+  E0308) — but that case pins the constructor, a definition, not
+  `holder.rs`'s use of it: a holder that wrote through a raw stream again
+  would still compile. What catches that is tamotsu's tests — a
+  `Sink::drop` without the shutdown reddens the sink's own test and three
+  `never_mute` tests — and the `mute-sink` fault on C4 `loss`, so the
+  guarantee is CI-caught (§8.1). `Sink::leave_silent` is the one drop
+  without a shutdown, used for a daemon that declares no incarnation and by
+  the `mute-sink` fault. The read edge is the pane snapshot — what MCP's
+  `pane_snapshot_text`, mado's attach and mado's DECCKM read all take —
+  and not `get_pane`, which mado polls once per idle tick until R10, so a
+  probe there would turn mado's poll into a holder poll. Both snapshot
+  paths, the subscriber's first frame and R3's frame-capped wire read,
+  read the grid through one `InProcess::read_pane`, which fires the edge
+  whatever the read returns, a refusal included: R3's wire read had
+  bypassed the edge, and the compatibility cell below lost 3,853,312 B
+  until it went through `read_pane`. tear's
+  `a_wire_snapshot_recovers_a_pane_whose_holder_left_it_mute` holds this
+  in CI: a `tear daemon` process stopped until its holder, under the
+  `mute-sink` fault, has journaled a 3 MB flood the daemon never read,
+  recovers through wire snapshots with exactly one re-attach, and is red
+  with the edge off the wire read.
+  A key edge is every non-empty `HeldPty::write`, and it carries the offset received
+  when the key was written: the check waits 2 s for any byte past it, so
+  an echo that arrived before the check thread woke still counts. A probe
+  compares a fresh connection's `Status.end` with the bytes received and
+  calls the link mute only when it stays behind with no progress for 2 s
+  (the holder's own write timeout), so a slow parser is never cut; it then
+  shuts its own link and the existing repair path re-attaches by offset.
+  One probe runs at a time per pane, at most one per
+  2 s after a healthy one, and an idle pane with no edges makes none. The
+  lease is makimono's `Store::take_lease`: `<store>/authority.json` holds the
+  incarnation, incremented under an exclusive lock on `authority.lock`, so
+  two daemons starting together never share one; the newest start holds the
+  store, and a holder that has seen a newer incarnation than the file
+  records (the file was lost) makes the daemon raise its lease above it
+  instead of giving up. A corrupt or unreadable `authority.json` reads as
+  incarnation 0 and is rewritten under the lock, and a lease that cannot be
+  taken at all (an unwritable lock or document) leaves the store held with
+  no declared incarnation, the behaviour before R4: the refusal is scoped
+  to the lease and never makes the daemon process-bound, which would
+  orphan every held shell. A holder records the highest incarnation it has
+  admitted; an `Attach` below it is refused with `Displaced{by}` before any
+  replay, and an admitted newer one sends the previous incarnation
+  `Displaced{by}` and shuts it. A daemon that declares no incarnation is
+  admitted only while no declaring daemon holds the pane, and when replaced
+  is left attached and silent — so two daemons before R4 keep today's
+  last-attach-wins, and a rollback is admitted once the newer daemon is
+  gone. "Stops every follow loop" is `InProcess::release_durable`, the
+  handoff `DaemonHandle::stop` already makes (SESSION-DURABILITY §7): the
+  loser also stops writing session documents and tombstones, so its
+  `KillSession` reaches neither the shell nor the store. Every write a
+  daemon makes into the store for a pane — an adoption, a resurrection's
+  meta, a launch, a session document, a tombstone — first checks the lease,
+  so a daemon that loses it mid-restore rewrites none of the winner's pane
+  metas and never resurrects a pane whose adoption it was refused. Holders
+  log every attach, refusal and displacement to their `holder.log`, and the
+  daemon's default log filter now includes tamotsu, whose warnings it
+  dropped before.
+  Gate, against isolated daemons from the workspace build and from v0.1.34
+  (the pre-rung build) with one tearbench: C4 `loss` (`Bytes{max: 0}`) read
+  0 B (3,007,488 B delivered while the journal grew 3,000,320 B) against
+  2,350,080 B before (9,216 B delivered, 2,359,296 B journaled); the
+  compatibility cell head daemon × v0.1.34 holder, muted the same way and
+  then read every 250 ms, lost 0 B (3,538,944 of 3,538,944) against
+  2,466,816 B with the v0.1.34 daemon; C7-readopt `authorities`
+  (`Exactly{n: 1}`, a budget kind added here because a ceiling of one
+  passed a pane no daemon holds as within) — the daemons a pane still
+  takes input through after a second daemon on its store adopted it, under
+  a trickle with snapshots through both for 10 s — read 1 with 2 attaches
+  and the loser logging `Displaced`, against 2 before; the `mute-sink`
+  fault reddened C4 `loss` (3,660,800 B) and the new `store-lease-off`
+  fault reddened `authorities` (2, with 5 attaches in 10 s). Re-run on
+  the build that landed, rebased onto R3: C4 `loss` 0 B, the
+  compatibility cell 0 B (3,670,016 of 3,670,016), `authorities` 1 with 2
+  attaches, `mute-sink` 3,888,128 B lost, `store-lease-off` 2 with 5
+  attaches. tear's integration test holds the same pair
+  of daemons to exactly 2 attaches, the loser's release and its
+  powerless `KillSession`; tamotsu's tests run the holder-side cases against
+  either holder build (`TAMOTSU_HOLDER_BIN`), and 7 of them are red against
+  v0.1.34's. The oldest holder, v0.1.28, was not built for this run (the
+  disk was full); its sink path and holder protocol differ from v0.1.34's
+  only in formatting and probe hooks (S, `git diff -w v0.1.28`), and its
+  cell reads `Blind` until a run names a build. Load averages were high
+  throughout, and none of these is a timing.
 
 #### R17 · Forward first, flush beside
 *Destination for where the flush runs · after R1 · the default primitive,
@@ -1968,20 +2058,25 @@ host-class table holds the reference Mac's four p50s (F-a 7.38 µs, F-d
 5.79 µs, F-e 7.08 µs, F-d 6.46 µs). The negative controls are declared per
 row and checked statically — each reddens at least one cell that is not
 `NotApplicable`, and every budgeted cell has one — and the structural tier
-switches on every fault whose rung has landed: R1's `audit-every-key` and
-R3's four (§5 R3). One `control_run` arms a control's faults in the daemon
+switches on every fault whose rung has landed: R1's `audit-every-key`,
+R3's four (§5 R3), and R4's `mute-sink` (the holder leaves a failed sink's
+socket open, as every holder before R4 does) and `store-lease-off` (the
+daemon declares no incarnation and never checks the lease). One
+`control_run` arms a control's faults in the daemon
 (`TEAR_BENCH_FAULTS`) and, for a client-side fault, in tearbench's own
 process, runs the case, and disarms; its samples land under
 `control:<name>:<bench>` with no cell, so a control never grades a clean
 cell. A control may arm more than one fault when its bad state needs a
 peer's: `legacy-replay` runs against a daemon with `response-size-unchecked`
 armed, as an old daemon behaves. The kept configurations arrive with
-their rungs, and the three tear faults phase A–C needs (the mute sink,
-`snapshot.history: all`, the unbounded subscriber queue) are today's only
-behaviour, so each fault's injection point lands with the rung that builds
-its good state (R4, R9, R22). Until then the `bench-probes` counter that
-observes the bad state is its red run: `holder-sinks-muted`, `snapshot-rows`,
-the `subscriber-backlog` peak. That gauge is read from the daemon's dump
+their rungs, and the other two tear faults phase A–C needs
+(`snapshot.history: all`, the unbounded subscriber queue) are today's only
+behaviour, so each one's injection point lands with the rung that builds
+its good state (R9, R22). Until then the `bench-probes` counter that
+observes the bad state is its red run: `snapshot-rows`, the
+`subscriber-backlog` peak; the holder's `holder-sinks-muted` now counts
+only sinks the fault left open, beside `holder-sinks-shut`,
+`holder-attaches` and `holder-displaced`. That gauge is read from the daemon's dump
 only: it rises before a chunk is queued to a subscriber and falls when the
 chunk is taken, when the send fails, and by whatever is still queued when a
 subscriber's connection ends; an embedded consumer's process never reports
@@ -2027,8 +2122,10 @@ madori's `FramePacing` live in repositories that depend on tear, not the
 reverse, so they are matched in mado's bench crate and a new variant there
 goes red when mado builds against it — for madori, at mado's next lock bump. A
 budget is `Floor{floor, stat, k}`, `Count{max}`, `Bytes{max}`,
-`NotApplicable{why}` or `Pending{rung, today, receipt}`; a `Pending` that
-names a landed rung fails a generated const assert.
+`Exactly{n}` — a count whose good value is one number, so fewer and more
+are both red, as for C7-readopt `authorities` and R42's one answer per
+query — `NotApplicable{why}` or `Pending{rung, today, receipt}`; a
+`Pending` that names a landed rung fails a generated const assert.
 
 **Why Rust and not tatara-lisp.** The ladder puts declarations above Rust, and
 budgets are declarations. But the proof this gate exists for — *a variant
@@ -2110,7 +2207,14 @@ re-adoption of a held session, session documents written by `Head` read by
 `Prev`, an impose from the client that leaves every key newer than its schema
 unchanged, a muted holder that recovers, an old window that survives a stalled
 flood, and exactly one answer per query. Beside the cells, the bridge path
-runs mado-web built against the published tear-types.
+runs mado-web built against the published tear-types. As built at R4,
+`tear-bench/src/compat.rs` declares the pairings and the checks, one budget
+per (pairing, check) by exhaustive match and the same const checks as the
+matrix; every check but `muted-holder` is `Pending` on R15, and
+`muted-holder`'s Prev-daemon cells are `Pending` too, because the harness
+starts only the workspace's daemon. `tearbench --prev-tear-bin` and
+`--oldest-tear-bin` name the other holder builds; a cell whose build was not
+given reads `Blind`, and `nix run .#bench` builds neither yet.
 
 **The ledger is enforced.** §8.1 sits under a `<!-- tier-ledger -->` marker,
 the shape SHUKEN's ledger already uses, so skill-lint's tier-ledger check —
@@ -2200,7 +2304,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a snapshot refused that would fit its frame | the pre-clone refusal reads a floor — every carried cell, each row at its own width, at 57 B, the smallest cell CBOR encodes — so it refuses only a snapshot that cannot fit; the encoded check decides the rest | `the_smallest_cell_encodes_to_the_wire_floor` (57 B, pinned); the widened-pane floor test, red with the rung's rows × columns estimate (mutation, 2026-10-07) | a snapshot between its floor and the cap is cloned and encoded once before it is refused | only-mitigated (C1) |
 | input lost past the frame cap | `SendKeys` above 64 KiB travels as chunks under one lock; a failure is `PartialInput{delivered}`; `send_paste` closes its bracket when bytes may have landed | `unchunked-input`; the 16 MiB paste row | another client's input between two chunks (R23) | only-mitigated (C1) |
 | a connection that skips the handshake | the control connection, every re-dial and every subscription run one handshake: `Authenticate`, `Hello`, the stored `IdentifyClient` | `raw-subscribe`; the tokened-subscription row; a re-dial test against a daemon double | — | only-mitigated (C1) |
-| a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways | `trybuild`: a sink around a borrowed connection, pinned stderr; the mute-sink fault | holders spawned before R4, which the daemon's `Status.end` check only mitigates | truly-unrep (R4 holders) |
+| a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways; for older holders, a pane snapshot or an unechoed key makes the daemon compare `Status.end` and re-attach | a `Sink::drop` without the shutdown reddens the sink's own test and three tamotsu `never_mute` tests (shut-down, stall, displaced); the mute-sink fault on C4 `loss` (3,660,800 B lost); the shut-down and stall tests, red against v0.1.34's holder; tear's daemon-process test of a muted holder recovered by wire snapshots, red with the edge off the wire read (1 attach, the marker never shown) | holders spawned before R4, which the daemon's `Status.end` check only mitigates, on an edge; a holder that writes through a raw stream again (the `trybuild` case pins `Sink::new`, a definition, not the holder's use); a deliberate `Sink::leave_silent` on the failure path, which is what the fault does | only-mitigated (C1) |
 | a UTF-8 character split across two of a parser's chunks | both parsers advance only through `feeder::Parser`, which takes a `Chunk` only the feeder mints, and the feeder cuts text only at rest, or, past the hold bound in ground state, before the last incomplete character, so no chunk ends where the next byte continues one | `trybuild`: a `Chunk` minted outside the feeder, E0451, and raw bytes to the parser, E0308; the old splitter as a test double (`old-splitter`, C9 `loss`); the espelho split proptest; a run of lead bytes past the bound, red at bounds 4 and 4 KiB before the cut with two lead-heavy proptests | where the feeder rests is its own state machine, held to vte's by proptests, not by the type | parse-time-rejected |
 | modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451; the `daemon-rpc` control | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does | truly-unrep (at R38) |
 | a flush on the byte path that nobody chose | `NonZero` intervals; only `write_ahead` flushes before forwarding; rotation and eviction run on the syncer | control `write_ahead{persisted}`; the pump-thread flush counter | a kernel stall of appends behind an in-flight flush (unmeasured; R17's gate) | parse-time-rejected |
@@ -2225,7 +2329,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a key encoded under stale input modes | input modes published ahead of held cells; `KeyModeSkew`, scoped to that key | a skew row inside a synchronized update | the round trip in C6 | parse-time-rejected |
 | a key doubled or lost across a daemon restart | serial dedup at the PTY writer | forced reconnects every 100 keys | at-least-once on holders without `write-serial` | only-mitigated (C1) |
 | a `SetConfig` that resets keys its writer could not see | a merge keyed on the writer's schema version; durability and delivery keys read once at start | an impose from `Prev` mado against `Head` | — | parse-time-rejected |
-| two authorities on one holder | a store lease ordered by incarnation; `Displaced` is terminal | two daemons on one store for 10 s | PROTO-1 holders obey the lease only through the daemons | only-mitigated (C4) |
+| two authorities on one holder | a store lease ordered by incarnation; `Displaced` is terminal unless the store's counter is behind the incarnation the holder saw (a lost lease file), when the lease is raised above it and the daemon re-attaches | two daemons on one store for 10 s (C7-readopt `authorities`, `Exactly{n: 1}`: 2 before R4); the store-lease-off fault (2, with 5 attaches in 10 s) | PROTO-1 holders obey the lease only through the daemons; a daemon before R4 beside an R4 one is left attached and silent, not stopped; a lease that cannot be taken runs undeclared, as before R4 | only-mitigated (C4) |
 | a holder upgrade that ends a shell | a preflight of the new image's adoption ABI; the journal drained before exec; one canary first | a rollback; an image that panics at startup | an image that passes the preflight and fails after the exec | only-mitigated (C2) |
 | unbounded history in RAM | `max_bytes` wired | the RSS row with `max_bytes` set | the default stays unlimited by operator decision (§8.2), at ~1–1.5× the text | only-mitigated (C1) |
 | Nagle on a tear TCP socket | one connect and accept path sets `TCP_NODELAY` | an rg gate; the Nagle probe | a bypass outside the profile | only-mitigated (C1) |

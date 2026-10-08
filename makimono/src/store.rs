@@ -8,6 +8,7 @@ use tear_types::{PaneId, SessionId, TearSession};
 use crate::atomic;
 use crate::ending::Ending;
 use crate::journal::{Journal, JournalBounds};
+use crate::lease::Lease;
 
 const SESSIONS: &str = "sessions";
 const ENDED: &str = "ended";
@@ -74,6 +75,10 @@ impl Store {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn take_lease(&self) -> io::Result<Lease> {
+        Lease::take(&self.root)
     }
 
     #[must_use]

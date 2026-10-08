@@ -271,6 +271,18 @@ untouched, and the fleet turns both on together through the
   every held pane and parks the persister. Without it an in-process daemon
   that stops while another `Arc<InProcess>` lives (the kanshou sidecar holds
   one) would keep repairing holders a successor daemon owns.
+- **Two daemons on one store: the newest holds it.** Every `tear daemon`
+  takes the store's authority lease at start — an incarnation persisted in
+  `authority.json` beside `sessions/` — and declares it in every holder
+  `Attach`. A holder refuses an older incarnation with `Displaced{by}` and
+  tells a displaced one the same; a daemon that learns it lost calls the
+  same `release_durable`, so it stops following, persisting and ending
+  panes it no longer holds. A corrupt lease is read as incarnation 0 and
+  rewritten; a lease that cannot be taken leaves the store held with no
+  declared incarnation, as before the lease, never process-bound. Before
+  this (PERFORMANCE.md R4) a second attach muted the first daemon
+  silently, and a re-attach on EOF would have turned the pair into a
+  livelock.
 - **cwd.** OSC 7 from the grid is persisted by the daemon; the holder also
   polls `/proc/<pid>/cwd` on Linux. macOS has no unsafe-free poll yet, so a
   macOS shell that never emits OSC 7 resurrects in its spawn directory.

@@ -3005,6 +3005,7 @@ dependencies = [
  "tear-config",
  "tear-core",
  "tear-makimono",
+ "tear-tamotsu",
  "tear-types",
  "trybuild",
 ]

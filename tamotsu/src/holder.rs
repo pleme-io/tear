@@ -16,6 +16,7 @@ use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySyste
 
 use crate::args::HoldArgs;
 use crate::proto::{FromHolder, HolderStatus, PROTO, ToHolder, read_to_holder, write_from_holder};
+use crate::sink::Sink;
 
 const SINK_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const DRAIN_GRACE: Duration = Duration::from_millis(300);
@@ -25,16 +26,101 @@ const CWD_POLL_TICKS: u32 = 8;
 const REPLAY_CHUNK: usize = 256 * 1024;
 const BANNER: &str = "\r\n\x1b[0m\x1b[2m── tear: session resurrected — the processes above ended; this is a new shell in the same place ──\x1b[0m\r\n";
 
-type Conn = Arc<Mutex<UnixStream>>;
-
-struct Sink {
+struct Attached {
     id: u64,
-    conn: Conn,
+    incarnation: Option<u64>,
+    sink: Sink,
 }
 
 struct State {
     journal: Journal,
-    sink: Option<Sink>,
+    attached: Option<Attached>,
+    authority: Option<u64>,
+}
+
+enum Writer {
+    Own(UnixStream),
+    Attached,
+    Silent,
+}
+
+enum Admission {
+    Admit,
+    Refuse { by: u64 },
+    LeaveSilent { holding: u64 },
+}
+
+impl State {
+    fn admission(&self, incarnation: Option<u64>) -> Admission {
+        match incarnation {
+            Some(n) => match self.authority {
+                Some(by) if n < by => Admission::Refuse { by },
+                _ => Admission::Admit,
+            },
+            None => match self.attached.as_ref().and_then(|a| a.incarnation) {
+                Some(holding) => Admission::LeaveSilent { holding },
+                None => Admission::Admit,
+            },
+        }
+    }
+
+    fn retire_failed(&mut self) {
+        let Some(failed) = self.attached.take() else {
+            return;
+        };
+        #[cfg(feature = "bench-probes")]
+        if tear_types::probes::active(tear_types::probes::Fault::MuteSink) {
+            tear_types::probes::bump(tear_types::probes::Counter::HolderSinksMuted, 1);
+            failed.sink.leave_silent();
+            return;
+        }
+        #[cfg(feature = "bench-probes")]
+        tear_types::probes::bump(tear_types::probes::Counter::HolderSinksShut, 1);
+        eprintln!(
+            "tamotsu: a write to {} failed; its connection is shut down both ways, so the daemon re-attaches by offset",
+            who(failed.incarnation)
+        );
+        drop(failed);
+    }
+}
+
+fn retire_displaced(previous: Attached, by: Option<u64>) {
+    match (previous.incarnation, by) {
+        (Some(was), Some(by)) if was < by => {
+            let mut sink = previous.sink;
+            let _ = sink.send(&FromHolder::Displaced { by });
+            #[cfg(feature = "bench-probes")]
+            tear_types::probes::bump(tear_types::probes::Counter::HolderDisplaced, 1);
+            eprintln!("tamotsu: incarnation {was} Displaced by incarnation {by}");
+        }
+        (Some(_), _) => drop(previous),
+        (None, _) => {
+            eprintln!(
+                "tamotsu: a daemon that declares no incarnation was replaced by {}; it is left attached and silent, as a second attach always left it",
+                who(by)
+            );
+            previous.sink.leave_silent();
+        }
+    }
+}
+
+fn who(incarnation: Option<u64>) -> String {
+    incarnation.map_or_else(
+        || "a daemon that declares no incarnation".to_string(),
+        |n| format!("incarnation {n}"),
+    )
+}
+
+fn replay(journal: &Journal, sink: &mut Sink, from: u64) -> io::Result<()> {
+    let mut at = from;
+    while let Ok(Some(chunk)) = journal.read_from(at, REPLAY_CHUNK) {
+        at = chunk.at + chunk.data.len() as u64;
+        sink.send(&FromHolder::Bytes {
+            at: chunk.at,
+            data: chunk.data,
+        })?;
+    }
+    Ok(())
 }
 
 struct Holder {
@@ -86,7 +172,8 @@ pub fn run(args: HoldArgs) -> anyhow::Result<()> {
         socket: args.socket.clone(),
         state: Mutex::new(State {
             journal,
-            sink: None,
+            attached: None,
+            authority: None,
         }),
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
@@ -167,21 +254,16 @@ impl Holder {
             eprintln!("tamotsu: journal append failed ({e}); bytes stay live but are not durable");
             st.journal.note_lost(bytes.len() as u64);
         }
-        let failed = st.sink.as_ref().is_some_and(|sink| {
-            let mut c = sink.conn.lock();
-            write_from_holder(
-                &mut *c,
-                &FromHolder::Bytes {
+        let failed = st.attached.as_mut().is_some_and(|a| {
+            a.sink
+                .send(&FromHolder::Bytes {
                     at,
                     data: bytes.to_vec(),
-                },
-            )
-            .is_err()
+                })
+                .is_err()
         });
         if failed {
-            #[cfg(feature = "bench-probes")]
-            tear_types::probes::bump(tear_types::probes::Counter::HolderSinksMuted, 1);
-            st.sink = None;
+            st.retire_failed();
         }
     }
 
@@ -201,30 +283,32 @@ impl Holder {
             return;
         };
         let _ = stream.set_write_timeout(Some(SINK_WRITE_TIMEOUT));
-        let conn: Conn = Arc::new(Mutex::new(stream));
+        let mut writer = Writer::Own(stream);
         let mut r = BufReader::new(read_half);
         while let Ok(msg) = read_to_holder(&mut r) {
             match msg {
                 ToHolder::Hello { proto } if proto != PROTO => {
-                    let _ = reply(
-                        &conn,
+                    self.reply(
+                        id,
+                        &mut writer,
                         &FromHolder::Refused {
                             reason: format!("holder speaks protocol {PROTO}, client {proto}"),
                         },
                     );
                     break;
                 }
-                ToHolder::Hello { .. } => {
-                    let _ = reply(
-                        &conn,
-                        &FromHolder::Hello {
-                            proto: PROTO,
-                            pid: std::process::id(),
-                            child_pid: self.child_pid,
-                        },
-                    );
+                ToHolder::Hello { .. } => self.reply(
+                    id,
+                    &mut writer,
+                    &FromHolder::Hello {
+                        proto: PROTO,
+                        pid: std::process::id(),
+                        child_pid: self.child_pid,
+                    },
+                ),
+                ToHolder::Attach { from, incarnation } => {
+                    writer = self.attach(id, writer, from, incarnation);
                 }
-                ToHolder::Attach { from } => self.attach(id, &conn, from),
                 ToHolder::Write(data) => {
                     let mut w = self.writer.lock();
                     let _ = w.write_all(&data).and_then(|()| w.flush());
@@ -248,46 +332,93 @@ impl Holder {
                             end: st.journal.end(),
                         }
                     };
-                    let _ = reply(&conn, &FromHolder::Status(status));
+                    self.reply(id, &mut writer, &FromHolder::Status(status));
                 }
             }
         }
         let mut st = self.state.lock();
-        if st.sink.as_ref().is_some_and(|s| s.id == id) {
-            st.sink = None;
+        if st.attached.as_ref().is_some_and(|a| a.id == id) {
+            st.attached = None;
         }
     }
 
-    fn attach(&self, id: u64, conn: &Conn, from: u64) {
-        let mut st = self.state.lock();
-        let _ = st.journal.sync();
-        let mut at = from;
-        let delivered = loop {
-            match st.journal.read_from(at, REPLAY_CHUNK) {
-                Ok(Some(chunk)) => {
-                    at = chunk.at + chunk.data.len() as u64;
-                    let mut c = conn.lock();
-                    if write_from_holder(
-                        &mut *c,
-                        &FromHolder::Bytes {
-                            at: chunk.at,
-                            data: chunk.data,
-                        },
-                    )
-                    .is_err()
-                    {
-                        break false;
-                    }
-                }
-                Ok(None) | Err(_) => break true,
+    fn reply(&self, id: u64, writer: &mut Writer, msg: &FromHolder) {
+        match writer {
+            Writer::Own(stream) => {
+                let _ = write_from_holder(stream, msg);
             }
-        };
-        if delivered {
-            st.sink = Some(Sink {
-                id,
-                conn: Arc::clone(conn),
-            });
+            Writer::Attached => {
+                let mut st = self.state.lock();
+                let failed = st
+                    .attached
+                    .as_mut()
+                    .filter(|a| a.id == id)
+                    .is_some_and(|a| a.sink.send(msg).is_err());
+                if failed {
+                    st.retire_failed();
+                }
+            }
+            Writer::Silent => {}
         }
+    }
+
+    fn attach(&self, id: u64, writer: Writer, from: u64, incarnation: Option<u64>) -> Writer {
+        let mut st = self.state.lock();
+        let mut sink = match writer {
+            Writer::Own(stream) => Sink::new(stream),
+            Writer::Attached => match st.attached.take_if(|a| a.id == id) {
+                Some(own) => own.sink,
+                None => return Writer::Silent,
+            },
+            Writer::Silent => return Writer::Silent,
+        };
+        match st.admission(incarnation) {
+            Admission::Refuse { by } => {
+                let _ = sink.send(&FromHolder::Displaced { by });
+                #[cfg(feature = "bench-probes")]
+                tear_types::probes::bump(tear_types::probes::Counter::HolderDisplaced, 1);
+                eprintln!(
+                    "tamotsu: refused {}: Displaced by incarnation {by}",
+                    who(incarnation)
+                );
+                return Writer::Silent;
+            }
+            Admission::LeaveSilent { holding } => {
+                eprintln!(
+                    "tamotsu: {} attached while incarnation {holding} holds the pane; it is left attached and silent",
+                    who(incarnation)
+                );
+                sink.leave_silent();
+                return Writer::Silent;
+            }
+            Admission::Admit => {}
+        }
+        let _ = st.journal.sync();
+        if let Err(e) = replay(&st.journal, &mut sink, from) {
+            eprintln!(
+                "tamotsu: the replay to {} failed ({e}); its connection is shut down both ways",
+                who(incarnation)
+            );
+            return Writer::Silent;
+        }
+        if let Some(n) = incarnation {
+            st.authority = Some(st.authority.map_or(n, |held| held.max(n)));
+        }
+        let previous = st.attached.replace(Attached {
+            id,
+            incarnation,
+            sink,
+        });
+        #[cfg(feature = "bench-probes")]
+        tear_types::probes::bump(tear_types::probes::Counter::HolderAttaches, 1);
+        eprintln!(
+            "tamotsu: attached from offset {from} for {}",
+            who(incarnation)
+        );
+        if let Some(previous) = previous {
+            retire_displaced(previous, incarnation);
+        }
+        Writer::Attached
     }
 
     fn end(self: &Arc<Self>) {
@@ -345,9 +476,8 @@ impl Holder {
         {
             let mut st = self.state.lock();
             let _ = st.journal.sync();
-            if let Some(sink) = st.sink.take() {
-                let mut c = sink.conn.lock();
-                let _ = write_from_holder(&mut *c, &FromHolder::Exited { ending: recorded });
+            if let Some(mut attached) = st.attached.take() {
+                let _ = attached.sink.send(&FromHolder::Exited { ending: recorded });
             }
         }
         let _ = fs::remove_file(&self.socket);
@@ -355,11 +485,6 @@ impl Holder {
         let _ = makimono::probes::dump("holder");
         std::process::exit(0)
     }
-}
-
-fn reply(conn: &Conn, msg: &FromHolder) -> io::Result<()> {
-    let mut c = conn.lock();
-    write_from_holder(&mut *c, msg)
 }
 
 #[cfg(target_os = "linux")]

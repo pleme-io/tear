@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/sink_around_shared_connection.rs:9:27
+  |
+9 |     let _sink = Sink::new(Arc::clone(&shared));
+  |                 --------- ^^^^^^^^^^^^^^^^^^^ expected `UnixStream`, found `Arc<Mutex<UnixStream>>`
+  |                 |
+  |                 arguments to this function are incorrect
+  |
+  = note: expected struct `UnixStream`
+             found struct `Arc<std::sync::Mutex<UnixStream>>`
+note: associated function defined here
+ --> $WORKSPACE/tamotsu/src/sink.rs
+  |
+  |     pub fn new(stream: UnixStream) -> Self {
+  |            ^^^

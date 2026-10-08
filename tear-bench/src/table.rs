@@ -44,6 +44,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -82,6 +83,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::BandBackground, metrics: &[Metric::Throughput, Metric::EchoWarm] },
@@ -123,6 +125,7 @@ crate::bench_matrix! {
             answers: pending(Rung::R42, "0 answers to a query in a pane no window shows: the asker waits out its timeout, 2 s for a crossterm cursor report", "S tear pane_grid.rs:1615, 1625; R crossterm 0.28.1 cursor/sys/unix.rs:39; target 1"),
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::BandBackground, metrics: &[Metric::Throughput] },
@@ -133,7 +136,7 @@ crate::bench_matrix! {
         ],
     },
     Case::C4 => Row {
-        receipt: "§2 C4: H-b, H-c (two runs), H-d, D (n=15)",
+        receipt: "§2 C4: H-b, H-c (two runs), H-d, D (n=15); loss: D, re-measured at R1 (8,192 B delivered while the journal grew 4,587,520 B)",
         budgets: Budgets {
             echo_warm: pending(Rung::R2, "32.5 / 32.1 µs p50 at PRI 31 (two runs); 108.7–136.0 µs in the deployed band", "H-b; floor ~33.5 µs = 4 warm hops + PTY echo; target ≤2×"),
             echo_gap: na("report-only: 118.7–283.9 µs p50 at PRI 31, 243.9–267.4 µs in the deployed band (H-b, two runs); run-to-run spread 2.39× (§6)"),
@@ -163,10 +166,11 @@ crate::bench_matrix! {
             idle_ticks: MADO,
             idle_wakeups: ELSEWHERE,
             paints: MADO,
-            loss: pending(Rung::R4, "muted until restart after a >2 s consumer stall: 7,259 B delivered in 3 s while the journal grew 2.88 MB", "D; target 0 B lost, output resumed by offset"),
+            loss: Budget::Bytes { max: 0 },
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::BandBackground, metrics: &[Metric::Throughput, Metric::EchoWarm] },
@@ -209,6 +213,7 @@ crate::bench_matrix! {
             answers: pending(Rung::R42, "N answers per query with N windows", "S mado gui_tear_attach.rs:677-695; target 1"),
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::UnboundedSubscriberQueue, metrics: &[Metric::Memory] },
@@ -250,6 +255,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::UdsBufferOsDefault, metrics: &[Metric::RoundTrip] },
@@ -292,6 +298,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -330,6 +337,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -368,6 +376,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: pending(Rung::R5, "2 history replays per daemon attach: engate's snapshot RPC and the daemon's first frame", "S daemon lib.rs:1002-1016; Gate 0 class 8; target 1"),
             modes: pending(Rung::R5, "defaults after a replay", "S pane_snapshot.rs:372-480; target equal to the authority's ModeSet"),
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::SnapshotHistoryAll, metrics: &[Metric::Keyframe] },
@@ -408,6 +417,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -446,11 +456,12 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
     Case::C7(Handover::Readopt) => Row {
-        receipt: "§2 C7 re-adoption: H (n=3)",
+        receipt: "§2 C7 re-adoption: H (n=3); two daemons on one store: §5 R4, SESSION-DURABILITY §7",
         budgets: Budgets {
             echo_warm: ELSEWHERE,
             echo_gap: ELSEWHERE,
@@ -484,8 +495,11 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: Budget::Exactly { n: 1 },
         },
-        controls: &[],
+        controls: &[
+            Red { control: Control::StoreLeaseOff, metrics: &[Metric::Authorities] },
+        ],
     },
     Case::C8 => Row {
         receipt: "§2 C8: H (n=5, n=25, n=3), the daemon log",
@@ -522,6 +536,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::BandBackground, metrics: &[Metric::NewSession] },
@@ -562,6 +577,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::AllocatingRow, metrics: &[Metric::Allocations] },
@@ -603,6 +619,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -641,6 +658,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -679,6 +697,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::BandBackground, metrics: &[Metric::Key] },
@@ -720,6 +739,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::UnchunkedInput, metrics: &[Metric::Loss] },
@@ -760,6 +780,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[],
     },
@@ -798,6 +819,7 @@ crate::bench_matrix! {
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
+            authorities: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::SnapshotHistoryAll, metrics: &[Metric::Keyframe, Metric::Observer] },

@@ -46,3 +46,4 @@ libc = "0.2"
 
 [dev-dependencies]
 trybuild = "1"
+tamotsu = { workspace = true }

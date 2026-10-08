@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use makimono::{JournalBounds, Store};
-use tamotsu::HoldProgram;
+use tamotsu::{Authority, HoldProgram};
 use tear_config::{SessionDurability, SessionsConfig};
 use tear_core::{Durable, InProcess, RestoreReport};
 use tracing::{info, warn};
@@ -44,8 +44,28 @@ pub fn durable_from_config(
         },
     };
     let j = &sessions.journal;
+    let store = Store::open(store_root)?;
+    let authority = match store.take_lease() {
+        Ok(lease) => {
+            let authority = Authority::new(lease);
+            info!(
+                incarnation = authority.incarnation(),
+                store = %store.root().display(),
+                "tear-daemon: this daemon holds the session store's authority lease"
+            );
+            authority
+        }
+        Err(e) => {
+            warn!(
+                store = %store.root().display(),
+                error = %e,
+                "tear-daemon: the session store's authority lease could not be taken; sessions stay held, and this daemon declares no incarnation, as every daemon before the lease did"
+            );
+            Authority::undeclared()
+        }
+    };
     Ok(Some(Durable {
-        store: Store::open(store_root)?,
+        store,
         holder_dir,
         program,
         bounds: JournalBounds {
@@ -53,6 +73,7 @@ pub fn durable_from_config(
             segment_bytes: j.segment_bytes,
             fsync_interval_ms: j.fsync_interval_ms,
         },
+        authority,
     }))
 }
 
@@ -116,6 +137,26 @@ mod tests {
         assert_eq!(d.program.program, PathBuf::from("/opt/tear"));
         assert_eq!(d.program.prefix, vec!["hold".to_string()]);
         assert_eq!(d.bounds.max_bytes, 64 * 1024 * 1024);
+        assert!(d.authority.is_declared());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_lease_that_cannot_be_taken_keeps_the_store_held_and_declares_nothing() {
+        let root = std::env::temp_dir().join(format!("tear-durable-lease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("authority.lock")).unwrap();
+        let sessions = SessionsConfig {
+            durability: SessionDurability::Held,
+            holder_program: Some(vec!["/opt/tear".into(), "hold".into()]),
+            store_dir: Some(root.to_string_lossy().into_owned()),
+            ..SessionsConfig::default()
+        };
+        let d = durable_from_config(&sessions, Some(Path::new("/run/u/tear.sock")), None)
+            .unwrap()
+            .expect("an untakeable lease never costs the store");
+        assert!(!d.authority.is_declared());
+        assert!(d.authority.require().is_ok());
         let _ = std::fs::remove_dir_all(root);
     }
 }

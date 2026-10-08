@@ -1569,17 +1569,75 @@ pub fn connect(h: &Harness, rig: &Rig, reps: usize) -> io::Result<()> {
 pub struct Stall {
     pub delivered: u64,
     pub journaled: u64,
+    pub stall_for: Duration,
 }
 
-pub fn stall(h: &Harness, d: &Daemon, rig: &Rig, stall_for: Duration) -> io::Result<Stall> {
+impl Stall {
+    #[must_use]
+    pub fn lost(&self) -> u64 {
+        self.journaled.saturating_sub(self.delivered)
+    }
+
+    #[must_use]
+    pub fn sample(&self, variant: &str, after: AfterStall) -> Sample {
+        Sample::new(
+            "stall",
+            variant,
+            "bytes-lost",
+            0,
+            self.lost() as f64,
+            Unit::Bytes,
+        )
+        .detail(format!(
+            "stalled the daemon {:.1} s under a 64 KiB / 50 ms producer, then {}: delivered {} B while the journal grew {} B",
+            self.stall_for.as_secs_f64(),
+            after.describe(),
+            self.delivered,
+            self.journaled
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfterStall {
+    Silence,
+    ReadEdges,
+}
+
+impl AfterStall {
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            AfterStall::Silence => "no read or key reached the daemon",
+            AfterStall::ReadEdges => "a snapshot read every 250 ms",
+        }
+    }
+}
+
+pub const STALL_SETTLE: Duration = Duration::from_secs(1);
+pub const STALL_DEADLINE: Duration = Duration::from_secs(40);
+
+pub fn stall(
+    _h: &Harness,
+    d: &Daemon,
+    rig: &Rig,
+    stall_for: Duration,
+    after: AfterStall,
+) -> io::Result<Stall> {
     let me = std::env::current_exe()?;
+    let producing = Duration::from_secs(1) + stall_for + Duration::from_secs(2);
     let script = format!(
-        "stty raw -echo; printf READY; exec '{}' floor-peer producer --chunk 65536 --period-ms 50 --secs 30",
-        me.display()
+        "stty raw -echo; printf READY; dd bs=1 count=1 of=/dev/null 2>/dev/null; '{}' floor-peer producer --chunk 65536 --period-ms 50 --secs {} --overwrite; exec cat",
+        me.display(),
+        producing.as_secs()
     );
     let (sid, pane) = rig.new_pane("stall", &script, &[])?;
     rig.wait_text(pane, "READY", Duration::from_secs(10))?;
     let sub = rig.subscribe(pane)?;
+    rig.ctl()
+        .send_keys(pane, b"g")
+        .map_err(|e| io::Error::other(format!("start the producer: {e}")))?;
+    let started = Instant::now();
     let received = Arc::new(AtomicU64::new(0));
     let r2 = Arc::clone(&received);
     let stop = Arc::new(AtomicBool::new(false));
@@ -1599,27 +1657,147 @@ pub fn stall(h: &Harness, d: &Daemon, rig: &Rig, stall_for: Duration) -> io::Res
     kill(Pid::from_raw(d.pid), Signal::SIGSTOP).map_err(io::Error::from)?;
     thread::sleep(stall_for);
     kill(Pid::from_raw(d.pid), Signal::SIGCONT).map_err(io::Error::from)?;
-    thread::sleep(Duration::from_secs(3));
-    let j1 = d.journal_bytes();
-    let r1 = received.load(Ordering::SeqCst);
+    let deadline = Instant::now() + STALL_DEADLINE;
+    let mut last = (d.journal_bytes(), received.load(Ordering::SeqCst));
+    let mut steady_since = Instant::now();
+    while Instant::now() < deadline {
+        if after == AfterStall::ReadEdges
+            && let Ok(c) = rig.fresh_client()
+        {
+            let _ = c.pane_snapshot(pane);
+        }
+        thread::sleep(Duration::from_millis(250));
+        let now = (d.journal_bytes(), received.load(Ordering::SeqCst));
+        if now != last {
+            last = now;
+            steady_since = Instant::now();
+        } else if started.elapsed() > producing + Duration::from_secs(1)
+            && steady_since.elapsed() >= STALL_SETTLE
+        {
+            break;
+        }
+    }
     stop.store(true, Ordering::SeqCst);
     let _ = counter.join();
-    let out = Stall {
-        delivered: r1 - r0,
-        journaled: j1.saturating_sub(j0),
-    };
-    h.emit(
-        Sample::new("stall", &rig.label, "bytes-lost", 0, out.journaled.saturating_sub(out.delivered) as f64, Unit::Bytes)
-            .cell(Cell::new(Case::C4, Metric::Loss))
-            .detail(format!(
-                "stalled the daemon {:.1} s under a 64 KiB / 50 ms producer: delivered {} B while the journal grew {} B",
-                stall_for.as_secs_f64(),
-                out.delivered,
-                out.journaled
-            )),
-    );
+    if let Ok(c) = rig.fresh_client() {
+        let _ = c.kill_session(sid);
+    }
     rig.kill(sid);
-    Ok(out)
+    Ok(Stall {
+        delivered: last.1 - r0,
+        journaled: last.0.saturating_sub(j0),
+        stall_for,
+    })
+}
+
+pub struct Twin {
+    pub authorities: u64,
+    pub attaches: Option<usize>,
+    pub displaced_logged: bool,
+}
+
+impl Twin {
+    #[must_use]
+    pub fn sample(&self, variant: &str, window: Duration) -> Sample {
+        Sample::new(
+            "twin",
+            variant,
+            "authorities",
+            0,
+            self.authorities as f64,
+            Unit::Count,
+        )
+        .detail(format!(
+            "two daemons on one store for {} s under a trickle: the pane took input through {} of them; holder attaches {}; the first daemon logged Displaced: {}",
+            window.as_secs(),
+            self.authorities,
+            self.attaches
+                .map_or_else(|| "unlogged (a holder before R4)".to_string(), |n| n.to_string()),
+            self.displaced_logged
+        ))
+    }
+}
+
+fn holder_log_of(root: &Path, pane: PaneId) -> Option<String> {
+    let want = pane.to_string();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n.to_string_lossy() == want) {
+                    let log = p.join("holder.log");
+                    if log.exists() {
+                        return std::fs::read_to_string(log).ok();
+                    }
+                }
+                stack.push(p);
+            }
+        }
+    }
+    None
+}
+
+pub fn twin(
+    h: &Harness,
+    first: &Daemon,
+    rig: &Rig,
+    second: &super::daemon::Options,
+    window: Duration,
+) -> io::Result<Twin> {
+    let me = std::env::current_exe()?;
+    let script = format!(
+        "stty raw -echo; printf READY; dd bs=1 count=1 of=/dev/null 2>/dev/null; '{}' floor-peer producer --chunk 512 --period-ms 50 --secs {} --overwrite; exec cat",
+        me.display(),
+        window.as_secs() + 30
+    );
+    let (sid, pane) = rig.new_pane("twin", &script, &[])?;
+    rig.wait_text(pane, "READY", Duration::from_secs(10))?;
+    rig.ctl()
+        .send_keys(pane, b"g")
+        .map_err(|e| io::Error::other(format!("start the producer: {e}")))?;
+    let opts = super::daemon::Options {
+        socket_suffix: Some("second".into()),
+        ..second.clone()
+    };
+    let mut other = Daemon::start_with(h, first.variant, "twin-second", &opts)?;
+    let outcome = (|| {
+        let c2 = other.client()?;
+        let adopted = Instant::now() + Duration::from_secs(10);
+        while c2.get_pane(pane).is_err() {
+            if Instant::now() > adopted {
+                return Err(io::Error::other("the second daemon never adopted the pane"));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let until = Instant::now() + window;
+        while Instant::now() < until {
+            let _ = rig.ctl().pane_snapshot(pane);
+            let _ = c2.pane_snapshot(pane);
+            thread::sleep(Duration::from_millis(200));
+        }
+        let takes_input =
+            |c: io::Result<tear_client::Client>| c.is_ok_and(|c| c.send_keys(pane, b"").is_ok());
+        let authorities =
+            u64::from(takes_input(first.client())) + u64::from(takes_input(other.client()));
+        let _ = other.client().map(|c| c.kill_session(sid));
+        let log = holder_log_of(&first.iso, pane);
+        Ok(Twin {
+            authorities,
+            attaches: log
+                .as_deref()
+                .filter(|l| l.contains("tamotsu: attached"))
+                .map(|l| l.matches("tamotsu: attached from offset").count()),
+            displaced_logged: std::fs::read_to_string(&first.log)
+                .is_ok_and(|l| l.contains("Displaced")),
+        })
+    })();
+    other.stop_daemon_only(h);
+    rig.kill(sid);
+    outcome
 }
 
 pub fn producer_peer(args: &[String]) -> io::Result<()> {
@@ -1627,8 +1805,13 @@ pub fn producer_peer(args: &[String]) -> io::Result<()> {
     let chunk = usize::try_from(crate::floor::flag_u64(args, "--chunk", 65_536)?).unwrap_or(65_536);
     let period = Duration::from_millis(crate::floor::flag_u64(args, "--period-ms", 50)?);
     let secs = crate::floor::flag_u64(args, "--secs", 30)?;
+    let eol = if args.iter().any(|a| a == "--overwrite") {
+        b'\r'
+    } else {
+        b'\n'
+    };
     let buf: Vec<u8> = (0..chunk)
-        .map(|i| if i % 80 == 79 { b'\n' } else { b'x' })
+        .map(|i| if i % 80 == 79 { eol } else { b'x' })
         .collect();
     let mut out = io::stdout().lock();
     let until = Instant::now() + Duration::from_secs(secs);

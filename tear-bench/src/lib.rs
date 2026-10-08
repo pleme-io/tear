@@ -6,6 +6,7 @@
     clippy::cast_possible_wrap
 )]
 
+pub mod compat;
 pub mod floor;
 pub mod gate;
 pub mod harness;

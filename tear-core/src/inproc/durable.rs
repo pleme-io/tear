@@ -8,7 +8,7 @@ use std::time::Duration;
 use makimono::{Ending, JournalBounds, PaneDir, PaneMeta, SessionDir, Store, Verdict, classify};
 use parking_lot::{Mutex, RwLock};
 use portable_pty::PtySize;
-use tamotsu::{HeldPty, HoldArgs, HoldProgram, Revival};
+use tamotsu::{Authority, HeldPty, HoldArgs, HoldProgram, Revival};
 use tear_types::{LeafRemoval, PaneId, PaneState, SessionId, TearPane, TearSession, WindowId};
 use tracing::{info, warn};
 
@@ -26,6 +26,7 @@ pub struct Durable {
     pub holder_dir: PathBuf,
     pub program: HoldProgram,
     pub bounds: JournalBounds,
+    pub authority: Authority,
 }
 
 impl Durable {
@@ -85,6 +86,12 @@ impl PaneIo {
         }
         drop(self);
     }
+
+    pub(super) fn read_edge(&self) {
+        if let Self::Held(h) = self {
+            h.read_edge();
+        }
+    }
 }
 
 pub(super) struct SpawnPlan<'a> {
@@ -100,6 +107,23 @@ pub(super) struct SpawnPlan<'a> {
 impl InProcess {
     pub fn enable_durability(&self, durable: Option<Durable>) {
         let enabling = durable.is_some();
+        if let Some(d) = &durable {
+            let incarnation = d.authority.incarnation();
+            let slot = Arc::downgrade(&self.durable);
+            let ptys = Arc::downgrade(&self.ptys);
+            d.authority.on_lost(move |by| {
+                let (Some(slot), Some(ptys)) = (slot.upgrade(), ptys.upgrade()) else {
+                    return;
+                };
+                let released = release_held(&slot, &ptys, Release::OnlyIfLost);
+                warn!(
+                    incarnation,
+                    by,
+                    panes = released,
+                    "tear-core: Displaced — a newer daemon holds the session store; every held pane is released to it"
+                );
+            });
+        }
         *self.durable.write() = durable;
         if enabling && !self.persister_started.swap(true, Ordering::AcqRel) {
             self.spawn_persister();
@@ -112,27 +136,18 @@ impl InProcess {
     }
 
     pub fn release_durable(&self) {
-        if self.durable.write().take().is_none() {
-            return;
+        let released = release_held(&self.durable, &self.ptys, Release::Always);
+        if released > 0 {
+            info!(
+                panes = released,
+                "tear-core: held panes released to their holders"
+            );
         }
-        let held: Vec<PaneIo> = {
-            let mut ptys = self.ptys.lock();
-            let ids: Vec<PaneId> = ptys
-                .iter()
-                .filter(|(_, io)| matches!(io, PaneIo::Held(_)))
-                .map(|(id, _)| *id)
-                .collect();
-            ids.iter().filter_map(|id| ptys.remove(id)).collect()
-        };
-        info!(
-            panes = held.len(),
-            "tear-core: held panes released to their holders"
-        );
-        drop(held);
     }
 
     pub(super) fn session_dir_of(&self, pane: PaneId) -> Option<(Durable, SessionDir)> {
         let durable = self.durable.read().clone()?;
+        durable.authority.require().ok()?;
         let sid = self
             .registry
             .read()
@@ -207,6 +222,7 @@ impl InProcess {
         plan: &SpawnPlan<'_>,
         grid: &Arc<Mutex<PaneGrid>>,
     ) -> std::io::Result<HeldPty> {
+        durable.authority.require()?;
         let pane_dir = dir.pane(plan.pane_id);
         pane_dir.create()?;
         let meta = PaneMeta {
@@ -238,13 +254,16 @@ impl InProcess {
             env: plan.env.clone(),
         };
         let (on_bytes, on_exit) = self.pane_callbacks(plan.pane_id, grid, None);
-        HeldPty::launch(revival, on_bytes, on_exit)
+        HeldPty::launch(revival, &durable.authority, on_bytes, on_exit)
     }
 
     pub(super) fn persist_session_now(&self, sid: SessionId) {
         let Some(durable) = self.durable.read().clone() else {
             return;
         };
+        if durable.authority.require().is_err() {
+            return;
+        }
         let session = self.registry.read().sessions.get(&sid).cloned();
         if let Some(s) = session {
             if let Err(e) = durable.store.session(sid).write_doc(&s) {
@@ -406,6 +425,7 @@ impl InProcess {
         revive: bool,
         yurai: tear_types::Yurai,
     ) -> std::io::Result<()> {
+        d.authority.require()?;
         let pd = dir.pane(pid);
         pd.create()?;
         let size = (meta.size.0.max(1), meta.size.1.max(1));
@@ -441,21 +461,59 @@ impl InProcess {
             None
         } else {
             let (on_bytes, on_exit) = self.pane_callbacks(pid, &grid, None);
-            HeldPty::adopt(revival_for(&meta, false), on_bytes, on_exit).ok()
+            match HeldPty::adopt(revival_for(&meta, false), &d.authority, on_bytes, on_exit) {
+                Ok(h) => Some(h),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(e),
+                Err(_) => None,
+            }
         };
         let held = match held {
             Some(h) => h,
             None => {
+                d.authority.require()?;
                 meta.resurrections += 1;
                 meta.holder_socket = d.socket_for(pid);
                 pd.write_meta(&meta)?;
                 let (on_bytes, on_exit) = self.pane_callbacks(pid, &grid, None);
-                HeldPty::launch(revival_for(&meta, true), on_bytes, on_exit)?
+                HeldPty::launch(revival_for(&meta, true), &d.authority, on_bytes, on_exit)?
             }
         };
         self.ptys.lock().insert(pid, PaneIo::Held(held));
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Release {
+    Always,
+    OnlyIfLost,
+}
+
+fn release_held(
+    slot: &RwLock<Option<Durable>>,
+    ptys: &Mutex<BTreeMap<PaneId, PaneIo>>,
+    when: Release,
+) -> usize {
+    {
+        let mut durable = slot.write();
+        let lost = durable.as_ref().map(|d| d.authority.is_lost());
+        match (lost, when) {
+            (None, _) | (Some(false), Release::OnlyIfLost) => return 0,
+            (Some(_), _) => *durable = None,
+        }
+    }
+    let held: Vec<PaneIo> = {
+        let mut ptys = ptys.lock();
+        let ids: Vec<PaneId> = ptys
+            .iter()
+            .filter(|(_, io)| matches!(io, PaneIo::Held(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.iter().filter_map(|id| ptys.remove(id)).collect()
+    };
+    let n = held.len();
+    drop(held);
+    n
 }
 
 fn persist_pass(
@@ -466,6 +524,9 @@ fn persist_pass(
     docs: &mut HashMap<SessionId, blake3::Hash>,
     metas: &mut HashMap<PaneId, (Option<String>, String, (u16, u16))>,
 ) {
+    if d.authority.is_lost() {
+        return;
+    }
     let sessions: Vec<TearSession> = registry.read().sessions.values().cloned().collect();
     let live: HashSet<SessionId> = sessions.iter().map(|s| s.id).collect();
     let mut live_panes: HashSet<PaneId> = HashSet::new();

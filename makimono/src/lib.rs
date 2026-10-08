@@ -3,12 +3,14 @@
 pub mod atomic;
 mod ending;
 mod journal;
+mod lease;
 #[cfg(feature = "bench-probes")]
 pub mod probes;
 mod store;
 
 pub use ending::{Ending, Human, Verdict, classify, now_unix};
 pub use journal::{Chunk, Journal, JournalBounds};
+pub use lease::{Lease, Raised};
 pub use store::{PaneDir, PaneMeta, SessionDir, Store};
 
 #[cfg(test)]

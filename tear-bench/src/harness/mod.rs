@@ -26,6 +26,8 @@ pub const FLOOD_SCRIPT: &str =
 pub struct Settings {
     pub root: PathBuf,
     pub tear_bin: PathBuf,
+    pub prev_tear_bin: Option<PathBuf>,
+    pub oldest_tear_bin: Option<PathBuf>,
     pub forbid: PathBuf,
     pub path_env: String,
     pub faults: String,
