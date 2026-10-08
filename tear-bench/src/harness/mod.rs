@@ -30,6 +30,7 @@ pub struct Settings {
     pub prev_tear_bin: Option<PathBuf>,
     pub oldest_tear_bin: Option<PathBuf>,
     pub mado_bin: Option<PathBuf>,
+    pub parked_window_bin: Option<PathBuf>,
     pub forbid: PathBuf,
     pub path_env: String,
     pub faults: String,

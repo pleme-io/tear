@@ -31,6 +31,8 @@ struct Cli {
     #[arg(long, global = true)]
     mado_bin: Option<PathBuf>,
     #[arg(long, global = true)]
+    parked_window_bin: Option<PathBuf>,
+    #[arg(long, global = true)]
     forbid: Option<PathBuf>,
     #[arg(long, global = true)]
     path_env: Option<String>,
@@ -181,6 +183,7 @@ fn main() -> ExitCode {
         prev_tear_bin: cli.prev_tear_bin.clone(),
         oldest_tear_bin: cli.oldest_tear_bin.clone(),
         mado_bin: cli.mado_bin.clone(),
+        parked_window_bin: cli.parked_window_bin.clone(),
         forbid,
         path_env,
         faults: cli.faults.clone(),
@@ -371,6 +374,7 @@ const STANDALONE: &[&str] = &[
     "window",
     "cursor-keys-via-rpc",
     "replay-controls",
+    "quiet-window",
 ];
 
 fn control_case(name: &str, (run, detail): (gate::ControlRun, String)) -> std::io::Result<()> {
@@ -408,6 +412,14 @@ fn standalone_case(h: &Harness, v: Variant, name: &str) -> std::io::Result<()> {
         "replay-controls" => gate::replay_controls(h, &mut Vec::new())
             .into_iter()
             .try_for_each(|(c, run, detail)| control_case(c.name(), (run, detail))),
+        "quiet-window" => {
+            let mut floors = tear_bench::verdict::FloorSet::default();
+            let floor = gate::parked_floor(h, &mut floors);
+            if let Err(e) = &floor {
+                println!("case quiet-window: floor blind — {e}");
+            }
+            gate::quiet_window(h, &mut Vec::new()).map_err(std::io::Error::other)
+        }
         other => Err(std::io::Error::other(format!("unknown case {other}"))),
     }
 }

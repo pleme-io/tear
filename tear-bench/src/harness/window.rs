@@ -22,9 +22,19 @@ tear_types::closed_vocabulary! {
     PaneFate { Edge => "edge", Poll => "poll" }
 }
 
+tear_types::closed_vocabulary! {
+    Pacing { Demand => "demand", Capped => "capped" }
+}
+
+pub const QUIET_SPAN: Duration = Duration::from_secs(60);
+pub const WAKEUP_SPAN: Duration = Duration::from_secs(3);
+pub const PARKED_SETTLE: Duration = Duration::from_secs(3);
+
 #[derive(Clone, Debug)]
 pub struct WindowOptions {
     pub pane_fate: PaneFate,
+    pub pacing: Pacing,
+    pub quiet: Option<Duration>,
     pub faults: &'static [Control],
     pub settle: Duration,
     pub idle: Option<Duration>,
@@ -39,6 +49,8 @@ impl WindowOptions {
     pub fn clean() -> Self {
         Self {
             pane_fate: PaneFate::Edge,
+            pacing: Pacing::Demand,
+            quiet: None,
             faults: &[],
             settle: Duration::from_secs(3),
             idle: Some(Duration::from_secs(10)),
@@ -66,6 +78,17 @@ impl WindowOptions {
     }
 
     #[must_use]
+    pub fn quiet(pacing: Pacing) -> Self {
+        Self {
+            pacing,
+            quiet: Some(QUIET_SPAN),
+            idle: None,
+            echoes: 0,
+            ..Self::clean()
+        }
+    }
+
+    #[must_use]
     pub fn faults_env(&self) -> String {
         self.faults
             .iter()
@@ -82,9 +105,20 @@ pub struct Idle {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Quiet {
+    pub ticks: u64,
+    pub secs: f64,
+    pub wakeups: Vec<f64>,
+    pub hides: u64,
+    pub pacing: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct WindowRun {
     pub pid: i32,
     pub idle: Option<Idle>,
+    pub quiet: Option<Quiet>,
+    pub hides: u64,
     pub presents_ns: Vec<f64>,
     pub echoes: usize,
     pub armed: Vec<String>,
@@ -102,12 +136,46 @@ impl WindowRun {
 }
 
 #[must_use]
-pub fn config_yaml(socket: &Path, pane_fate: PaneFate) -> String {
+pub fn config_yaml(socket: &Path, pane_fate: PaneFate, pacing: Pacing) -> String {
     format!(
-        "tear:\n  mode: attach\n  runtime: resident\n  socket: {socket}\n  auto_spawn: false\n  session_switching: true\n  auto_attach: off\n  pane_fate: {fate}\n  fate_backstop_secs: {FATE_BACKSTOP_SECS}\nshell:\n  command: /bin/sh\ncursor:\n  blink: false\nperformance:\n  histograms: on\nwindow:\n  width: 420\n  height: 260\n",
+        "tear:\n  mode: attach\n  runtime: resident\n  socket: {socket}\n  auto_spawn: false\n  session_switching: true\n  auto_attach: off\n  pane_fate: {fate}\n  fate_backstop_secs: {FATE_BACKSTOP_SECS}\nshell:\n  command: /bin/sh\ncursor:\n  blink: false\nsuggestions:\n  enabled: false\nperformance:\n  histograms: on\n  pacing: {pacing}\nwindow:\n  width: 420\n  height: 260\n",
         socket = socket.display(),
-        fate = pane_fate.name()
+        fate = pane_fate.name(),
+        pacing = pacing.name()
     )
+}
+
+pub fn loop_ticks(frame_perf: &serde_json::Value) -> io::Result<u64> {
+    frame_perf["loop"]["ticks"]
+        .as_u64()
+        .ok_or_else(|| io::Error::other("frame_perf carries no loop.ticks: a mado before R11"))
+}
+
+#[must_use]
+pub fn window_hides(frame_perf: &serde_json::Value) -> u64 {
+    frame_perf["window"]["hides"].as_u64().unwrap_or(0)
+}
+
+pub fn wakeup_rates(pid: i32, span: Duration, every: Duration) -> io::Result<Vec<f64>> {
+    let read = || {
+        crate::seam::task(pid)
+            .map(|t| t.context_switches)
+            .ok_or_else(|| io::Error::other(format!("pid {pid} has no task to read")))
+    };
+    let mut out = Vec::new();
+    let mut before = read()?;
+    let mut at = Instant::now();
+    let end = at + span;
+    while at < end {
+        std::thread::sleep(every.min(end - at));
+        let now = Instant::now();
+        let switches = read()?;
+        let secs = now.duration_since(at).as_secs_f64();
+        out.push(switches.saturating_sub(before) as f64 / secs);
+        before = switches;
+        at = now;
+    }
+    Ok(out)
 }
 
 pub fn frame_perf(socket: &Path) -> io::Result<serde_json::Value> {
@@ -219,6 +287,25 @@ fn measure(
     let first = first_answer(child, kanshou, log)?;
     let armed = armed_faults(&first);
     std::thread::sleep(opts.settle);
+    let quiet = match opts.quiet {
+        Some(span) => {
+            let before = frame_perf(kanshou)?;
+            let t0 = Instant::now();
+            let wakeups = wakeup_rates(pid, span, WAKEUP_SPAN)?;
+            let after = frame_perf(kanshou)?;
+            Some(Quiet {
+                ticks: loop_ticks(&after)?.saturating_sub(loop_ticks(&before)?),
+                secs: t0.elapsed().as_secs_f64(),
+                wakeups,
+                hides: window_hides(&after).saturating_sub(window_hides(&before)),
+                pacing: after["window"]["pacing"]
+                    .as_str()
+                    .unwrap_or("unreported")
+                    .to_string(),
+            })
+        }
+        None => None,
+    };
     let idle = match opts.idle {
         Some(span) => {
             let before = ui_get_pane(&frame_perf(kanshou)?)?;
@@ -244,9 +331,12 @@ fn measure(
         let after = byte_to_present_buckets(&frame_perf(kanshou)?)?;
         presents_ns = presents_between(&before, &after);
     }
+    let hides = window_hides(&frame_perf(kanshou)?).saturating_sub(window_hides(&first));
     Ok(WindowRun {
         pid,
         idle,
+        quiet,
+        hides,
         presents_ns,
         echoes: opts.echoes,
         armed,
@@ -271,7 +361,7 @@ pub fn run_window(
     let config_dir = iso.join("config").join("mado");
     fs::create_dir_all(&config_dir)?;
     let config = config_dir.join("mado.yaml");
-    fs::write(&config, config_yaml(socket, opts.pane_fate))?;
+    fs::write(&config, config_yaml(socket, opts.pane_fate, opts.pacing))?;
     let log_path: PathBuf = h.settings.root.join("logs").join(format!("mado-{tag}.log"));
     let log = File::create(&log_path)?;
     let mut child = Command::new(mado)
@@ -295,18 +385,61 @@ pub fn run_window(
     measured
 }
 
+pub fn run_parked(h: &Harness, parked: &Path, tag: &str, span: Duration) -> io::Result<Vec<f64>> {
+    let iso = h.iso().join(format!("parked-{tag}"));
+    let env = isolation::env_for(&iso, &h.settings.path_env)?;
+    let log_path: PathBuf = h
+        .settings
+        .root
+        .join("logs")
+        .join(format!("parked-{tag}.log"));
+    let log = File::create(&log_path)?;
+    let lifetime = (PARKED_SETTLE + span + Duration::from_secs(30)).as_secs();
+    let mut child = Command::new(parked)
+        .current_dir(&h.settings.root)
+        .env_clear()
+        .envs(env)
+        .arg("--secs")
+        .arg(lifetime.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .spawn()?;
+    let pid = i32::try_from(child.id()).unwrap_or(-1);
+    h.record_pid(pid, &format!("parked madori window {tag}"));
+    std::thread::sleep(PARKED_SETTLE);
+    let measured = match child.try_wait()? {
+        Some(st) => Err(io::Error::other(format!(
+            "the parked window exited {st} before it was measured"
+        ))),
+        None => wakeup_rates(pid, span, WAKEUP_SPAN),
+    };
+    if let Some(started) = procs::Started::of(pid) {
+        procs::terminate(&[started], &|m| h.log(m));
+    }
+    let _ = child.wait();
+    measured
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_window_config_names_the_daemon_socket_the_fate_policy_and_a_backstop_past_the_run() {
-        let yaml = config_yaml(Path::new("run/bound/tear.sock"), PaneFate::Poll);
+        let yaml = config_yaml(
+            Path::new("run/bound/tear.sock"),
+            PaneFate::Poll,
+            Pacing::Capped,
+        );
+        assert!(yaml.contains("pacing: capped"));
         assert!(yaml.contains("socket: run/bound/tear.sock"));
         assert!(yaml.contains("runtime: resident"));
         assert!(yaml.contains("pane_fate: poll"));
         assert!(yaml.contains("auto_spawn: false"));
         assert!(yaml.contains("histograms: on"));
+        assert!(yaml.contains("cursor:\n  blink: false\n"));
+        assert!(yaml.contains("suggestions:\n  enabled: false\n"));
         assert!(yaml.contains(&format!("fate_backstop_secs: {FATE_BACKSTOP_SECS}")));
         let o = WindowOptions::clean();
         let longest = 30.0
@@ -344,6 +477,8 @@ mod tests {
         let run = WindowRun {
             pid: 1,
             idle: None,
+            quiet: None,
+            hides: 0,
             presents_ns: Vec::new(),
             echoes: 0,
             armed: armed_faults(&serde_json::json!({"bench_faults": ["wake-off"]})),

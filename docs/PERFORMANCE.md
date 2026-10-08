@@ -192,7 +192,7 @@ is not a rung's evidence (§6).
 | C9 | short lines (`yes`, 163 columns) | 9.6 MB/s with 2-byte lines and 513 allocations per KiB (G); 13.9 MiB/s with the 3-byte lines a PTY delivers (measured in the daemon code read, §11) | vte with a no-op performer, 1,875–1,961 MB/s (G) | 0 allocations per KiB; throughput `Pending` until R24's first run backs a multiple | R24, R25 |
 | C9 | daemon RSS per 64 MiB flood | 20 MiB → 2.2 GiB, kept after the kill (H-d, n=3) | the text itself | ~1–1.5× the text, released | R26 |
 | C10 idle | GUI loop ticks | 57.83/s (L, n=32,801 over 567 s) | 0 | ≤1/s | R10, R11 |
-| C10 | context switches/s: GUI / daemon / holder | 215 / 77 / 2.8 (L) | GUI: a parked madori window with no tear link under `Reactive` pacing, 0.8–1.9/s (R1, screen locked); daemon and holder ~0 | GUI ≤1.5× that floor; daemon and holder ≤1 each | R10, R11, R18 |
+| C10 | context switches/s: GUI / daemon / holder | 215 / 77 / 2.8 (L) | GUI: a parked madori window with no tear link under `Reactive` pacing, 0.8–1.9/s (R1, screen locked); daemon and holder ~0 | GUI ≤1.5× that floor, its blink and suggestion watchers off (§6, §8.3); daemon and holder ≤1 each | R10, R11, R18 |
 | C10 | painted frames repeating content | 74.1 %: 13,793 of 18,610 (L) | 0 | ≤5 % | R12 |
 | C10 | WebSocket bridge timer wakeups | 25/s: a 50 ms accept poll and a 200 ms main poll (S) | 0 | 0 | R39 |
 | C11 resize | per drag step | an O(scrollback) mirror rewrap + a blocking RPC + a truncating resize + SIGWINCH (S); timings unmeasured | — | ≤1 resize per 50 ms; 1 reflow and ≤2 SIGWINCH per drag; ≤1 ms of UI per step | R23, R33 |
@@ -1405,7 +1405,7 @@ R37.*
   with the backstop an idle window still reads its fate once per 30 s, so
   the gate's 0 holds over an idle window shorter than the backstop (the
   window cells set it to 3,600 s). mado's switch, injection and
-  config-reload channels still ride the `Capped(60)` tick; R11 must ring the
+  config-reload channels still ride the `Capped(60)` tick; R11 rings the
   doorbell from them before it parks. Receipts, on the reference Mac at load
   averages 6–21 (other work building beside it): the madori row — a ring
   while a `Reactive` window is parked redraws in the ring's own turn
@@ -1465,6 +1465,153 @@ R37.*
   capped` is red.
 - **Old behaviour:** `performance.pacing: capped` or `continuous` reproduces
   today exactly.
+- **State (2026-10-08):** landed in madori 0.1.23 (`f33decb`), ishou-tokens
+  0.1.20 (`65402f0`), mado (`856e0cb`) and tear-bench. madori:
+  `RenderCallback::frame_demand` answers `FrameDemand::{Idle, Now,
+  At(Instant), Continuous}` before any acquire, and its default maps
+  `needs_frame` (`true` → `Now`), so a consumer that overrides neither
+  draws every frame as before; `Capped` and `Continuous` keep their
+  schedules and ignore occlusion. `At` is a wake, never a frame by itself:
+  the loop asks again at that instant, so a past deadline cannot spin. The
+  pacer owns the frame debts and the last present, so the loop and the
+  matrix run one decision path. Under `Reactive` it is Parked, Hot or
+  Hidden: a ring or an event whose last present is a whole interval old
+  draws at once, one inside the interval waits for the slot and is asked
+  there; a drawn frame makes the window Hot, and while Hot it ticks at the
+  slower of the pacing's rate and the display's — winit's current monitor,
+  read at resume and on a scale change, 60 Hz until read — drawing at most
+  once a tick; two ticks that draw nothing park it, and a tick that
+  answers `At` parks it at once until that instant, so a blinking cursor
+  costs its flip's frame and the one tick after it. Only a drawn frame
+  makes a window Hot, so pointer motion alone never does. Occluded or
+  minimized after the first present is Hidden: nothing is acquired,
+  `FrameDebt::Revealed` is owed from the moment it hides, so the reveal
+  draws at once, and rings drain through the turnstile with no frame. On
+  Wayland (the raw window handle) madori calls `pre_present_notify` under
+  `Reactive`, winit then throttles `RedrawRequested` to the compositor's
+  frame callbacks, and a requested redraw withheld for 4 refreshes
+  (≥50 ms) reads as Hidden until the callback delivers it. The moment a
+  window hides — an occlusion, a minimize, a withheld Wayland redraw — the
+  loop runs one drain turn with no frame (`Turnstile::shift`,
+  `Turnstile::wait`): the ring that raised the doorbell's flag may never be
+  answered by a redraw, and without that turn every later ring found the
+  flag raised and sent nothing, so tear output piled up unparsed until the
+  window was shown. `Visible`, the token `Surface::acquire` takes, is
+  minted only by the pacer's non-Hidden branch, and `tests/structural.rs`
+  refuses any other `get_current_texture` call in madori's `src/` and
+  `examples/`; `AppBuilder::visibility` reports hidden, hides and reveals;
+  `examples/parked_window` is C10's floor. mado: `performance.pacing`
+  (`demand`, the default — `Reactive` capped by `target_fps` else
+  `fps_cap`, otherwise at the display's rate; `capped`, today's
+  `Capped(60)`; `continuous`). `TerminalRenderer::frame_demand`: content,
+  selection, overlay-snapshot and force-paint reasons are `Now`, and so are
+  a float panel that opens, moves, closes or carries a new page and a
+  pending browser snapshot render; the cursor's and SGR-5 text's blink ask
+  again `At` the next flip, from ishou-tokens' `blink_phase` — the phase
+  and the wait to the flip from one law, never shorter than the f32 render
+  clock's step, where an f32 next-flip product could land before the
+  boundary and skip a flip; the bell flash, overlay fades and motion are
+  `Continuous` while they run; the board's 1 s staleness heartbeat and the
+  synchronized-output defer's cap are `At`s; an open search bar draws only
+  when its fingerprint changes. The loop adds the kinetic glide and
+  selection auto-scroll (`Continuous`), the Ctrl-S board's 3 s tick,
+  `FateWatch`'s backstop and re-attach backoff (`pane_fate: poll` is an
+  `At` every 16.7 ms, today's 60 reads a second), the switch re-attach
+  backoff and bounded chrome retries. The producers that change what the
+  window reads ring it: tear output (R10), and through a late-bound
+  `ring::WINDOW` the switch, injection and config-reload channels R10
+  named, the local-PTY reader, browser fetches, every browser verb
+  (`BrowserCommands::push`, so MCP, kanshou and vigy alike), the
+  suggestion store and every kanshou leaf outside a closed read-only list
+  — each at its own push, which no type forces on the next producer
+  (§8.1). The GUI process's own background planes park too: the
+  suggestion engine's maintenance pass (decay, persist, praça, janitors),
+  which ran every 5 s whether the engine was enabled or not, sleeps until
+  a row can expire, a janitor is due (`JanitorRunner::next_due_ms`) or a
+  store change or praça capture schedules a pass a debounce later.
+  `frame_perf` gains `loop.ticks` and `window{pacing, hidden, hides,
+  reveals}`. R1's mado bench crate is bin-internal, because `TearRuntime`
+  and the renderer live in mado's bin: exhaustive `const fn` rows over
+  madori's `FramePacing`, `PacingMode` and `TearRuntime` (`mado bench
+  rows`) and the present-path bench (`mado bench present`: the real
+  renderer into a headless target, paint and GPU wait per frame for a
+  one-row change, a full rebuild and a repeat). Where the code refines the
+  text: a deadline is a wake, not a frame; the bell's decay is a
+  continuous tween, so it is `Continuous` until it ends; garasu needed no
+  change, because madori clamps to the display's rate under the
+  `target_fps`/`fps_cap` ceiling, the rule `garasu::adaptive::recommend`
+  already states; and the window cells run with the suggestion engine's
+  source watchers off, as they run with the blink off (§6), because their
+  25 polls are behaviour on their own clocks — what they cost a default
+  window is §8.3's. Receipts, the reference Mac with its screen locked,
+  load averages 6–100 (other work building beside it): the madori matrix
+  over a fake surface (`pacer::matrix`, every `FramePacing` a row through
+  an exhaustive match, its rings carried by the real doorbell and
+  turnstile) reads a quiet minute at 2 loop turns under `Reactive` against
+  more than 60 under the `Capped` and `Continuous` controls; the first
+  frame after idle in the ring's own turn; a 50 ms burst at most once per
+  8.33 ms refresh with its last chunk drawn; exactly two idle ticks, then
+  a park; each of 120 pointer moves at most the one turn that re-asks,
+  drawing nothing and leaving nothing Hot; 0 acquires through 20 rings and
+  a resize while occluded or minimized, every chunk drained, the reveal
+  drawn at once, also when the renderer answers `Idle` and nothing else is
+  owed — where the controls acquire; a window occluded before its first
+  frame still draws it; a withheld Wayland redraw hiding the window, every
+  chunk printed meanwhile drained, until its late callback reveals it, and
+  a slow redraw elsewhere never hiding one; an `At` drawn at its instant
+  with at most one turn before it, where `Capped` ticks all the way there;
+  a blinking cursor's 20 flips drawn at their instants in at most 42 turns
+  against more than 500; a 300 ms kinetic glide drawn once a refresh at
+  exactly the interval, then parked. Through the real doorbell
+  (`pacer::tests`) a window hidden by a withheld Wayland redraw, and one
+  occluded while its ring waits for its slot, receive the next rings and
+  drain them. Mutations, each reddening its rows: no drain turn on the
+  Wayland inference (2), none on a hide (1), a re-ask that makes the window
+  Hot (1), `IDLE_TICKS = 40` (2), no `Revealed` owed on a hide (2), an `At`
+  that does not park (2), a second `get_current_texture` call (the
+  structural test). madori's `trybuild` pins a forged `Visible` (E0451)
+  and an acquire without one (E0061). mado's rows: a quiet blinking cursor
+  asks `At` its next flip and draws nothing before it; a 530 ms blink a
+  week into the clock draws all 60 flips at their deadlines in at most 180
+  asks, where the f32 product it replaced reads 181 asks for 7 flips; an
+  open search bar asks for nothing while unchanged; a float panel asks for
+  one frame when it opens, moves, takes a page or closes; the glide is
+  `Continuous` until it rests; `FateWatch::next` is the backstop, the
+  backoff, `Idle` at 0 and 60 Hz under poll; a quiet store with nothing
+  due parks the maintenance loop, and a pass is the soonest expiry,
+  janitor or writer retry, never sooner than 1 s. An isolated embedded
+  window, default config, 60 quiet seconds (debug builds, `49daf6e`): 0
+  loop turns and 0.9 ms of main-thread CPU, against 3,613 turns, 69.9
+  context switches a second and 764 ms at origin `6bc8a01` and 3,612
+  turns, 68.2 a second under the `capped` control. tearbench's quiet
+  window (a release mado, `--host-class reference-mac`, load 55–82):
+  C10/idle-ticks 0, `Within`, against 3,528 for `pacing-capped`, `Over`;
+  C10/window-wakeups p50 0.67 a second against the same run's parked
+  window's 0.67 — 1.0× its floor, under its 1.5× — and 63 a second under
+  `pacing-capped`, both graded `Blind` because the sentinels read 1.56×
+  (framed round trip) and 0.63× (uds one-way) their references; a second
+  run read 0.67 against 1.00. Red before for the background planes: the
+  same quiet window over the first proposal's mado (`49daf6e`, its
+  maintenance pass on the 5 s tick) read p50 2.50 a second against its
+  run's floor of 1.00, 2.5× and over the limit; side by side with a parked
+  window in one minute (debug builds, 3 s spans) it read 2.0 against 0.67,
+  and 1.33 against 1.0 with the pass on deadlines. C3/rpcs 0 at `49daf6e` (`Blind` in the
+  last run, whose window hid) and `pane-fate-poll` 552–572;
+  byte → present over pooled release runs at `49daf6e` p50 0.54 ms both
+  before and after (origin n=144, R11 n=200; p90 2.18 against 2.43 ms).
+  Under a ring every millisecond a `Reactive` window drew 317–321 frames
+  in 3 s, the 120 Hz panel's rate, against 175–178 for `Capped(60)`. The
+  screen-locked Mac sometimes reports a window occluded: a demand window
+  then draws nothing, which is why the window cells read `Blind` whenever
+  the window hid. The present-path bench (`mado bench present`, 163×48 at
+  3524×2064, a release build without LTO): paint p50 595 µs for a full
+  rebuild, 505 µs for a one-row change and 498 µs for a repeat, GPU wait
+  ~1.26 ms for each — R31's baseline. Red before: origin's 3,613 turns a
+  minute and 69.9 context switches a second; madori's loop before R11
+  acquires whenever `needs_frame` answers `true`, occluded or not (S
+  madori `app.rs:1314` at `bde2954`, which never reads
+  `WindowEvent::Occluded`), which its `Capped` and `Continuous` rows
+  reproduce.
 
 #### R12 · Never present an unpainted drawable
 *Destination · after R11.*
@@ -2382,7 +2529,8 @@ R3's four (§5 R3), R4's `mute-sink` (the holder leaves a failed sink's
 socket open, as every holder before R4 does) and `store-lease-off` (the
 daemon declares no incarnation and never checks the lease), R6's
 `array-encoder`, R7's `old-splitter`, R10's two in the window cells
-below, the kept configuration `pane-fate-poll` and the `wake-off` fault, and
+below, the kept configuration `pane-fate-poll` and the `wake-off` fault,
+R11's kept configuration `pacing-capped` on the quiet window below, and
 R5's three, the kept configuration `cursor-keys-via-rpc` (mado's
 `input.cursor_keys_source: daemon-rpc`) and the faults
 `replay-modes-unadvertised` and `modeless-replay`, each run through a real
@@ -2447,7 +2595,8 @@ convention (the `SendKeys` frame plus the snapshot body) beside it.
 structural tier opens it as a resident window against an isolated bound
 daemon: its own home, XDG, `TMPDIR` and kanshou directories under the run
 root, `MADO_CONFIG` pointing at a generated `mado.yaml` (`tear.mode: attach`
-on the daemon's socket, `/bin/sh`, cursor blink off, histograms on,
+on the daemon's socket, `/bin/sh`, cursor blink off, the suggestion
+engine off (`suggestions.enabled: false`, since R11), histograms on,
 `tear.fate_backstop_secs: 3600` so no backstop read lands inside the run),
 `TEAR_BENCH_FAULTS` naming its faults, and its pid recorded like every other
 process the harness starts. After 3 s of settling it reads `frame_perf` over
@@ -2470,6 +2619,37 @@ leaves the control `Blind`, never a pass. Without `--mado-bin`, or when the
 window cannot be measured (no display, a mado that exits), the cells and
 their controls read `Blind` with the reason; the windows are scratch GUIs
 that appear on the measuring host's screen for ~15–30 s each.
+
+**The quiet window (R11).** C10's two window cells take a third window of
+the same shape, with `performance.pacing` written into its `mado.yaml`
+(`demand`, the default): after the settle it reads `frame_perf`, samples
+the window process's context switches (`proc_pidinfo` `pti_csw`, through
+the seam) every 3 s for 60 s with nothing printed, and reads `frame_perf`
+again. The difference in `loop.ticks` — madori loop turns, one per
+`RedrawRequested` mado dispatches — is C10/idle-ticks, budget
+`Count{max: 60}`, ≤1 a second; the twenty 3 s rates are
+C10/window-wakeups, budget `Floor{parked-window, p50, k: 1.5}`. The floor
+is measured in the same run by `--parked-window-bin` (madori's
+`examples/parked_window`: a `Reactive` window that draws its first frame
+and asks for nothing more, no tear link), sampled the same way under the
+same isolation, so a mado floor grades a window cell and nothing else (the
+matrix's const check). A window that hid during its span (`frame_perf
+window.hides`) parks for a reason that is not its own, so its cells read
+`Blind`, never `Within`, and since a demand window draws nothing while
+hidden the C3 window cells and their controls read `Blind` too when the
+window hid while measured; without `--parked-window-bin` the wakeups cell
+reads `Blind` (`floor parked-window was not measured`). The control is the
+kept configuration `pacing-capped`, its own quiet window under
+`performance.pacing: capped`, which must read `Over` on both cells. The
+window runs with its two planes that wake on their own clocks configured
+off — the cursor blink, a deadline every half period, and the suggestion
+engine's source watchers, 25 polls on 30 s to 1 h cadences — because both
+are behaviour the operator asked for, not the window's idle cost; what
+the watchers cost a default window is §8.3's, measured and not gated.
+Everything else the GUI process runs stays on: the suggestion engine's
+maintenance pass (decay, persist, praça) and the janitors run with the
+engine disabled too, so a pass on a fixed tick reads in this cell.
+`tearbench case quiet-window` runs the floor and the clean window alone.
 
 **The declaration.** One `bench_matrix!` invocation. A row is a case, its
 per-metric budgets as a struct literal — a missing metric is E0063, and
@@ -2687,7 +2867,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | an event conflated away or re-fired by a replay | an append-only ring fenced by offset; overflow is a typed `EventGap`; side effects deduplicated per process | the events row across a clean handoff and a crash, red on today's replay first | loss past retention is surfaced, not prevented; across a crash events are at most once | only-mitigated (C1) |
 | a frame published inside a synchronized update | the publisher's gate, with its own deadline | hold set to 0; a BSU followed by silence | the timeout bound | only-mitigated (C1) |
 | an unpainted present | `Encoded` is minted only by `PaintTarget::finish` | `trybuild`: `Encoded` built outside, E0451; the BSU-split test | madori consumers on the legacy callback | truly-unrep |
-| an acquire while hidden | the acquire helper takes a `Visible` token only non-Hidden states mint | `trybuild`: an acquire without the token, pinned stderr; the state × event matrix | Wayland, where Hidden is inferred from frame callbacks | truly-unrep |
+| an acquire while hidden | `Surface::acquire` takes a `Visible` token that only the pacer's non-Hidden branch mints, so the acquire it guards cannot be made with a forged or missing token; madori's `tests/structural.rs` refuses any other `.get_current_texture(` call in its `src/` or `examples/`, so the loop reaches the swapchain only through that acquire | `trybuild` (madori `tests/trybuild.rs`): a forged `Visible`, E0451, and an acquire without one, E0061, pinned stderr; a second `get_current_texture` call planted in `app.rs` reddens the structural test (mutation run, 1 of 29 red, f33decb); the state × event matrix over a fake surface (madori `pacer::matrix`): 0 acquires through 20 rings and a resize while occluded or minimized, where the `Capped` and `Continuous` rows, kept as controls, acquire | Wayland, where Hidden is inferred from a redraw the compositor withheld for 4 refreshes (≥50 ms) and the headless-compositor run is not done; a bypass the text scan cannot see (a call spelled through a macro or a re-export, a consumer's own surface) | only-mitigated (C1) — the token is compile-time, the bypass is caught by madori's CI; only-mitigated (C1) for the Wayland inference |
 | the UI thread blocks on tear | `LinkHandle` has no blocking method; a structural test keeps clients out of UI modules until R41 makes it E0433 | `trybuild`: a blocking call on `LinkHandle`, E0599; the `ui_io: inline` fault | a deliberate dependency until R41 | truly-unrep (`LinkHandle` holders) |
 | an unauthenticated lane served | the unverified lane type has no serve method | `trybuild`, pinned E0599 | — | truly-unrep |
 | a lane used on a daemon that never offered it | a `Negotiated<Cap>` witness | `trybuild`, pinned stderr | — | parse-time-rejected (raises SHUKEN §5's capability row) |
@@ -2704,7 +2884,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | Nagle on a tear TCP socket | one connect and accept path sets `TCP_NODELAY` | an rg gate; the Nagle probe | a bypass outside the profile | only-mitigated (C1) |
 | a shell started outside the default band | the daemon's `session-host` class makes every holder it spawns, and so every shell, an `Interactive` launchd descendant; the holder resets its main thread before spawning | the `proc_pidinfo` row through the production `NewSession` RPC, the daemon at `session-host` and at `xpc-adaptive` | panes born before R2: launchd's band is not clearable on a running process (R1); whether `posix_spawn` carries the caller's QoS (§8.3) | only-mitigated (C1) |
 | an allocation per line feed | row recycling | the counting allocator; the allocating-row fault | — | only-mitigated (C1) |
-| output that never wakes a parked window | every tear producer's constructor takes the window's waker, and a chunk and the stream's end ring it, after `InProcess` releases its locks; madori mints wakers only from the `AppBuilder` whose loop connects them, and `Turnstile::redraw`, the only code that lowers the doorbell's flag, lowers it before the consumer's dispatch drains | loom: the flag lowered after the drain loses an item (`lowering_the_flag_after_the_drain_loses_a_wake`); `Turnstile::redraw` mutated to drain first strands the item behind the drain (`a_ring_that_lands_while_the_loop_drains_is_answered_by_the_next_turn`); a no-op waker leaves a parked madori window at 0 redraws, 0 of 20 on the real loop; a fan-out or detach that rings under the subscribers lock wedges `a_subscriber_s_waker_rings_after_every_lock_is_released`; tearbench's `wake-off` control on C3/present (p50 9.47 ms armed against 1.15 ms clean, same run; graded `Blind` that run by a sentinel) | a producer built with `Waker::noop()` — the one-shot path's feeder thread rings after it feeds instead; a `Drains` impl that dispatches outside its drain; mado's switch, injection and config-reload channels still ride the tick until R11 | only-mitigated (C1) |
+| output that never wakes a parked window | every tear producer's constructor takes the window's waker, and a chunk and the stream's end ring it, after `InProcess` releases its locks; madori mints wakers only from the `AppBuilder` whose loop connects them, and `Turnstile::redraw`, the only code that lowers the doorbell's flag, lowers it before the consumer's dispatch drains; a window that hides runs one drain turn with no frame (`Turnstile::shift`, `Turnstile::wait`), so a ring whose redraw the compositor withholds, or one deferred to a slot the hide cleared, cannot leave the flag raised and every later ring silent; in mado every producer that changes what the window reads rings a late-bound `ring::WINDOW` at its push | loom: the flag lowered after the drain loses an item (`lowering_the_flag_after_the_drain_loses_a_wake`); `Turnstile::redraw` mutated to drain first strands the item behind the drain (`a_ring_that_lands_while_the_loop_drains_is_answered_by_the_next_turn`); a no-op waker leaves a parked madori window at 0 redraws, 0 of 20 on the real loop; a fan-out or detach that rings under the subscribers lock wedges `a_subscriber_s_waker_rings_after_every_lock_is_released`; without the drain turn a window hidden by a withheld Wayland redraw, and one occluded while its ring waits for its slot, receive no later ring and drain nothing (madori `pacer::tests` through the real doorbell, mutation runs at f33decb, 2 and 1 red); tearbench's `wake-off` control on C3/present (p50 9.47 ms armed against 1.15 ms clean, same run; graded `Blind` that run by a sentinel) | a producer built with `Waker::noop()` — the one-shot path's feeder thread rings after it feeds instead; a `Drains` impl that dispatches outside its drain; a mado producer that changes what the window reads and never rings `ring::WINDOW` — the switch, injection and config-reload channels, the local PTY, browser verbs and fetches, the suggestion store and kanshou's mutating leaves each ring at their push, and nothing types the next one | only-mitigated (C1) |
 | an idle window that polls the authority | the fate is read when the pane's stream ends, then once per re-attach backoff while it stays ended, and at a backstop (`FateWatch`) | `tear.pane_fate: poll`: 240 of 240 idle wakes read `get_pane` (mado's `idle_window` test); tearbench's `pane-fate-poll` control on C3/rpcs, `Reddened` at 601 in 10 s | one fate read per `tear.fate_backstop_secs` (30 s) at idle; a stream that never ends for a pane that did | only-mitigated (C1) |
 
 ### 8.2 Operator decisions (2026-10-07)
@@ -2742,8 +2922,26 @@ decision, and every rung that depends on it says so.
   `user@.service` delegates `pids memory cpu`, not `io`, so `background`'s
   `IOWeight=20` on a user daemon may do nothing (R2's Linux gate).
 - Whether an acquire on a hidden Wayland surface under `AutoVsync` blocks the
-  UI thread (R11), and whether macOS's compositor can be handed damage through
-  `CAMetalLayer` (R31).
+  UI thread — R11 infers Hidden before acquiring, so the question survives
+  only for the 4 refreshes the inference waits and the `capped` pacing — and
+  whether macOS's compositor can be handed damage through `CAMetalLayer`
+  (R31). R11's Wayland arm has run only in its fake-surface rows: no Linux
+  host was reachable for the headless-compositor run.
+- What the suggestion engine's source watchers cost a default window. Its
+  25 sources poll on 30 s to 1 h cadences in the GUI process (a
+  two-worker tokio runtime), and with them on a parked, demand-paced
+  window read p50 3.0 context switches a second over 3 s spans, mean 14.7
+  — spikes of 30–56 a second every few seconds and ~600 in the four
+  seconds around the minute mark — against a parked madori window's 1.0 and 2.55 in the same
+  minute (R11, debug builds, an isolated home where most sources find no
+  binary or credential). R11 parked what was the window's own: the frame
+  loop, the maintenance pass (decay, persist, praça) and the janitors,
+  which with the watchers off read 1.33 against 1.0. The polls are
+  behaviour, so C10's window cells run with `suggestions.enabled: false`
+  (§6) and this cost is recorded, not gated. Where it ends — the watchers
+  outside the GUI process with the window reading the store when it is
+  asked, or a source that backs off while its binary or credential is
+  absent — no rung owns yet.
 - Remote links: ssh, WebSocket and real networks; whether OpenSSH sets
   `TCP_NODELAY` on forward-only channels (R39's Nagle row decides).
 - mado's own VT throughput (its benches cover only motion curves); it sizes

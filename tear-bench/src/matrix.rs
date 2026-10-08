@@ -25,6 +25,7 @@ pub const LANDED: &[Rung] = &[
     Rung::R6,
     Rung::R7,
     Rung::R10,
+    Rung::R11,
 ];
 
 #[must_use]
@@ -410,6 +411,7 @@ metrics! {
     allocations => Allocations, "allocations", "allocations per KiB parsed";
     idle_ticks => IdleTicks, "idle-ticks", "GUI loop ticks per idle second";
     idle_wakeups => IdleWakeups, "idle-wakeups", "context switches or timer wakeups per idle second";
+    window_wakeups => WindowWakeups, "window-wakeups", "the window process's context switches per idle second, in 3 s spans, against a parked madori window's";
     paints => Paints, "paints", "painted frames that repeat content";
     present => Present, "present", "a byte's arrival in the window to the end of the frame that shows it, p50 (mado's frame_perf byte_to_present)";
     loss => Loss, "loss", "keys or bytes lost, or delivered twice";
@@ -443,6 +445,7 @@ tear_types::closed_vocabulary! {
         WakeOff => "wake-off",
         ReplayModesUnadvertised => "replay-modes-unadvertised",
         ModelessReplay => "modeless-replay",
+        PacingCapped => "pacing-capped",
     }
 }
 
@@ -463,7 +466,8 @@ impl Control {
             | Control::CursorKeysViaRpc
             | Control::PaneFatePoll
             | Control::UdsBufferOsDefault
-            | Control::TwoWriteFraming => ControlKind::KeptConfiguration,
+            | Control::TwoWriteFraming
+            | Control::PacingCapped => ControlKind::KeptConfiguration,
             Control::OldSplitter => ControlKind::BenchOnly,
             Control::ArrayEncoder
             | Control::MuteSink
@@ -492,6 +496,7 @@ impl Control {
             | Control::ReplayModesUnadvertised
             | Control::ModelessReplay => Rung::R5,
             Control::PaneFatePoll | Control::WakeOff => Rung::R10,
+            Control::PacingCapped => Rung::R11,
             Control::ArrayEncoder => Rung::R6,
             Control::UdsBufferOsDefault | Control::TwoWriteFraming => Rung::R8,
             Control::MuteSink | Control::StoreLeaseOff => Rung::R4,
@@ -571,6 +576,9 @@ impl Control {
             Control::ModelessReplay => {
                 "the replay carries no modes, as to_ansi did before R5: only ?1049h and ?25l (S pane_snapshot.rs:372-480)"
             }
+            Control::PacingCapped => {
+                "mado's performance.pacing: capped, the Capped(60) loop of before R11: a loop turn every 16.7 ms whatever happens, and every frame drawn while occluded (S mado config.rs FALLBACK_FPS, madori app.rs at bde2954)"
+            }
         }
     }
 }
@@ -648,7 +656,23 @@ pub fn cells() -> Vec<Cell> {
 pub const WINDOW_CELLS: &[Cell] = &[
     Cell::new(Case::C3, Metric::Rpcs),
     Cell::new(Case::C3, Metric::Present),
+    Cell::new(Case::C10, Metric::IdleTicks),
+    Cell::new(Case::C10, Metric::WindowWakeups),
 ];
+
+#[must_use]
+pub const fn is_window_cell(cell: Cell) -> bool {
+    let mut i = 0;
+    while i < WINDOW_CELLS.len() {
+        if WINDOW_CELLS[i].case.index() == cell.case.index()
+            && WINDOW_CELLS[i].metric.index() == cell.metric.index()
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 #[must_use]
 pub fn red_set(control: Control) -> Vec<Cell> {
@@ -665,7 +689,7 @@ pub fn red_set(control: Control) -> Vec<Cell> {
 
 pub(crate) const fn check_budget(b: Budget) {
     match b {
-        Budget::Floor { floor, stat, k } => {
+        Budget::Floor { stat, k, .. } => {
             assert!(
                 k > 0.0 && k < 1.0e6,
                 "a floor multiple must be positive and finite"
@@ -673,10 +697,6 @@ pub(crate) const fn check_budget(b: Budget) {
             assert!(
                 !matches!(stat, Stat::P99) || k >= 3.0,
                 "a p99 budget needs a multiple of at least 3 (§6 noise)"
-            );
-            assert!(
-                !matches!(floor.source(), FloorSource::Mado),
-                "a mado floor cannot grade a tear cell"
             );
         }
         Budget::Count { .. } | Budget::Bytes { .. } | Budget::Exactly { .. } => {}
@@ -705,7 +725,15 @@ const fn check_matrix() {
         assert!(!current.receipt.is_empty(), "every row carries a receipt");
         let mut metric = 0;
         while metric < Metric::ALL.len() {
-            check_budget(current.budgets.get(Metric::ALL[metric]));
+            let budget = current.budgets.get(Metric::ALL[metric]);
+            check_budget(budget);
+            if let Budget::Floor { floor, .. } = budget {
+                assert!(
+                    !matches!(floor.source(), FloorSource::Mado)
+                        || is_window_cell(Cell::new(Case::ALL[case], Metric::ALL[metric])),
+                    "a mado floor grades only a window cell, whose run measures it"
+                );
+            }
             metric += 1;
         }
         let mut control = 0;

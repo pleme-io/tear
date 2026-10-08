@@ -30,6 +30,7 @@ fn main() {
         allocations: N,
         idle_ticks: N,
         idle_wakeups: N,
+        window_wakeups: N,
         paints: N,
         present: N,
         loss: N,

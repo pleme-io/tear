@@ -23,6 +23,8 @@ const BUDGETED_CELLS: &[(Case, Metric)] = &[
     (Case::C7(Handover::Attach), Metric::Modes),
     (Case::C7(Handover::Readopt), Metric::Authorities),
     (Case::C9, Metric::Loss),
+    (Case::C10, Metric::IdleTicks),
+    (Case::C10, Metric::WindowWakeups),
     (Case::C12(Input::Keys), Metric::Key),
     (Case::C12(Input::Keys), Metric::Rpcs),
     (Case::C12(Input::Keys), Metric::WireBytes),
@@ -58,7 +60,8 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
             Rung::R5,
             Rung::R6,
             Rung::R7,
-            Rung::R10
+            Rung::R10,
+            Rung::R11
         ]
     );
     let mut pending = 0;
@@ -99,6 +102,12 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
             (Case::C4, Metric::Loss) => Budget::Bytes { max: 0 },
             (Case::C7(Handover::Readopt), Metric::Authorities)
             | (Case::C7(Handover::Attach), Metric::Replays) => Budget::Exactly { n: 1 },
+            (Case::C10, Metric::IdleTicks) => Budget::Count { max: 60 },
+            (Case::C10, Metric::WindowWakeups) => Budget::Floor {
+                floor: Floor::ParkedWindow,
+                stat: Stat::P50,
+                k: 1.5,
+            },
             (Case::C12(Input::Keys), Metric::Key) => Budget::Floor {
                 floor: Floor::PlainKeyEcho,
                 stat: Stat::P50,
@@ -361,6 +370,43 @@ fn a_window_whose_output_rings_nothing_reddens_c3_present_beyond_the_noise_band(
     );
     assert!(matches!(
         derive(cell.budget(), &[540_000.0; 12], &floors, &pre),
+        Verdict::Blind { .. }
+    ));
+}
+
+#[test]
+fn a_quiet_window_s_ticks_and_wakeups_redden_under_capped_pacing_and_read_blind_without_the_floor()
+{
+    let ticks = Cell::new(Case::C10, Metric::IdleTicks);
+    let wakeups = Cell::new(Case::C10, Metric::WindowWakeups);
+    assert!(WINDOW_CELLS.contains(&ticks) && WINDOW_CELLS.contains(&wakeups));
+    assert_eq!(red_set(Control::PacingCapped), vec![ticks, wakeups]);
+    assert_eq!(Control::PacingCapped.kind(), ControlKind::KeptConfiguration);
+    assert_eq!(Control::PacingCapped.rung(), Rung::R11);
+    let none = FloorSet::default();
+    let parked = Preconditions::met(1);
+    assert!(matches!(
+        derive(ticks.budget(), &[2.0], &none, &parked),
+        Verdict::Within { .. }
+    ));
+    let capped_ticks = derive(ticks.budget(), &[3_600.0], &none, &parked);
+    assert!(capped_ticks.is_red());
+    let mut floors = FloorSet::default();
+    floors.add(Floor::ParkedWindow, [0.7; 20]);
+    let pre = Preconditions::met(20);
+    let at = |rate: f64| derive(wakeups.budget(), &[rate; 20], &floors, &pre);
+    assert!(matches!(at(1.0), Verdict::Within { .. }), "{:?}", at(1.0));
+    let capped = at(64.0);
+    assert!(capped.is_red());
+    assert!(
+        tear_bench::verdict::audit_control(
+            Control::PacingCapped,
+            &[(ticks, capped_ticks), (wakeups, capped)]
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        derive(wakeups.budget(), &[1.0; 20], &none, &pre),
         Verdict::Blind { .. }
     ));
 }

@@ -16,6 +16,7 @@ tear_types::closed_vocabulary! {
         Ratio => "ratio",
         NsPerMib => "ns-per-mib",
         Flag => "flag",
+        PerSecond => "per-second",
     }
 }
 

@@ -10,7 +10,7 @@ use crate::harness::cases::{self, AfterStall};
 use crate::harness::daemon::Daemon;
 use crate::harness::daemon::Options;
 use crate::harness::rig::Rig;
-use crate::harness::window::{self, PaneFate, WindowOptions, WindowRun};
+use crate::harness::window::{self, Pacing, PaneFate, WindowOptions, WindowRun};
 use crate::harness::{Harness, Tag, arm_client, isolated_rig_with, procs};
 use crate::matrix::{
     Band, Budget, Case, Cell, Control, Floor, Handover, Input, JournalSync, Metric, Remote,
@@ -690,6 +690,97 @@ pub fn window(h: &Harness, bands: &mut Vec<String>) -> Result<(), String> {
     let opts = WindowOptions::clean();
     let run = mado_window(h, bands, "gate-window", &opts)?;
     h.emit_all(window_samples(&run, "window", &opts));
+    shown(&run)
+}
+
+fn shown(run: &WindowRun) -> Result<(), String> {
+    if run.hides == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "the window hid {} time(s) while it was measured, and a hidden window draws nothing: show it on an unlocked screen",
+            run.hides
+        ))
+    }
+}
+
+fn quiet_samples(run: &WindowRun, bench: &str) -> Result<Vec<Sample>, String> {
+    let Some(quiet) = &run.quiet else {
+        return Err("the window run took no quiet span".into());
+    };
+    if quiet.hides > 0 {
+        return Err(format!(
+            "the window hid {} time(s) during its {:.0} s quiet span, so its idle cost reads a hidden window's: show it on an unlocked screen",
+            quiet.hides, quiet.secs
+        ));
+    }
+    let variant = Variant::BOUND.label();
+    let mut out = vec![
+        Sample::new(
+            bench,
+            &variant,
+            "loop-ticks-quiet",
+            0,
+            quiet.ticks as f64,
+            Unit::Count,
+        )
+        .cell(Cell::new(Case::C10, Metric::IdleTicks))
+        .detail(format!(
+            "madori loop turns over {:.1} quiet s, pacing {}, mado pid {}",
+            quiet.secs, quiet.pacing, run.pid
+        )),
+    ];
+    out.extend(quiet.wakeups.iter().enumerate().map(|(i, rate)| {
+        Sample::new(bench, &variant, "window-wakeups", i, *rate, Unit::PerSecond)
+            .cell(Cell::new(Case::C10, Metric::WindowWakeups))
+            .detail(format!(
+                "context switches per second over a {} s span of the quiet window, pacing {}, mado pid {}",
+                window::WAKEUP_SPAN.as_secs(),
+                quiet.pacing,
+                run.pid
+            ))
+    }));
+    Ok(out)
+}
+
+pub fn parked_floor(h: &Harness, floors: &mut FloorSet) -> Result<(), String> {
+    let Some(parked) = h.settings.parked_window_bin.clone() else {
+        return Err(
+            "no --parked-window-bin: the C10 floor is a parked madori window (madori examples/parked_window)"
+                .into(),
+        );
+    };
+    let rates = window::run_parked(h, &parked, "floor", window::QUIET_SPAN)
+        .map_err(|e| format!("the parked madori window could not be measured: {e}"))?;
+    let bench = format!("floor:{}", Floor::ParkedWindow.name());
+    h.emit_all(
+        rates
+            .iter()
+            .enumerate()
+            .map(|(i, rate)| {
+                Sample::new(
+                    &bench,
+                    "none",
+                    "parked-window-wakeups",
+                    i,
+                    *rate,
+                    Unit::PerSecond,
+                )
+                .detail(format!(
+                    "a parked madori window, Reactive pacing, no tear link, {} s spans",
+                    window::WAKEUP_SPAN.as_secs()
+                ))
+            })
+            .collect(),
+    );
+    floors.add(Floor::ParkedWindow, rates);
+    Ok(())
+}
+
+pub fn quiet_window(h: &Harness, bands: &mut Vec<String>) -> Result<(), String> {
+    let opts = WindowOptions::quiet(Pacing::Demand);
+    let run = mado_window(h, bands, "gate-quiet-window", &opts)?;
+    h.emit_all(quiet_samples(&run, "quiet-window")?);
     Ok(())
 }
 
@@ -715,7 +806,17 @@ fn window_control(
             ),
         );
     }
-    let samples = window_samples(&run, &format!("control:{}", control.name()), opts);
+    if let Err(e) = shown(&run) {
+        return (ControlRun::Blind, e);
+    }
+    let bench = format!("control:{}", control.name());
+    let mut samples = window_samples(&run, &bench, opts);
+    if opts.quiet.is_some() {
+        match quiet_samples(&run, &bench) {
+            Ok(quiet) => samples.extend(quiet),
+            Err(e) => return (ControlRun::Blind, e),
+        }
+    }
     let values: Vec<(Cell, f64)> = samples
         .iter()
         .filter_map(|s| s.cell.map(|c| (c, s.value)))
@@ -744,6 +845,7 @@ pub fn window_controls(
             Control::WakeOff,
             WindowOptions::echoes_only(&[Control::WakeOff]),
         ),
+        (Control::PacingCapped, WindowOptions::quiet(Pacing::Capped)),
     ]
     .into_iter()
     .map(|(control, opts)| {
@@ -768,31 +870,36 @@ fn step(h: &Harness, name: &str, r: io::Result<()>) {
 pub struct Structural {
     pub controls: Vec<(Control, ControlRun, String)>,
     pub window: Result<(), String>,
+    pub quiet_window: Result<(), String>,
 }
 
 impl Structural {
     fn skipped() -> Self {
+        let skipped: Result<(), String> =
+            Err("the structural tier, which measures the resident window, did not run".into());
         Self {
             controls: Vec::new(),
-            window: Err(
-                "the structural tier, which measures the resident window, did not run".into(),
-            ),
+            window: skipped.clone(),
+            quiet_window: skipped,
         }
     }
 }
 
-fn window_peer(cell: Cell, window: &Result<(), String>) -> Result<(), String> {
-    if WINDOW_CELLS.contains(&cell) {
-        window.clone()
+fn window_peer(cell: Cell, structural: &Structural) -> Result<(), String> {
+    if !WINDOW_CELLS.contains(&cell) {
+        return Ok(());
+    }
+    if cell.case == Case::C10 {
+        structural.quiet_window.clone()
     } else {
-        Ok(())
+        structural.window.clone()
     }
 }
 
 pub fn structural(
     h: &Harness,
     bands: &mut Vec<String>,
-    floors: &FloorSet,
+    floors: &mut FloorSet,
     quiet: &Result<(), String>,
 ) -> Structural {
     step(h, "wire", cases::wire(h, Tag::Cells).map(drop));
@@ -885,11 +992,23 @@ pub fn structural(
             .as_ref()
             .map_or_else(Clone::clone, |()| "done".into())
     ));
+    let floor = parked_floor(h, floors);
+    let quiet_window = floor.and_then(|()| quiet_window(h, bands));
+    h.log(&format!(
+        "case quiet-window: {}",
+        quiet_window
+            .as_ref()
+            .map_or_else(Clone::clone, |()| "done".into())
+    ));
     for (control, run, detail) in window_controls(h, bands, floors, quiet) {
         report_control(h, control, run, &detail);
         controls.push((control, run, detail));
     }
-    Structural { controls, window }
+    Structural {
+        controls,
+        window,
+        quiet_window,
+    }
 }
 
 pub fn timing(h: &Harness, bands: &mut Vec<String>) {
@@ -1043,8 +1162,8 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
         },
     )?;
     let mut bands = Vec::new();
-    let Structural { controls, window } = if matches!(tier, Tier::Structural | Tier::All) {
-        structural(h, &mut bands, &floors, &quiet)
+    let structural_run = if matches!(tier, Tier::Structural | Tier::All) {
+        structural(h, &mut bands, &mut floors, &quiet)
     } else {
         Structural::skipped()
     };
@@ -1067,7 +1186,7 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
             } else {
                 Ok(())
             },
-            peer: window_peer(cell, &window),
+            peer: window_peer(cell, &structural_run),
             band: band.clone(),
             probes: cases::probes_reach(cell),
             min_samples: min_samples(budget),
@@ -1114,7 +1233,7 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
         compat: compat_verdicts,
         sentinels: quiet,
         blind_streak: blind_streak_is_red(&history),
-        controls,
+        controls: structural_run.controls,
     })
 }
 
