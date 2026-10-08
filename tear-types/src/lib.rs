@@ -71,6 +71,7 @@ pub mod shutai;
 pub mod spawn_env;
 pub mod statusbar;
 pub mod theme;
+pub mod waking;
 pub mod window;
 pub mod wire;
 pub mod yurai;

@@ -34,17 +34,21 @@ use crate::inproc::InProcess;
 /// engate Producer over an InProcess pane.
 ///
 /// Pairs a shared `InProcess` handle with the pane id this producer
-/// represents. Cheap to clone; the `Arc<InProcess>` is the only
-/// shared state.
+/// represents, and the waker every chunk and the stream's end ring.
 pub struct PaneProducer {
     pub inproc: Arc<InProcess>,
     pub pane: PaneId,
+    waker: std::task::Waker,
 }
 
 impl PaneProducer {
     #[must_use]
-    pub fn new(inproc: Arc<InProcess>, pane: PaneId) -> Self {
-        Self { inproc, pane }
+    pub fn new(inproc: Arc<InProcess>, pane: PaneId, waker: std::task::Waker) -> Self {
+        Self {
+            inproc,
+            pane,
+            waker,
+        }
     }
 }
 
@@ -65,7 +69,7 @@ impl Producer for PaneProducer {
 
     fn subscribe(&self) -> Result<mpsc::Receiver<Self::Item>, AttachError> {
         self.inproc
-            .subscribe_pane_bytes(self.pane)
+            .subscribe_pane_bytes_waking(self.pane, self.waker.clone())
             .map_err(|e| AttachError::SubscribeFailed(e.to_string()))
     }
 }
@@ -104,10 +108,86 @@ mod tests {
                 .and_then(|s| s.panes.keys().next().copied())
                 .expect("pane")
         });
-        let producer = PaneProducer::new(inproc, pane);
+        let producer = PaneProducer::new(inproc, pane, std::task::Waker::noop().clone());
         let snap = producer.snapshot().expect("snapshot");
         assert_eq!(snap.0.cols, 80);
         assert_eq!(snap.0.rows, 24);
         let _rx = producer.subscribe().expect("subscribe");
+    }
+
+    struct Rings(std::sync::Mutex<usize>, std::sync::Condvar);
+
+    impl std::task::Wake for Rings {
+        fn wake(self: Arc<Self>) {
+            *self.0.lock().unwrap() += 1;
+            self.1.notify_all();
+        }
+    }
+
+    impl Rings {
+        fn at_least(&self, n: usize) -> usize {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut got = self.0.lock().unwrap();
+            while *got < n {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                got = self.1.wait_timeout(got, left).unwrap().0;
+            }
+            *got
+        }
+    }
+
+    #[test]
+    fn a_chunk_rings_the_producer_s_waker_and_so_does_the_end_of_the_stream() {
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session_with_source_and_size(
+                "engate-wake",
+                "/bin/sh",
+                &[],
+                SessionSource::Human,
+                (80, 24),
+            )
+            .expect("spawn session");
+        let pane = inproc.with_registry(|r| {
+            r.sessions
+                .get(&sid)
+                .and_then(|s| s.panes.keys().next().copied())
+                .expect("pane")
+        });
+        let rings = Arc::new(Rings(std::sync::Mutex::new(0), std::sync::Condvar::new()));
+        let producer = PaneProducer::new(
+            Arc::clone(&inproc),
+            pane,
+            std::task::Waker::from(Arc::clone(&rings)),
+        );
+        let rx = producer.subscribe().expect("subscribe");
+        inproc.send_keys(pane, b"echo ring\n").expect("type");
+        assert!(rings.at_least(1) >= 1, "output rang the waker");
+        let chunk = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the ring's chunk is queued");
+        assert!(!chunk.is_empty());
+        while rx.try_recv().is_ok() {}
+        let before = *rings.0.lock().unwrap();
+        inproc.kill_session(sid).expect("kill");
+        assert!(
+            rings.at_least(before + 1) > before,
+            "the end rang the waker"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let closed = loop {
+            match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
+                _ if std::time::Instant::now() > deadline => break false,
+                Ok(_) => {}
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        };
+        assert!(closed, "the kill closed the stream");
     }
 }

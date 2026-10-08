@@ -62,7 +62,7 @@ struct PaneSubscribers {
     /// already-disconnected receiver instead of a live registration.
     closed: Option<i32>,
     /// Live subscribers — each receives a clone of every PTY chunk.
-    senders: Vec<mpsc::Sender<Vec<u8>>>,
+    senders: Vec<tear_types::waking::WakingSender<Vec<u8>>>,
 }
 
 /// The native in-process multiplexer backend.
@@ -337,20 +337,34 @@ impl InProcess {
     /// races with the pane's exit can't leak a sender that never
     /// disconnects.
     pub fn subscribe_pane_bytes(&self, pane: PaneId) -> ControlResult<mpsc::Receiver<Vec<u8>>> {
+        self.subscribe_pane_bytes_waking(pane, std::task::Waker::noop().clone())
+    }
+
+    pub fn subscribe_pane_bytes_waking(
+        &self,
+        pane: PaneId,
+        waker: std::task::Waker,
+    ) -> ControlResult<mpsc::Receiver<Vec<u8>>> {
         // Confirm the pane exists; we don't actually need the
         // grid here (the sender is registered regardless), but
         // subscribing to a phantom pane silently is a footgun.
         if !self.ptys.lock().contains_key(&pane) {
             return Err(ControlError::NoSuchPane(pane));
         }
-        let (tx, rx) = mpsc::channel();
-        let mut subs = self.subscribers.lock();
-        let ps = subs.entry(pane).or_default();
-        if ps.closed.is_none() {
-            ps.senders.push(tx);
-        }
-        // else: stream already closed — drop `tx` here so `rx` is
-        // immediately disconnected.
+        let (tx, rx) = tear_types::waking::WakingSender::channel(waker);
+        let refused = {
+            let mut subs = self.subscribers.lock();
+            let ps = subs.entry(pane).or_default();
+            if ps.closed.is_none() {
+                ps.senders.push(tx);
+                None
+            } else {
+                Some(tx)
+            }
+        };
+        // A stream already closed: `tx` drops here, outside the lock, so
+        // `rx` is disconnected and its waker rung.
+        drop(refused);
         Ok(rx)
     }
 
@@ -514,9 +528,9 @@ impl InProcess {
                 None
             } else {
                 self.grids.lock().remove(&pane_id);
-                self.subscribers.lock().remove(&pane_id);
+                let subscribers = self.subscribers.lock().remove(&pane_id);
                 self.recordings.lock().remove(&pane_id);
-                self.ptys.lock().remove(&pane_id)
+                Some((self.ptys.lock().remove(&pane_id), subscribers))
             }
         };
         drop(orphaned);
@@ -661,11 +675,13 @@ impl InProcess {
             // Cheap when there are zero subscribers; per-subscriber
             // cost is a Vec clone + mpsc::send. On send error the
             // sender is dead — prune it.
-            let mut subs = subscribers_for_callback.lock();
-            if let Some(ps) = subs.get_mut(&pane_id) {
-                fan_out(&mut ps.senders, bytes);
+            let fanned = subscribers_for_callback
+                .lock()
+                .get_mut(&pane_id)
+                .map(|ps| fan_out(&mut ps.senders, bytes));
+            if let Some(fanned) = fanned {
+                fanned.ring();
             }
-            drop(subs);
             // Push to the recording (#4). The Arc-cloned
             // recording handle's `push` is a single Mutex-lock
             // + early return when disabled, so this is cheap
@@ -749,21 +765,24 @@ impl InProcess {
             // inspected BEFORE the clear, siblings' as they stand
             // (their own on_exit already cleared them if they exited
             // unwatched). Watched sessions keep remain-on-exit.
-            let watched = {
+            let (watched, ended) = {
                 let mut subs = subscribers_for_exit.lock();
-                let this_pane_watched = if still_present {
+                let (this_pane_watched, ended) = if still_present {
                     let ps = subs.entry(pane_id).or_default();
                     let had_live_sender = !ps.senders.is_empty();
                     ps.closed = Some(code.unwrap_or(-1));
-                    ps.senders.clear();
-                    had_live_sender
+                    (had_live_sender, std::mem::take(&mut ps.senders))
                 } else {
                     // Pane was explicitly killed concurrently — drop any
                     // entry rather than recreating one for a dead id.
-                    subs.remove(&pane_id);
-                    true
+                    (
+                        true,
+                        subs.remove(&pane_id)
+                            .map(|ps| ps.senders)
+                            .unwrap_or_default(),
+                    )
                 };
-                this_pane_watched
+                let watched = this_pane_watched
                     || fully_exited.is_some_and(|sid| {
                         registry_for_exit
                             .read()
@@ -775,8 +794,10 @@ impl InProcess {
                                         && subs.get(p).is_some_and(|ps| !ps.senders.is_empty())
                                 })
                             })
-                    })
+                    });
+                (watched, ended)
             };
+            drop(ended);
             debug!(pane_id = %pane_id, ?code, "tear-core: pane child exited — marked Exited + disconnected subscribers");
             if let Some(sid) = fully_exited.filter(|_| !watched) {
                 // The proof is re-taken under the write lock inside
@@ -829,20 +850,21 @@ impl InProcess {
     /// observed as a 20+ minute wedge. The handles therefore ALWAYS
     /// leave the maps inside the lock scope and die outside it (the
     /// reap itself is additionally bounded — see `pty::reap_with_deadline`).
-    fn detach_panes(&self, panes: &[PaneId]) -> Vec<PaneIo> {
+    fn detach_panes(&self, panes: &[PaneId]) -> Detached {
         let detached = {
             let mut ptys = self.ptys.lock();
             let mut grids = self.grids.lock();
             let mut subs = self.subscribers.lock();
-            let mut detached = Vec::with_capacity(panes.len());
+            let mut detached = Detached::with_capacity(panes.len());
             for p in panes {
                 if let Some(h) = ptys.remove(p) {
-                    detached.push(h);
+                    detached.io.push(h);
                 }
                 grids.remove(p);
                 // Dropping the sender vec disconnects subscribers
-                // cleanly — their recv() returns Err on next read.
-                subs.remove(p);
+                // cleanly — their recv() returns Err on next read — and
+                // rings their wakers, so it too happens outside the locks.
+                detached.subscribers.extend(subs.remove(p));
             }
             detached
         };
@@ -890,23 +912,58 @@ impl InProcess {
     }
 }
 
-fn end_all(detached: Vec<PaneIo>) {
-    for io in detached {
+struct Detached {
+    subscribers: Vec<PaneSubscribers>,
+    io: Vec<PaneIo>,
+}
+
+impl Detached {
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            subscribers: Vec::with_capacity(n),
+            io: Vec::with_capacity(n),
+        }
+    }
+}
+
+fn end_all(detached: Detached) {
+    drop(detached.subscribers);
+    for io in detached.io {
         io.end();
     }
 }
 
-fn fan_out(senders: &mut Vec<mpsc::Sender<Vec<u8>>>, bytes: &[u8]) {
+struct Fanned {
+    rings: Vec<tear_types::waking::Ring>,
+    gone: Vec<tear_types::waking::WakingSender<Vec<u8>>>,
+}
+
+impl Fanned {
+    fn ring(self) {
+        for r in self.rings {
+            r.ring();
+        }
+        drop(self.gone);
+    }
+}
+
+fn fan_out(senders: &mut Vec<tear_types::waking::WakingSender<Vec<u8>>>, bytes: &[u8]) -> Fanned {
+    let mut fanned = Fanned {
+        rings: Vec::with_capacity(senders.len()),
+        gone: Vec::new(),
+    };
     let mut i = 0;
     while i < senders.len() {
         tear_types::probe_gauge!(raise SubscriberBacklog, 1);
-        if senders[i].send(bytes.to_vec()).is_err() {
-            tear_types::probe_gauge!(lower SubscriberBacklog, 1);
-            senders.swap_remove(i);
-        } else {
+        if let Ok(ring) = senders[i].queue(bytes.to_vec()) {
+            fanned.rings.push(ring);
             i += 1;
+        } else {
+            tear_types::probe_gauge!(lower SubscriberBacklog, 1);
+            fanned.gone.push(senders.swap_remove(i));
         }
     }
+    fanned
 }
 
 /// Free-standing so both `spawn_pty_for`'s `on_exit` hook (which owns
@@ -945,18 +1002,17 @@ fn reap_proven_dead(
     if panes_to_detach.is_empty() {
         return false;
     }
-    let detached: Vec<PaneIo> = {
+    let detached = {
         let mut ptys = ptys.lock();
         let mut grids = grids.lock();
         let mut subs = subscribers.lock();
-        panes_to_detach
-            .iter()
-            .filter_map(|p| {
-                grids.remove(p);
-                subs.remove(p);
-                ptys.remove(p)
-            })
-            .collect()
+        let mut detached = Detached::with_capacity(panes_to_detach.len());
+        for p in &panes_to_detach {
+            grids.remove(p);
+            detached.subscribers.extend(subs.remove(p));
+            detached.io.extend(ptys.remove(p));
+        }
+        detached
     };
     // Drop the recording buffer too. Taken in its OWN scope, after the
     // three-map scope above, deliberately: the pty reader acquires
@@ -1166,6 +1222,7 @@ impl MultiplexerControl for InProcess {
         let needs_reflow = {
             let mut r = self.registry.write();
             let Some(s) = r.sessions.get_mut(&sid) else {
+                drop(r);
                 end_all(detached);
                 return Err(ControlError::NoSuchSession(sid));
             };
@@ -1186,6 +1243,7 @@ impl MultiplexerControl for InProcess {
                 // exists and already round-trips over the wire, so this
                 // costs no new type and no wire churn.
                 LeafRemoval::NotFound => {
+                    drop(r);
                     end_all(detached);
                     return Err(ControlError::NoSuchPane(id));
                 }
@@ -1613,7 +1671,10 @@ mod tests {
             .entry(pane)
             .or_default()
             .senders
-            .push(tx);
+            .push(tear_types::waking::WakingSender::new(
+                tx,
+                std::task::Waker::noop().clone(),
+            ));
 
         inproc
             .send_keys(pane, b"printf 'PATH=[%s]\\n' \"$PATH\"\n")
@@ -1666,7 +1727,10 @@ mod tests {
             .entry(pane)
             .or_default()
             .senders
-            .push(tx);
+            .push(tear_types::waking::WakingSender::new(
+                tx,
+                std::task::Waker::noop().clone(),
+            ));
 
         inproc
             .send_keys(pane, b"printf 'TERM=[%s]\\n' \"${TERM:-MISSING}\"\n")
@@ -1720,7 +1784,10 @@ mod tests {
             .entry(pane)
             .or_default()
             .senders
-            .push(tx);
+            .push(tear_types::waking::WakingSender::new(
+                tx,
+                std::task::Waker::noop().clone(),
+            ));
 
         inproc
             .send_keys(
@@ -1777,7 +1844,10 @@ mod tests {
             .entry(pane)
             .or_default()
             .senders
-            .push(tx);
+            .push(tear_types::waking::WakingSender::new(
+                tx,
+                std::task::Waker::noop().clone(),
+            ));
         inproc
             .send_keys(
                 pane,
@@ -1839,7 +1909,10 @@ mod tests {
                 .entry(pane)
                 .or_default()
                 .senders
-                .push(tx);
+                .push(tear_types::waking::WakingSender::new(
+                    tx,
+                    std::task::Waker::noop().clone(),
+                ));
             inproc
                 .send_keys(pane, b"printf 'PWDX[%s]\\n' \"$(pwd -P)\"\n")
                 .expect("send_keys");
@@ -2083,6 +2156,86 @@ mod tests {
         inproc.rename_session(sid, "play").unwrap();
         let s2 = inproc.get_session(sid).unwrap();
         assert_eq!(s2.name, "play");
+    }
+
+    struct ReadsTheMap {
+        inproc: std::sync::Weak<InProcess>,
+        pane: PaneId,
+        rung: std::sync::Mutex<usize>,
+        seen: std::sync::Condvar,
+    }
+
+    impl std::task::Wake for ReadsTheMap {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            if let Some(inproc) = self.inproc.upgrade() {
+                let _ = inproc.pane_subscriber_count(self.pane);
+            }
+            *self.rung.lock().unwrap() += 1;
+            self.seen.notify_all();
+        }
+    }
+
+    impl ReadsTheMap {
+        fn past(&self, n: usize, within: std::time::Duration) -> bool {
+            let deadline = std::time::Instant::now() + within;
+            let mut rung = self.rung.lock().unwrap();
+            while *rung <= n {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                rung = self.seen.wait_timeout(rung, left).unwrap().0;
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn a_subscriber_s_waker_rings_after_every_lock_is_released() {
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session("rings-unlocked", "/bin/cat")
+            .expect("new_session");
+        let pane = *inproc
+            .get_session(sid)
+            .unwrap()
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+        let waker = Arc::new(ReadsTheMap {
+            inproc: Arc::downgrade(&inproc),
+            pane,
+            rung: std::sync::Mutex::new(0),
+            seen: std::sync::Condvar::new(),
+        });
+        let rx = inproc
+            .subscribe_pane_bytes_waking(pane, std::task::Waker::from(Arc::clone(&waker)))
+            .expect("subscribe");
+        inproc.send_keys(pane, b"ring\n").expect("type");
+        assert!(
+            waker.past(0, CHILD_OUTPUT_TIMEOUT),
+            "a chunk's ring never finished: it ran under the subscribers lock"
+        );
+        assert!(rx.recv_timeout(CHILD_OUTPUT_TIMEOUT).is_ok());
+        let rung = *waker.rung.lock().unwrap();
+        let killer = Arc::clone(&inproc);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(killer.kill_session(sid));
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("kill_session never returned: the end's ring ran under the subscribers lock")
+            .expect("kill_session");
+        assert!(
+            waker.past(rung, std::time::Duration::from_secs(5)),
+            "the stream's end rang the waker"
+        );
     }
 
     #[test]
