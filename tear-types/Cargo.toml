@@ -45,4 +45,5 @@ ishou-tokens = { workspace = true }
 engate-types = { version = "0.1", optional = true }
 
 [dev-dependencies]
+syn = { version = "2", features = ["full"] }
 trybuild = "1"

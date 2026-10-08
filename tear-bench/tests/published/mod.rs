@@ -200,3 +200,14 @@ pub fn join_around(parts: &[String], needle: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+#[must_use]
+pub fn mismatch(got: &[u8], want_len: usize, want_blake3: &str) -> Option<String> {
+    if got.len() != want_len {
+        Some(format!("{} B against {want_len} B", got.len()))
+    } else if digest(got) != want_blake3 {
+        Some(format!("the same {want_len} B with another BLAKE3"))
+    } else {
+        None
+    }
+}

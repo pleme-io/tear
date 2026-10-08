@@ -14,7 +14,13 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use ciborium::Value;
+    use syn::punctuated::Punctuated;
+    use syn::{
+        Attribute, Expr, Fields, GenericArgument, Item, Lit, Meta, PathArguments, Token, Type,
+    };
 
     use crate::graphics::{Graphic, GraphicProtocol};
     use crate::wire::{Request, Response, encode, read_msg, write_msg};
@@ -188,61 +194,149 @@ mod tests {
         }
     }
 
-    fn serde_items(src: &str) -> Vec<(String, Vec<String>)> {
-        let lines: Vec<&str> = src.lines().collect();
-        let mut out = Vec::new();
-        let mut serializes = false;
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i];
-            let item = ["pub struct ", "pub enum ", "struct ", "enum "]
+    fn derive_lists(meta: &Meta) -> Vec<syn::MetaList> {
+        match meta {
+            Meta::List(l) if l.path.is_ident("derive") => vec![l.clone()],
+            Meta::List(l) if l.path.is_ident("cfg_attr") => l
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .expect("a cfg_attr parses")
                 .iter()
-                .find_map(|k| line.strip_prefix(k));
-            if line.trim_start().starts_with("#[derive(") {
-                serializes = line.contains("Serialize");
-            } else if let (true, Some(rest)) = (serializes, item) {
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                let mut body = vec![line.to_string()];
-                if !line.trim_end().ends_with(';') {
-                    i += 1;
-                    while i < lines.len() && lines[i] != "}" {
-                        body.push(lines[i].to_string());
-                        i += 1;
-                    }
-                }
-                out.push((name, body));
-                serializes = false;
-            } else if !line.trim_start().starts_with("#[")
-                && !line.trim_start().starts_with("///")
-                && !line.trim().is_empty()
-            {
-                serializes = false;
-            }
-            i += 1;
+                .skip(1)
+                .flat_map(derive_lists)
+                .collect(),
+            _ => Vec::new(),
         }
-        out
     }
 
-    fn unmarked_byte_fields(src: &str) -> (usize, Vec<String>) {
-        let marked = |l: &str| l.contains("serde(with = \"crate::byte_string\")");
+    fn derives_serde(attrs: &[Attribute]) -> bool {
+        attrs.iter().flat_map(|a| derive_lists(&a.meta)).any(|l| {
+            l.parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
+                .expect("a derive list parses")
+                .iter()
+                .filter_map(|p| p.segments.last())
+                .any(|s| s.ident == "Serialize" || s.ident == "Deserialize")
+        })
+    }
+
+    fn test_only(attrs: &[Attribute]) -> bool {
+        attrs.iter().any(|a| {
+            a.path().is_ident("cfg") && a.parse_args::<syn::Ident>().is_ok_and(|i| i == "test")
+        })
+    }
+
+    fn through_the_module(attrs: &[Attribute]) -> bool {
+        let module = |m: &Meta| {
+            let Meta::NameValue(nv) = m else { return false };
+            let Expr::Lit(e) = &nv.value else {
+                return false;
+            };
+            nv.path.is_ident("with")
+                && matches!(&e.lit, Lit::Str(s) if s.value() == "crate::byte_string")
+        };
+        attrs
+            .iter()
+            .filter(|a| a.path().is_ident("serde"))
+            .any(|a| {
+                a.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                    .expect("a serde attribute parses")
+                    .iter()
+                    .any(module)
+            })
+    }
+
+    fn is_u8(ty: &Type) -> bool {
+        matches!(ty, Type::Path(p) if p.qself.is_none() && p.path.is_ident("u8"))
+    }
+
+    fn carries_bytes(ty: &Type, aliases: &BTreeSet<String>) -> bool {
+        let element = |t: &Type| is_u8(t) || carries_bytes(t, aliases);
+        match ty {
+            Type::Slice(s) => element(&s.elem),
+            Type::Array(a) => element(&a.elem),
+            Type::Reference(r) => carries_bytes(&r.elem, aliases),
+            Type::Paren(p) => carries_bytes(&p.elem, aliases),
+            Type::Group(g) => carries_bytes(&g.elem, aliases),
+            Type::Tuple(t) => t.elems.iter().any(|e| carries_bytes(e, aliases)),
+            Type::Path(p) => {
+                p.path
+                    .segments
+                    .last()
+                    .is_some_and(|s| aliases.contains(&s.ident.to_string()))
+                    || p.path.segments.iter().any(|s| {
+                        let PathArguments::AngleBracketed(args) = &s.arguments else {
+                            return false;
+                        };
+                        let sequence = s.ident == "Vec" || s.ident == "VecDeque";
+                        args.args.iter().any(|g| {
+                            matches!(g, GenericArgument::Type(t)
+                                if (sequence && is_u8(t)) || carries_bytes(t, aliases))
+                        })
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn items_of<'a>(items: &'a [Item], out: &mut Vec<&'a Item>) {
+        for item in items {
+            match item {
+                Item::Mod(m) => {
+                    if let (false, Some((_, inner))) = (test_only(&m.attrs), &m.content) {
+                        items_of(inner, out);
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+    }
+
+    fn scan(files: &[syn::File]) -> (usize, Vec<String>) {
+        let mut items = Vec::new();
+        for f in files {
+            items_of(&f.items, &mut items);
+        }
+        let mut aliases = BTreeSet::new();
+        loop {
+            let before = aliases.len();
+            for item in &items {
+                if let Item::Type(t) = item
+                    && carries_bytes(&t.ty, &aliases)
+                {
+                    aliases.insert(t.ident.to_string());
+                }
+            }
+            if aliases.len() == before {
+                break;
+            }
+        }
         let mut found = 0;
         let mut bare = Vec::new();
-        for (item, body) in serde_items(src) {
-            for (n, line) in body.iter().enumerate() {
-                if !line.contains("Vec<u8>") {
+        let mut fields = |owner: String, fs: &Fields| {
+            for (n, f) in fs.iter().enumerate() {
+                if !carries_bytes(&f.ty, &aliases) {
                     continue;
                 }
                 found += 1;
-                let attribute_above = n > 0
-                    && body[n - 1].trim_start().starts_with("#[")
-                    && !body[n - 1].contains("Vec<u8>")
-                    && marked(&body[n - 1]);
-                if !(marked(line) || attribute_above) {
-                    bare.push(format!("{item}: {}", line.trim()));
+                if !through_the_module(&f.attrs) {
+                    let name = f
+                        .ident
+                        .as_ref()
+                        .map_or_else(|| n.to_string(), ToString::to_string);
+                    bare.push(format!("{owner}.{name}"));
                 }
+            }
+        };
+        for item in items {
+            match item {
+                Item::Struct(s) if derives_serde(&s.attrs) && !test_only(&s.attrs) => {
+                    fields(s.ident.to_string(), &s.fields);
+                }
+                Item::Enum(e) if derives_serde(&e.attrs) && !test_only(&e.attrs) => {
+                    for v in &e.variants {
+                        fields(format!("{}::{}", e.ident, v.ident), &v.fields);
+                    }
+                }
+                _ => {}
             }
         }
         (found, bare)
@@ -270,13 +364,11 @@ mod tests {
             &mut files,
         );
         assert!(files.len() > 20, "the scan read {} files", files.len());
-        let mut found = 0;
-        let mut bare = Vec::new();
-        for (file, src) in &files {
-            let (n, b) = unmarked_byte_fields(src);
-            found += n;
-            bare.extend(b.into_iter().map(|b| format!("{file} {b}")));
-        }
+        let parsed: Vec<syn::File> = files
+            .iter()
+            .map(|(file, src)| syn::parse_file(src).unwrap_or_else(|e| panic!("{file}: {e}")))
+            .collect();
+        let (found, bare) = scan(&parsed);
         assert_eq!(
             found, 3,
             "the scan found {found} byte fields where PaneBytes, SendKeys.bytes and \
@@ -290,24 +382,96 @@ mod tests {
         );
     }
 
+    const PROBE: &str = r#"
+#[derive(Clone, Serialize, Deserialize)]
+pub enum Probe {
+    Marked(#[serde(with = "crate::byte_string")] Vec<u8>),
+    Bare(Vec<u8>),
+}
+
+#[derive(Serialize)]
+pub struct Field {
+    #[serde(with = "crate::byte_string")]
+    pub a: Vec<u8>,
+    pub b: Vec<u8>,
+}
+
+#[derive(Clone)]
+pub struct NotWire {
+    pub c: Vec<u8>,
+}
+
+#[derive(Serialize)]
+pub struct Tuple(pub Vec<u8>);
+
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub(crate) struct SplitDerive {
+    pub d: Vec<u8>,
+}
+
+#[derive(Serialize)]
+#[serde(
+    rename_all = "snake_case",
+    default
+)]
+struct AttributeBetween {
+    e: Box<[u8]>,
+}
+
+#[cfg_attr(feature = "wire", derive(Serialize))]
+// a comment between the derive and the item
+struct Conditional {
+    f: Option<Vec<u8>>,
+    #[serde(with = "serde_bytes")]
+    g: Vec<u8>,
+}
+
+pub type Blob = Vec<u8>;
+
+mod nested {
+    #[derive(Deserialize)]
+    pub struct Inner {
+        pub h: [u8; 16],
+        pub i: super::Blob,
+        pub j: Vec<String>,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[derive(Serialize)]
+    struct TestOnly {
+        k: Vec<u8>,
+    }
+}
+
+fn after() {}
+"#;
+
     #[test]
     fn the_scan_sees_a_bare_byte_field() {
-        let src = "#[derive(Clone, Serialize, Deserialize)]\npub enum Probe {\n    \
-                   Marked(#[serde(with = \"crate::byte_string\")] Vec<u8>),\n    \
-                   Bare(Vec<u8>),\n}\n\n#[derive(Serialize)]\npub struct Field {\n    \
-                   #[serde(with = \"crate::byte_string\")]\n    pub a: Vec<u8>,\n    \
-                   pub b: Vec<u8>,\n}\n\n#[derive(Clone)]\npub struct NotWire {\n    \
-                   pub c: Vec<u8>,\n}\n\n#[derive(Serialize)]\n\
-                   pub struct Tuple(pub Vec<u8>);\n\nfn after() {}\n";
-        let (found, bare) = unmarked_byte_fields(src);
-        assert_eq!(found, 5);
+        let (found, bare) = scan(&[syn::parse_file(PROBE).unwrap()]);
         assert_eq!(
             bare,
             vec![
-                "Probe: Bare(Vec<u8>),",
-                "Field: pub b: Vec<u8>,",
-                "Tuple: pub struct Tuple(pub Vec<u8>);"
+                "Probe::Bare.0",
+                "Field.b",
+                "Tuple.0",
+                "SplitDerive.d",
+                "AttributeBetween.e",
+                "Conditional.f",
+                "Conditional.g",
+                "Inner.h",
+                "Inner.i",
             ]
         );
+        assert_eq!(found, 11);
     }
 }

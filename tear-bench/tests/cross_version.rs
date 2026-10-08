@@ -2,7 +2,7 @@ mod published;
 
 use published::{
     Fixture, PUBLISHED, Row, SHAPES, digest, head_body, head_reads, integer_array, join_around,
-    payloads,
+    mismatch, payloads,
 };
 
 const REGENERATE: &str = "cargo run --release --manifest-path tear-bench/compat/Cargo.toml";
@@ -31,24 +31,19 @@ fn payload(row: &Row) -> Vec<u8> {
 
 fn head_to_published(row: &Row, data: &[u8]) -> Result<(), String> {
     let head = head_body(&row.shape, data).map_err(|e| e.to_string())?;
-    if (head.len(), digest(&head)) == (row.head_len, row.head_blake3.clone()) {
-        Ok(())
-    } else {
-        Err(format!(
-            "this tree writes other bytes ({} B) than the {} B {PUBLISHED} read, as a field added to PaneSnapshot or a type it carries does: re-verify against {PUBLISHED} from crates.io with `{REGENERATE}` and commit the fixture it writes",
-            head.len(),
-            row.head_len
-        ))
+    match mismatch(&head, row.head_len, &row.head_blake3) {
+        None => Ok(()),
+        Some(m) => Err(format!(
+            "this tree writes other bytes than the ones {PUBLISHED} read ({m}), as a field added to PaneSnapshot or a type it carries does: re-verify against {PUBLISHED} from crates.io with `{REGENERATE}` and commit the fixture it writes"
+        )),
     }
 }
 
 fn published_to_head(row: &Row, data: &[u8]) -> Result<(), String> {
     let body = join_around(&row.published_parts, &integer_array(data));
-    if (body.len(), digest(&body)) != (row.published_len, row.published_blake3.clone()) {
+    if let Some(m) = mismatch(&body, row.published_len, &row.published_blake3) {
         return Err(format!(
-            "the rebuilt body is not the one {PUBLISHED} wrote: {} B against {} B",
-            body.len(),
-            row.published_len
+            "the rebuilt body is not the one {PUBLISHED} wrote: {m}"
         ));
     }
     head_reads(&row.shape, &body, data)
