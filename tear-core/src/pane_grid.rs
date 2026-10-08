@@ -1631,6 +1631,18 @@ impl PaneGrid {
     }
 
     #[must_use]
+    pub fn snapshot_wire_floor(&self) -> usize {
+        let screen: usize = self.state.active_rows().map(Vec::len).sum();
+        let history: usize = if self.state.alt_active {
+            0
+        } else {
+            self.state.scrollback.iter().map(Vec::len).sum()
+        };
+        let graphics = self.state.graphics.iter().map(|g| g.data.len()).sum();
+        PaneSnapshot::wire_floor(screen + history, graphics)
+    }
+
+    #[must_use]
     pub fn snapshot(&self) -> PaneSnapshot {
         let cells: Vec<Vec<Cell>> = self.state.active_rows().cloned().collect();
         // Carry the rolled-off scrollback so a re-attach / session switch
@@ -2380,6 +2392,47 @@ mod perf_measurements {
 mod tests {
     use super::*;
     use tear_types::pane_snapshot::{CellAttrs, Color};
+
+    fn encoded_len(snap: PaneSnapshot) -> usize {
+        match tear_types::wire::encode(&tear_types::wire::Response::PaneSnapshot(snap)) {
+            Ok(body) => body.len(),
+            Err(e) => tear_types::wire::FrameTooLarge::of(&e).unwrap(),
+        }
+    }
+
+    fn cells_in(snap: &PaneSnapshot) -> usize {
+        snap.cells
+            .iter()
+            .chain(&snap.scrollback)
+            .map(Vec::len)
+            .sum()
+    }
+
+    #[test]
+    fn the_wire_floor_counts_each_row_at_its_width_and_history_only_on_the_primary_screen() {
+        let mut g = PaneGrid::with_scrollback(300, 24, 10_000);
+        for i in 0..600 {
+            g.feed(format!("line {i}\r\n").as_bytes());
+        }
+        g.resize(400, 24);
+        for i in 600..1_200 {
+            g.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let snap = g.snapshot();
+        assert!(snap.scrollback.len() >= 1_170, "{}", snap.scrollback.len());
+        let floor = g.snapshot_wire_floor();
+        assert_eq!(floor, PaneSnapshot::wire_floor(cells_in(&snap), 0));
+        assert!(floor < PaneSnapshot::wire_floor((24 + snap.scrollback.len()) * 400, 0));
+        assert!(floor > tear_types::wire::MAX_FRAME_BYTES);
+        assert!(floor <= encoded_len(snap));
+        g.feed(b"\x1b[?1049h");
+        let alt = g.snapshot();
+        assert!(alt.scrollback.is_empty());
+        assert_eq!(
+            g.snapshot_wire_floor(),
+            PaneSnapshot::wire_floor(cells_in(&alt), 0)
+        );
+    }
 
     /// ★ A REDUNDANT RESIZE SILENTLY RESET DECSTBM (2026-09-20).
     ///

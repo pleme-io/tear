@@ -9,8 +9,13 @@ use tear_client::Transport;
 use tear_config::SessionDurability;
 use tear_types::{Durability, HostRole};
 
-const PENDING_CELLS: usize = 64;
-const R1_CELLS: &[(Case, Metric)] = &[(Case::C13, Metric::Flushes)];
+const PENDING_CELLS: usize = 62;
+const BUDGETED_CELLS: &[(Case, Metric)] = &[
+    (Case::C3, Metric::Loss),
+    (Case::C6(Remote::Tcp), Metric::Loss),
+    (Case::C12(Input::Paste), Metric::Loss),
+    (Case::C13, Metric::Flushes),
+];
 
 #[test]
 fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
@@ -31,7 +36,7 @@ fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
 
 #[test]
 fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
-    assert_eq!(LANDED, &[Rung::R1]);
+    assert_eq!(LANDED, &[Rung::R1, Rung::R3]);
     let mut pending = 0;
     let mut budgeted = Vec::new();
     for cell in cells() {
@@ -50,11 +55,13 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
         }
     }
     assert_eq!(pending, PENDING_CELLS, "a §2 cell was added or lost");
-    assert_eq!(budgeted, R1_CELLS, "only landed rungs' cells carry budgets");
     assert_eq!(
-        Cell::new(Case::C13, Metric::Flushes).budget(),
-        Budget::Count { max: 0 }
+        budgeted, BUDGETED_CELLS,
+        "only landed rungs' cells carry budgets"
     );
+    for (case, metric) in BUDGETED_CELLS {
+        assert_eq!(Cell::new(*case, *metric).budget(), Budget::Count { max: 0 });
+    }
 }
 
 #[test]
@@ -88,9 +95,10 @@ fn faults_are_compiled_only_controls_and_name_their_rung() {
             assert!(!c.today().is_empty());
         }
         assert!(c.rung().index() > 0, "{} names R0", c.name());
-        assert!(
-            LANDED.contains(&c.rung()) == (c.rung() == Rung::R1),
-            "{} names {}",
+        assert_eq!(
+            LANDED.contains(&c.rung()),
+            red_set(*c).iter().any(|cell| cell.budget().is_budgeted()),
+            "{} names {}: a control reddens a budgeted cell exactly when its rung has landed",
             c.name(),
             c.rung().name()
         );
@@ -170,6 +178,34 @@ fn an_audit_write_on_the_key_path_reddens_c13_flushes_and_nothing_else() {
     assert_eq!(red_set(Control::AuditEveryKey), vec![cell]);
     assert!(tear_bench::verdict::audit_control(Control::AuditEveryKey, &[(cell, faulted)]).is_ok());
     assert!(tear_bench::verdict::audit_control(Control::AuditEveryKey, &[(cell, clean)]).is_err());
+}
+
+#[test]
+fn the_pre_r3_wire_reddens_exactly_the_r3_loss_cells() {
+    let floors = FloorSet::default();
+    let pre = Preconditions::met(1);
+    let over = |cell: Cell, values: &[f64]| derive(cell.budget(), values, &floors, &pre);
+    let keys = Cell::new(Case::C3, Metric::Loss);
+    let tokened = Cell::new(Case::C6(Remote::Tcp), Metric::Loss);
+    let paste = Cell::new(Case::C12(Input::Paste), Metric::Loss);
+    assert!(matches!(over(keys, &[0.0, 0.0]), Verdict::Within { .. }));
+    assert!(matches!(over(tokened, &[0.0]), Verdict::Within { .. }));
+    assert!(matches!(over(paste, &[0.0, 0.0]), Verdict::Within { .. }));
+    for (control, cell, red) in [
+        (Control::ResponseSizeUnchecked, keys, &[0.0, 20.0][..]),
+        (Control::LegacyReplay, keys, &[20.0, 40.0][..]),
+        (Control::RawSubscribe, tokened, &[20.0][..]),
+        (Control::UnchunkedInput, paste, &[16_777_228.0, 1.0][..]),
+    ] {
+        assert_eq!(red_set(control), vec![cell], "{}", control.name());
+        assert_eq!(control.rung(), Rung::R3);
+        let v = over(cell, red);
+        assert!(v.is_red(), "{}: {v:?}", control.name());
+        assert!(tear_bench::verdict::audit_control(control, &[(cell, v)]).is_ok());
+        assert!(
+            tear_bench::verdict::audit_control(control, &[(cell, over(cell, &[0.0]))]).is_err()
+        );
+    }
 }
 
 #[test]

@@ -66,8 +66,39 @@ pub enum ControlError {
         capability: &'static str,
         detail: String,
     },
+    #[error("input stopped after {delivered} of {total} B: {cause}")]
+    PartialInput {
+        delivered: usize,
+        total: usize,
+        cause: Box<ControlError>,
+    },
     #[error("backend internal: {0}")]
     Internal(#[from] anyhow::Error),
+}
+
+pub const BRACKETED_PASTE_OPEN: &[u8] = b"\x1b[200~";
+pub const BRACKETED_PASTE_CLOSE: &[u8] = b"\x1b[201~";
+
+impl ControlError {
+    #[must_use]
+    pub fn may_have_delivered(&self) -> bool {
+        match self {
+            ControlError::PartialInput {
+                delivered, cause, ..
+            } => *delivered > 0 || cause.may_have_delivered(),
+            ControlError::Transport(_) | ControlError::Internal(_) => true,
+            ControlError::NoSuchSession(_)
+            | ControlError::NoSuchWindow(_)
+            | ControlError::NoSuchPane(_)
+            | ControlError::Rejected(_)
+            | ControlError::Unsupported { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub fn is_response_too_large(&self) -> bool {
+        matches!(self, ControlError::Rejected(s) if s.starts_with(crate::wire::RESPONSE_TOO_LARGE))
+    }
 }
 
 /// The trait every tear backend implements. Operations are
@@ -275,6 +306,23 @@ pub trait MultiplexerControl: Send + Sync {
     /// Send keystrokes (already-bytes-encoded — caller resolved the
     /// chord) to a pane's PTY.
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()>;
+
+    fn send_paste(&self, id: PaneId, body: &[u8], bracketed: bool) -> ControlResult<()> {
+        if !bracketed {
+            return self.send_keys(id, body);
+        }
+        let mut framed = Vec::with_capacity(
+            BRACKETED_PASTE_OPEN.len() + body.len() + BRACKETED_PASTE_CLOSE.len(),
+        );
+        framed.extend_from_slice(BRACKETED_PASTE_OPEN);
+        framed.extend_from_slice(body);
+        framed.extend_from_slice(BRACKETED_PASTE_CLOSE);
+        self.send_keys(id, &framed).inspect_err(|e| {
+            if e.may_have_delivered() {
+                let _ = self.send_keys(id, BRACKETED_PASTE_CLOSE);
+            }
+        })
+    }
 
     /// How many byte-stream subscribers are currently attached to
     /// the named pane. Returns 0 if the pane has no subscribers

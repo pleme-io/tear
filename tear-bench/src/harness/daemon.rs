@@ -26,6 +26,7 @@ pub struct Daemon {
     pub iso: PathBuf,
     pub socket_dir: PathBuf,
     pub audit_log: Option<PathBuf>,
+    pub auth_token: Option<String>,
     pub daemon_dump_rows: usize,
 }
 
@@ -33,7 +34,10 @@ pub struct Daemon {
 pub struct Options {
     pub audit_log: bool,
     pub faults: Option<String>,
+    pub auth_token: Option<String>,
 }
+
+pub const AUTH_TOKEN_ENV: &str = "TEARBENCH_AUTH_TOKEN";
 
 fn free_port() -> io::Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
@@ -92,6 +96,7 @@ impl Daemon {
         args: &[String],
         log: File,
         faults: &str,
+        auth_token: Option<&str>,
     ) -> io::Result<Command> {
         let env = isolation::env_for(iso, &h.settings.path_env)?;
         let mut cmd = match variant.daemon_band {
@@ -112,6 +117,7 @@ impl Daemon {
             .env(tear_types::probe_env::DUMP, iso.join("probes"))
             .env(tear_types::probe_env::FAULTS, faults)
             .env(FORBID_ENV, &h.settings.forbid)
+            .env(AUTH_TOKEN_ENV, auth_token.unwrap_or_default())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
@@ -123,10 +129,14 @@ impl Daemon {
         pid: i32,
         transport: &Transport,
         label: &str,
+        auth_token: Option<&str>,
     ) -> io::Result<()> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            match Client::connect_transport(transport.clone()) {
+            match Client::connect_transport_with_auth(
+                transport.clone(),
+                auth_token.map(str::to_string),
+            ) {
                 Ok(c) => {
                     let version = c.capabilities().version().map(str::to_string);
                     drop(c);
@@ -180,6 +190,11 @@ impl Daemon {
             yaml.push_str(&p.to_string_lossy());
             yaml.push('\n');
         }
+        if opts.auth_token.is_some() {
+            yaml.push_str("auth_token_env: ");
+            yaml.push_str(AUTH_TOKEN_ENV);
+            yaml.push('\n');
+        }
         fs::write(iso.join("config").join("tear").join("tear.yaml"), yaml)?;
         let socket_dir = PathBuf::from("run").join(&label);
         fs::create_dir_all(h.settings.root.join(&socket_dir))?;
@@ -191,12 +206,26 @@ impl Daemon {
                 .join(format!("daemon-{label}-{tag}.log")),
         )?;
         let faults = opts.faults.as_deref().unwrap_or(&h.settings.faults);
-        let mut cmd = Self::command(h, variant, &iso, &args, log, faults)?;
+        let mut cmd = Self::command(
+            h,
+            variant,
+            &iso,
+            &args,
+            log,
+            faults,
+            opts.auth_token.as_deref(),
+        )?;
         let t0 = Instant::now();
         let mut child = cmd.spawn()?;
         let pid = i32::try_from(child.id()).unwrap_or(-1);
         h.record_pid(pid, &format!("daemon {label} {tag}"));
-        Self::wait_ready(&mut child, pid, &transport, &label)?;
+        Self::wait_ready(
+            &mut child,
+            pid,
+            &transport,
+            &label,
+            opts.auth_token.as_deref(),
+        )?;
         let ready_after = t0.elapsed();
         h.log(&format!(
             "daemon {label} pid {pid} ready after {:.3} ms",
@@ -212,12 +241,13 @@ impl Daemon {
             iso,
             socket_dir,
             audit_log,
+            auth_token: opts.auth_token.clone(),
             daemon_dump_rows: 0,
         })
     }
 
     pub fn client(&self) -> io::Result<Client> {
-        Client::connect_transport(self.transport.clone())
+        Client::connect_transport_with_auth(self.transport.clone(), self.auth_token.clone())
     }
 
     #[must_use]

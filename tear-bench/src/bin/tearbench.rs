@@ -9,7 +9,7 @@ use tear_bench::harness::daemon::{Daemon, band_exec};
 use tear_bench::harness::isolation::{self, DEFAULT_PATH, FORBID_ENV, PATH_ENV};
 use tear_bench::harness::reproduce;
 use tear_bench::harness::rig::Rig;
-use tear_bench::harness::{Harness, Settings};
+use tear_bench::harness::{Harness, Settings, Tag};
 use tear_bench::matrix::{Band, Variant};
 use tear_bench::verdict::HostClass;
 
@@ -385,10 +385,15 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
         h.log(&format!("client band {}: {e}", v.client_band.name()));
     }
     let mut daemon: Option<Daemon> = None;
+    let opts = if per_rig.contains(&"tokened") {
+        gate::tokened()
+    } else {
+        tear_bench::harness::daemon::Options::default()
+    };
     let rig = if v == Variant::EMBEDDED {
         Rig::embedded("embedded")
     } else {
-        match tear_bench::harness::isolated_rig(h, v, "case") {
+        match tear_bench::harness::isolated_rig_with(h, v, "case", &opts) {
             Ok((d, rig)) => {
                 daemon = Some(d);
                 rig
@@ -414,7 +419,9 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
                 &rig,
                 &[0, 100, 250, 500, 750, 1_000, 1_500, 2_000, 3_000],
             ),
-            "keyloss" => cases::keyloss(h, &rig, cases::KEYLOSS_ROWS).map(drop),
+            "keyloss" => cases::keyloss(h, &rig, cases::KEYLOSS_ROWS, Tag::Cells).map(drop),
+            "tokened" => cases::tokened(h, &rig, cases::TOKENED_KEYS, Tag::Cells).map(drop),
+            "paste" => cases::paste(h, &rig, cases::PASTE_BYTES, Tag::Cells).map(drop),
             "connect" => cases::connect(h, &rig, 30),
             "stall" => match &daemon {
                 Some(d) => cases::stall(h, d, &rig, std::time::Duration::from_secs(3)).map(drop),

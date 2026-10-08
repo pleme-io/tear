@@ -140,7 +140,9 @@ pub use address::{Address, AddressError, Pattern, PatternError, PatternToken, Se
 pub use block::Block;
 pub use capability::{Capability, DaemonHello, DaemonIdentity};
 pub use cast::{CastParseError, CastRow, CastRowKind};
-pub use control::{ControlError, ControlResult, MultiplexerControl};
+pub use control::{
+    BRACKETED_PASTE_CLOSE, BRACKETED_PASTE_OPEN, ControlError, ControlResult, MultiplexerControl,
+};
 pub use direction::{Direction, SplitOrientation};
 pub use freio::{Admission, Freio, RefusalReason};
 pub use genesis::{Genesis, Guid};

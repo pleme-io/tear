@@ -450,6 +450,36 @@ pub enum Response {
     Err(WireError),
 }
 
+impl Response {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Response::Sessions(_) => "Sessions",
+            Response::Session(_) => "Session",
+            Response::Window { .. } => "Window",
+            Response::Pane(_) => "Pane",
+            Response::SessionId(_) => "SessionId",
+            Response::WindowId(_) => "WindowId",
+            Response::PaneId(_) => "PaneId",
+            Response::PaneSnapshot(_) => "PaneSnapshot",
+            Response::PaneBytes(_) => "PaneBytes",
+            Response::PaneClosed(_) => "PaneClosed",
+            Response::ConfigYaml(_) => "ConfigYaml",
+            Response::CastJson(_) => "CastJson",
+            Response::RecordingStatus { .. } => "RecordingStatus",
+            Response::Blocks(_) => "Blocks",
+            Response::Block(_) => "Block",
+            Response::BlocksStatus { .. } => "BlocksStatus",
+            Response::SubscriberCount(_) => "SubscriberCount",
+            Response::Freio { .. } => "Freio",
+            Response::ConfigChanged(_) => "ConfigChanged",
+            Response::Hello(_) => "Hello",
+            Response::Ok => "Ok",
+            Response::Err(_) => "Err",
+        }
+    }
+}
+
 /// Serializable mirror of [`ControlError`]. The trait's `Internal`
 /// variant carries `anyhow::Error` which doesn't serialize; we lose
 /// the typed downcast across the wire but keep the message — which
@@ -481,6 +511,7 @@ impl From<ControlError> for WireError {
             ControlError::Unsupported { capability, detail } => {
                 WireError::Rejected(format!("unsupported capability `{capability}`: {detail}"))
             }
+            e @ ControlError::PartialInput { .. } => WireError::Rejected(e.to_string()),
             ControlError::Internal(e) => WireError::Internal(e.to_string()),
         }
     }
@@ -499,11 +530,75 @@ impl From<WireError> for ControlError {
     }
 }
 
-/// Maximum frame size we'll deserialize. Caps allocation on a
-/// malformed length-prefix (16 MiB is far above any real Request
-/// or Response — `ListSessions` reply with thousands of sessions
-/// is still well under a megabyte).
+/// Maximum frame size either side reads or writes. It caps allocation on a
+/// malformed length prefix, and it is not far above every real message: a
+/// `PaneSnapshot` costs ~60 B per cell of screen plus scrollback, so a
+/// 163-column pane crosses it at ~1,667 rows (PERFORMANCE.md §2 C3). A
+/// writer refuses a frame over the cap before writing a byte, and the
+/// daemon answers [`RESPONSE_TOO_LARGE`] in its place, so no peer is ever
+/// sent a frame it will refuse to read (PERFORMANCE.md R3).
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+pub const INPUT_CHUNK_BYTES: usize = 64 * 1024;
+
+pub const RESPONSE_TOO_LARGE: &str = "response-too-large";
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FrameSize {
+    AtLeast(usize),
+    Encoded(usize),
+}
+
+impl std::fmt::Display for FrameSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FrameSize::AtLeast(n) => write!(f, "at least {n} B"),
+            FrameSize::Encoded(n) => write!(f, "{n} B encoded"),
+        }
+    }
+}
+
+#[must_use]
+pub fn too_large(what: &str, size: FrameSize) -> String {
+    format!(
+        "{RESPONSE_TOO_LARGE}: {what} is {size}, over the {MAX_FRAME_BYTES} B frame cap; nothing was sent"
+    )
+}
+
+#[must_use]
+pub fn response_too_large(what: &str, size: FrameSize) -> WireError {
+    WireError::Rejected(too_large(what, size))
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FrameTooLarge {
+    pub len: usize,
+}
+
+impl std::fmt::Display for FrameTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "frame size {} exceeds MAX_FRAME_BYTES {MAX_FRAME_BYTES}",
+            self.len
+        )
+    }
+}
+
+impl std::error::Error for FrameTooLarge {}
+
+impl FrameTooLarge {
+    fn error(len: usize) -> io::Error {
+        io::Error::new(io::ErrorKind::InvalidData, FrameTooLarge { len })
+    }
+
+    #[must_use]
+    pub fn of(e: &io::Error) -> Option<usize> {
+        e.get_ref()
+            .and_then(|inner| inner.downcast_ref::<FrameTooLarge>())
+            .map(|f| f.len)
+    }
+}
 
 /// Default UDS socket path. Resolves at call time so a daemon
 /// started with `XDG_RUNTIME_DIR=/foo` and a client started later
@@ -537,15 +632,44 @@ pub fn default_socket_path() -> std::path::PathBuf {
     std::path::PathBuf::from("/tmp/tear.sock")
 }
 
-/// Write a length-prefixed CBOR-encoded message.
+/// Write a length-prefixed CBOR-encoded message. A message that encodes
+/// past [`MAX_FRAME_BYTES`] is refused with [`FrameTooLarge`] before a
+/// byte is written, so the stream stays aligned.
 pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
+    write_frame(w, &encode(msg)?)
+}
+
+pub fn encode<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
+    let body = encode_uncapped(msg)?;
+    if body.len() > MAX_FRAME_BYTES {
+        return Err(FrameTooLarge::error(body.len()));
+    }
+    Ok(body)
+}
+
+pub fn write_frame<W: Write>(w: &mut W, body: &[u8]) -> io::Result<()> {
+    if body.len() > MAX_FRAME_BYTES {
+        return Err(FrameTooLarge::error(body.len()));
+    }
+    write_uncapped(w, body)
+}
+
+#[cfg(feature = "bench-probes")]
+pub fn write_msg_uncapped<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
+    write_uncapped(w, &encode_uncapped(msg)?)
+}
+
+fn encode_uncapped<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(msg, &mut bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let len = u32::try_from(bytes.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
+    Ok(bytes)
+}
+
+fn write_uncapped<W: Write>(w: &mut W, body: &[u8]) -> io::Result<()> {
+    let len = u32::try_from(body.len()).map_err(|_| FrameTooLarge::error(body.len()))?;
     w.write_all(&len.to_be_bytes())?;
-    w.write_all(&bytes)?;
+    w.write_all(body)?;
     w.flush()?;
     Ok(())
 }
@@ -582,9 +706,10 @@ pub enum Framed<T> {
 ///
 /// Caps the frame at [`MAX_FRAME_BYTES`] so a malformed prefix can't
 /// trigger an unbounded allocation. An oversized prefix stays a hard
-/// `io::Error` rather than an [`Framed::Undecodable`], because those
-/// bytes were never counted off the stream — the connection really
-/// is desynchronised at that point.
+/// `io::Error` carrying [`FrameTooLarge`] rather than an
+/// [`Framed::Undecodable`], because those bytes were never counted off the
+/// stream — the connection really is desynchronised at that point, and a
+/// reader must never read from it again (`tear-client` drops it).
 ///
 /// # Errors
 /// `io::Error` for anything that leaves the stream unusable: EOF,
@@ -594,10 +719,7 @@ pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Resul
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > MAX_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("frame size {len} exceeds MAX_FRAME_BYTES {MAX_FRAME_BYTES}"),
-        ));
+        return Err(FrameTooLarge::error(len));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
@@ -988,6 +1110,7 @@ mod tests {
         T,
         R,
         U,
+        Pi,
         I,
     }
     fn ce2_to_kind_marker(e: &ControlError) -> Kind {
@@ -998,6 +1121,7 @@ mod tests {
             ControlError::Transport(_) => Kind::T,
             ControlError::Rejected(_) => Kind::R,
             ControlError::Unsupported { .. } => Kind::U,
+            ControlError::PartialInput { .. } => Kind::Pi,
             ControlError::Internal(_) => Kind::I,
         }
     }
@@ -1147,6 +1271,62 @@ mod tests {
         let err = read_frame::<_, Request>(&mut Cursor::new(buf)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("MAX_FRAME_BYTES"));
+    }
+
+    #[test]
+    fn a_frame_past_the_cap_is_refused_before_a_byte_is_written_and_names_its_length() {
+        let mut out = Vec::new();
+        let err =
+            write_msg(&mut out, &Response::ConfigYaml("x".repeat(MAX_FRAME_BYTES))).unwrap_err();
+        assert!(out.is_empty(), "{} B written", out.len());
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(FrameTooLarge::of(&err).is_some_and(|len| len > MAX_FRAME_BYTES));
+        let mut prefix = Vec::new();
+        prefix.extend_from_slice(&u32::try_from(MAX_FRAME_BYTES + 1).unwrap().to_be_bytes());
+        let read = read_frame::<_, Response>(&mut Cursor::new(prefix)).unwrap_err();
+        assert_eq!(FrameTooLarge::of(&read), Some(MAX_FRAME_BYTES + 1));
+        assert!(FrameTooLarge::of(&io::Error::other("other")).is_none());
+    }
+
+    #[test]
+    fn a_size_refusal_is_the_rejected_string_old_clients_decode() {
+        let we = response_too_large("PaneSnapshot", FrameSize::AtLeast(29_356_065));
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &Response::Err(we)).unwrap();
+        match read_msg::<_, Response>(&mut Cursor::new(buf)).unwrap() {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(msg.starts_with(RESPONSE_TOO_LARGE), "{msg}");
+                assert!(
+                    msg.contains("PaneSnapshot") && msg.contains("29356065"),
+                    "{msg}"
+                );
+                assert!(ControlError::Rejected(msg).is_response_too_large());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!ControlError::Rejected("auth failed".into()).is_response_too_large());
+    }
+
+    #[test]
+    fn partial_input_degrades_to_rejected_on_the_wire_keeping_its_count() {
+        let ce = ControlError::PartialInput {
+            delivered: 131_072,
+            total: 204_800,
+            cause: Box::new(ControlError::Transport("lost".into())),
+        };
+        assert!(ce.may_have_delivered());
+        match WireError::from(ce) {
+            WireError::Rejected(msg) => assert!(msg.contains("131072 of 204800"), "{msg}"),
+            other => panic!("{other:?}"),
+        }
+        let refused_first = ControlError::PartialInput {
+            delivered: 0,
+            total: 204_800,
+            cause: Box::new(ControlError::Rejected("leader".into())),
+        };
+        assert!(!refused_first.may_have_delivered());
+        assert!(ControlError::Transport("lost".into()).may_have_delivered());
+        assert!(!ControlError::NoSuchPane(PaneId::from_seed("p")).may_have_delivered());
     }
 
     #[test]

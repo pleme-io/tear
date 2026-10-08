@@ -7,12 +7,19 @@
 //!
 //! ## Shape
 //!
-//! [`Client`] holds a `parking_lot::Mutex<UnixStream>`. Each
-//! `MultiplexerControl` call:
+//! [`Client`] holds one control connection behind a `parking_lot::Mutex`.
+//! Each `MultiplexerControl` call:
 //!
-//! 1. Acquires the mutex.
-//! 2. Writes a length-prefixed CBOR [`Request`].
-//! 3. Reads a length-prefixed CBOR [`Response`].
+//! 1. Encodes its [`Request`]; one that would encode past
+//!    [`tear_types::wire::MAX_FRAME_BYTES`] is refused before any I/O.
+//! 2. Acquires the mutex and takes the connection out of it, dialling a
+//!    fresh one when there is none.
+//! 3. Writes the length-prefixed CBOR [`Request`] and reads one
+//!    length-prefixed CBOR [`Response`].
+//! 4. Puts the connection back **only when a whole frame was read**. Any
+//!    failure drops it, so a connection left mid-frame is never read from
+//!    again (PERFORMANCE.md R3).
+//! 5. Decodes the response variant into the trait's return type.
 //!
 //! The framing is 4-byte big-endian length-prefixed CBOR (RFC 8949)
 //! via `ciborium` — see [`tear_types::wire`], which owns the codec
@@ -22,7 +29,14 @@
 //! distinction is not cosmetic: CBOR is platform-independent, so a
 //! darwin client and a linux daemon share one wire, and a
 //! cross-platform connection failure is never explained by the codec.
-//! 4. Decodes the response variant into the trait's return type.
+//!
+//! A failed exchange is replayed once, on a fresh connection, only when
+//! the connection was lost (EOF, reset, broken pipe) **and** a second
+//! application of the request changes nothing: a read, or a write that
+//! sets absolute state (`SelectWindow`, `SelectPane`, `PaneResizeAbsolute`,
+//! `SetSpawnEnv`). A refused or undecodable frame is deterministic and is
+//! never replayed; any other write is never replayed, because the daemon
+//! may already have applied it.
 //!
 //! The mutex serialises requests within one `Client`. Multiple
 //! `Client`s connected to the same daemon get their own connections
@@ -36,19 +50,20 @@
 //!
 //! ## Connecting
 //!
-//! `Client::connect` is dial → (optional `Authenticate`) → **capability
-//! probe**. The probe is one `Request::Hello` round-trip whose answer
-//! is cached on the `Client`, so [`Client::daemon`] and
-//! `MultiplexerControl::capabilities` are field reads afterwards —
-//! never I/O, never fallible.
+//! Every connection — the control connection, each re-dial of it, and
+//! every subscription — is the same handshake: dial → (optional
+//! `Authenticate`) → **capability probe** → (the control connection's
+//! `IdentifyClient`, once [`Client::identify_as`] has set one). The probe
+//! is one `Request::Hello` round-trip whose answer is cached on the
+//! `Client`, so [`Client::daemon`] and `MultiplexerControl::capabilities`
+//! are reads afterwards — never I/O, never fallible. A capability view
+//! belongs to a connection: every re-dial re-probes and replaces it.
 //!
 //! Against a daemon old enough not to know `Hello`, the probe costs
 //! that connection: such a daemon's serve loop treats an undecodable
-//! request as a dead socket and hangs up. `connect` re-dials and
+//! request as a dead socket and hangs up. The handshake re-dials and
 //! records [`DaemonIdentity::pre_capability`], so a caller sees a
 //! working client either way — only the capability answer differs.
-//! That branch is the one that runs against the daemon shipping
-//! today, so it is the exercised path, not a fallback.
 //!
 //! What the capabilities are *for*: a call that needs a field the
 //! daemon cannot read (today, `args`) refuses with
@@ -75,7 +90,7 @@
 #[cfg(feature = "engate")]
 pub mod engate_producer;
 
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -83,9 +98,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
-use tear_types::wire::{Request, Response, read_msg, write_msg};
+use tear_types::wire::{
+    FrameSize, FrameTooLarge, INPUT_CHUNK_BYTES, Request, Response, read_msg, too_large,
+    write_frame, write_msg,
+};
 use tear_types::{
     Capability, ControlError, ControlResult, DaemonIdentity, Direction, MultiplexerControl, PaneId,
     PaneSnapshot, SessionId, TearPane, TearSession, TearWindow, WindowId,
@@ -163,7 +181,7 @@ impl TransportStream {
     }
 }
 
-impl Read for TransportStream {
+impl io::Read for TransportStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             TransportStream::Unix(s) => s.read(buf),
@@ -172,7 +190,7 @@ impl Read for TransportStream {
     }
 }
 
-impl Write for TransportStream {
+impl io::Write for TransportStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             TransportStream::Unix(s) => s.write(buf),
@@ -192,7 +210,7 @@ impl Write for TransportStream {
 /// whether the backend is local (`tear_core::InProcess`) or remote
 /// (this `Client`).
 pub struct Client {
-    inner: Mutex<ClientInner>,
+    link: Mutex<Link>,
     /// Path the client connected to. Subscriptions need to dial
     /// the same daemon on a fresh socket because Subscribe consumes
     /// the connection. For TCP connections this is the display
@@ -200,11 +218,10 @@ pub struct Client {
     socket_path: PathBuf,
     /// Typed transport — used by subscribe / re-connect paths.
     transport: Transport,
-    /// What the daemon on the other end told us it can do, probed
-    /// once at connect time. [`DaemonIdentity::pre_capability`] when
-    /// the daemon predates `Request::Hello` — which is the common
-    /// case today, not an error.
-    daemon: DaemonIdentity,
+    /// What the daemon on the other end of the current control connection
+    /// told us it can do. [`DaemonIdentity::pre_capability`] when the
+    /// daemon predates `Request::Hello`. Replaced on every re-dial.
+    daemon: RwLock<Arc<DaemonIdentity>>,
     auth_token: Option<String>,
 }
 
@@ -250,27 +267,92 @@ impl Drop for SubscribeHandle {
     }
 }
 
-/// The buffered halves of the transport stream. Buffered so the
-/// framed reads/writes don't translate into a syscall per byte.
-struct ClientInner {
+struct Conn {
     reader: BufReader<TransportStream>,
     writer: BufWriter<TransportStream>,
 }
 
+impl Conn {
+    fn open(transport: &Transport) -> io::Result<Self> {
+        let stream = transport.connect()?;
+        let reader_stream = stream.try_clone()?;
+        Ok(Self {
+            reader: BufReader::new(reader_stream),
+            writer: BufWriter::new(stream),
+        })
+    }
+
+    fn exchange(&mut self, body: &[u8]) -> io::Result<Response> {
+        write_frame(&mut self.writer, body)?;
+        read_msg(&mut self.reader)
+    }
+
+    fn socket(&self) -> io::Result<TransportStream> {
+        self.writer.get_ref().try_clone()
+    }
+}
+
+struct Link {
+    conn: Option<Conn>,
+    identity: Option<u64>,
+}
+
+enum Failure {
+    Lost(io::Error),
+    Broken(io::Error),
+    Unreachable(io::Error),
+}
+
+impl Failure {
+    fn of(e: io::Error) -> Self {
+        match e.kind() {
+            io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected => Failure::Lost(e),
+            _ => Failure::Broken(e),
+        }
+    }
+
+    fn into_control(self) -> ControlError {
+        match self {
+            Failure::Lost(e) | Failure::Unreachable(e) => ControlError::Transport(e.to_string()),
+            Failure::Broken(e) => match FrameTooLarge::of(&e) {
+                Some(len) => ControlError::Rejected(too_large(
+                    "the daemon's response",
+                    FrameSize::Encoded(len),
+                )),
+                None => ControlError::Transport(e.to_string()),
+            },
+        }
+    }
+}
+
+fn encode_request(req: &Request) -> ControlResult<Vec<u8>> {
+    tear_types::wire::encode(req).map_err(|e| match FrameTooLarge::of(&e) {
+        Some(len) => ControlError::Rejected(too_large("this request", FrameSize::Encoded(len))),
+        None => ControlError::Transport(e.to_string()),
+    })
+}
+
 /// Send one [`Request`], expect exactly one [`Response::Ok`].
 ///
-/// Free function over `ClientInner` rather than a `Client` method
-/// because [`Client::dial`] needs it *before* a `Client` exists —
-/// which is what lets the re-dial after a lost capability probe run
-/// the identical handshake instead of a near-copy of it.
+/// Free function over a connection rather than a `Client` method
+/// because the handshake needs it *before* a `Client` exists — which is
+/// what lets every re-dial run the identical handshake instead of a
+/// near-copy of it.
 fn round_trip_ok_on(
-    inner: &mut ClientInner,
-    req: Request,
+    conn: &mut Conn,
+    req: &Request,
     label: &'static str,
     reject_kind: io::ErrorKind,
 ) -> io::Result<()> {
-    write_msg(&mut inner.writer, &req)?;
-    let resp: Response = read_msg(&mut inner.reader)?;
+    write_msg(&mut conn.writer, req)?;
+    ok_reply(read_msg(&mut conn.reader)?, label, reject_kind)
+}
+
+fn ok_reply(resp: Response, label: &'static str, reject_kind: io::ErrorKind) -> io::Result<()> {
     match resp {
         Response::Ok => Ok(()),
         Response::Err(e) => Err(io::Error::new(
@@ -315,48 +397,63 @@ impl Client {
     }
 
     /// #5 — connect with an optional shared-secret auth token. When
-    /// `Some`, the client sends `Request::Authenticate(token)`
-    /// immediately and surfaces a `PermissionDenied` error if the
-    /// daemon rejects. Safe to pass `Some` even when the daemon does
-    /// not require auth (the daemon silently accepts). The CLI reads
-    /// `TEAR_AUTH_TOKEN` from the env and forwards via this path.
+    /// `Some`, every connection this client opens — the control
+    /// connection, each re-dial of it and every subscription — sends
+    /// `Request::Authenticate(token)` first and surfaces a
+    /// `PermissionDenied` error if the daemon rejects. Safe to pass
+    /// `Some` even when the daemon does not require auth (the daemon
+    /// silently accepts). The CLI reads `TEAR_AUTH_TOKEN` from the env
+    /// and forwards via this path.
     pub fn connect_transport_with_auth(
         transport: Transport,
         auth_token: Option<String>,
     ) -> io::Result<Self> {
-        let mut inner = Self::dial(&transport, auth_token.as_deref())?;
-        // Probe BEFORE handing the client out, so `capabilities()` is
-        // infallible and I/O-free at every call site afterwards.
-        let daemon = Self::probe_capabilities(&transport, &mut inner, auth_token.as_deref())?;
+        let (conn, daemon) = Self::handshake(&transport, auth_token.as_deref(), None)?;
         Ok(Self {
-            inner: Mutex::new(inner),
+            link: Mutex::new(Link {
+                conn: Some(conn),
+                identity: None,
+            }),
             socket_path: PathBuf::from(transport.display_string()),
             transport,
-            daemon,
+            daemon: RwLock::new(Arc::new(daemon)),
             auth_token,
         })
     }
 
+    fn handshake(
+        transport: &Transport,
+        auth_token: Option<&str>,
+        identity: Option<u64>,
+    ) -> io::Result<(Conn, DaemonIdentity)> {
+        let mut conn = Self::dial(transport, auth_token)?;
+        let daemon = Self::probe_capabilities(transport, &mut conn, auth_token)?;
+        if let Some(id) = identity {
+            round_trip_ok_on(
+                &mut conn,
+                &Request::IdentifyClient(id),
+                "IdentifyClient",
+                io::ErrorKind::Other,
+            )?;
+        }
+        Ok((conn, daemon))
+    }
+
     /// Open one connection and authenticate it. Everything that
-    /// establishes a control connection goes through here, so the
-    /// re-dial after a lost probe is byte-for-byte the same
-    /// handshake as the original.
-    fn dial(transport: &Transport, auth_token: Option<&str>) -> io::Result<ClientInner> {
-        let stream = transport.connect()?;
-        let reader_stream = stream.try_clone()?;
-        let mut inner = ClientInner {
-            reader: BufReader::new(reader_stream),
-            writer: BufWriter::new(stream),
-        };
+    /// establishes a connection goes through here, so the re-dial
+    /// after a lost probe is byte-for-byte the same handshake as the
+    /// original.
+    fn dial(transport: &Transport, auth_token: Option<&str>) -> io::Result<Conn> {
+        let mut conn = Conn::open(transport)?;
         if let Some(token) = auth_token {
             round_trip_ok_on(
-                &mut inner,
-                Request::Authenticate(token.to_owned()),
+                &mut conn,
+                &Request::Authenticate(token.to_owned()),
                 "Authenticate",
                 io::ErrorKind::PermissionDenied,
             )?;
         }
-        Ok(inner)
+        Ok(conn)
     }
 
     /// Ask the daemon what it can do — **on a connection we are
@@ -386,13 +483,8 @@ impl Client {
     /// read them. The only extra work is re-dialling after the
     /// second one, which the caller never sees.
     ///
-    /// **The no-capability branch is the branch that runs today.**
-    /// The daemon on this machine predates the probe, so every
-    /// `Client::connect` exercises the lost-connection path. It is
-    /// the tested one by construction, not a fallback.
-    ///
     /// Cost against such a daemon: one extra `connect(2)` and one
-    /// `warn!`-level line in the daemon's log per client. Both stop
+    /// `warn!`-level line in the daemon's log per connection. Both stop
     /// the moment the daemon is restarted onto a build that knows
     /// `Hello`.
     ///
@@ -402,14 +494,14 @@ impl Client {
     /// thing this cannot swallow.
     fn probe_capabilities(
         transport: &Transport,
-        inner: &mut ClientInner,
+        conn: &mut Conn,
         auth_token: Option<&str>,
     ) -> io::Result<DaemonIdentity> {
         let req = Request::Hello {
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
-        let outcome = match write_msg(&mut inner.writer, &req) {
-            Ok(()) => read_msg::<_, Response>(&mut inner.reader),
+        let outcome = match write_msg(&mut conn.writer, &req) {
+            Ok(()) => read_msg::<_, Response>(&mut conn.reader),
             Err(e) => Err(e),
         };
         match outcome {
@@ -422,32 +514,33 @@ impl Client {
             // connection.
             Ok(_) => Ok(DaemonIdentity::pre_capability()),
             // The daemon hung up on the unknown variant (or the
-            // transport failed). Re-dial so the caller's client is
+            // transport failed). Re-dial so the caller's connection is
             // usable, and record protocol 0.
             Err(_) => {
-                *inner = Self::dial(transport, auth_token)?;
+                *conn = Self::dial(transport, auth_token)?;
                 Ok(DaemonIdentity::pre_capability())
             }
         }
     }
 
-    /// What the connected daemon told us about itself: its own
-    /// version (`None` when it predates the probe) and the
-    /// capabilities it implements.
+    /// What the daemon on the current control connection told us about
+    /// itself: its own version (`None` when it predates the probe) and
+    /// the capabilities it implements.
     ///
-    /// Cheap — the probe ran once at connect; this is a field read.
+    /// Cheap — a read of the view the last handshake probed.
     #[must_use]
-    pub fn daemon(&self) -> &DaemonIdentity {
-        &self.daemon
+    pub fn daemon(&self) -> Arc<DaemonIdentity> {
+        Arc::clone(&self.daemon.read())
     }
 
     /// Send `Request::Authenticate(token)` and assert the daemon's
     /// `Response::Ok`. Returns `io::Error(PermissionDenied)` on
     /// rejection. Intended for the connect path; also exposed so
     /// long-lived clients can re-authenticate after a config rotation.
+    /// Every later re-dial and subscription authenticates with it.
     pub fn authenticate(&mut self, token: &str) -> io::Result<()> {
         self.round_trip_ok(
-            tear_types::wire::Request::Authenticate(token.to_string()),
+            &Request::Authenticate(token.to_string()),
             "Authenticate",
             io::ErrorKind::PermissionDenied,
         )?;
@@ -455,37 +548,42 @@ impl Client {
         Ok(())
     }
 
-    /// #2 — tag this connection with a 64-bit client identity used
-    /// by `InputPolicy::Leader { id }` to gate `SendKeys`. Idempotent —
-    /// the daemon overwrites the prior identity each call. Returns
-    /// `io::Error(Other)` if the daemon responds with anything other
-    /// than `Ok` (defensive — the daemon's current implementation
-    /// always returns Ok here).
+    /// #2 — tag this client with a 64-bit identity used by
+    /// `InputPolicy::Leader { id }` to gate `SendKeys`. Idempotent —
+    /// the daemon overwrites the prior identity each call, and every
+    /// re-dial sends it again, so a Leader-gated pane keeps taking this
+    /// client's keys across a daemon restart. Returns `io::Error(Other)`
+    /// if the daemon responds with anything other than `Ok`.
     pub fn identify_as(&mut self, id: u64) -> io::Result<()> {
         self.round_trip_ok(
-            tear_types::wire::Request::IdentifyClient(id),
+            &Request::IdentifyClient(id),
             "IdentifyClient",
             io::ErrorKind::Other,
-        )
+        )?;
+        self.link.get_mut().identity = Some(id);
+        Ok(())
     }
 
     /// Shared "handshake" primitive: send one [`Request`], expect
     /// exactly one [`Response::Ok`]. Any `Response::Err` is surfaced
     /// as `io::Error(reject_kind)` with the daemon's message; any
-    /// other response variant is `io::Error(InvalidData)`.
-    ///
-    /// Used by [`Client::authenticate`] and [`Client::identify_as`];
-    /// add the next single-roundtrip request (e.g. `RegisterAttention`,
-    /// `AckConfigVersion`) by composing this directly rather than
-    /// hand-rolling a fresh match.
+    /// other response variant is `io::Error(InvalidData)`. The
+    /// connection is kept only when a whole reply was read.
     fn round_trip_ok(
-        &mut self,
-        req: tear_types::wire::Request,
+        &self,
+        req: &Request,
         label: &'static str,
         reject_kind: io::ErrorKind,
     ) -> io::Result<()> {
-        let mut inner = self.inner.lock();
-        round_trip_ok_on(&mut inner, req, label, reject_kind)
+        let mut link = self.link.lock();
+        let mut conn = match link.conn.take() {
+            Some(c) => c,
+            None => self.redial(&link).map_err(failure_io)?,
+        };
+        write_msg(&mut conn.writer, req)?;
+        let resp = read_msg(&mut conn.reader)?;
+        link.conn = Some(conn);
+        ok_reply(resp, label, reject_kind)
     }
 
     /// Path the client is connected to. For UDS connections this is
@@ -501,12 +599,40 @@ impl Client {
         &self.transport
     }
 
-    /// Subscribe to a pane's PTY byte stream. Opens a fresh UDS
-    /// connection to the same daemon, sends `Request::Subscribe`,
-    /// then spawns a reader thread that calls `on_bytes` for every
-    /// `Response::PaneBytes` frame. The reader exits on
-    /// `Response::PaneClosed`, on EOF, or when the returned
-    /// [`SubscribeHandle`] is dropped / stopped.
+    fn subscription(&self, req: &Request, label: &str) -> ControlResult<(Conn, TransportStream)> {
+        let mut conn = self
+            .subscription_conn()
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        let socket = conn
+            .socket()
+            .map_err(|e| ControlError::Transport(e.to_string()))?;
+        write_msg(&mut conn.writer, req).map_err(|e| ControlError::Transport(e.to_string()))?;
+        let ack: Response =
+            read_msg(&mut conn.reader).map_err(|e| ControlError::Transport(e.to_string()))?;
+        match ack {
+            Response::Ok => Ok((conn, socket)),
+            Response::Err(we) => Err(ControlError::from(we)),
+            other => Err(ControlError::Transport(format!(
+                "unexpected ack to {label}: {other:?}"
+            ))),
+        }
+    }
+
+    fn subscription_conn(&self) -> io::Result<Conn> {
+        #[cfg(feature = "bench-probes")]
+        if tear_types::probes::active(tear_types::probes::Fault::RawSubscribe) {
+            return Conn::open(&self.transport);
+        }
+        Self::handshake(&self.transport, self.auth_token.as_deref(), None).map(|(conn, _)| conn)
+    }
+
+    /// Subscribe to a pane's PTY byte stream. Opens a fresh connection
+    /// to the same daemon through the same handshake as the control
+    /// connection (so a daemon that requires a token streams too),
+    /// sends `Request::Subscribe`, then spawns a reader thread that
+    /// calls `on_bytes` for every `Response::PaneBytes` frame. The
+    /// reader exits on `Response::PaneClosed`, on EOF, or when the
+    /// returned [`SubscribeHandle`] is dropped / stopped.
     ///
     /// `on_bytes` runs on the reader thread — keep it cheap and
     /// non-blocking. Typical consumer: push the bytes into a
@@ -519,39 +645,8 @@ impl Client {
     where
         F: FnMut(&[u8]) + Send + 'static,
     {
-        // Subscriptions ride a separate connection because they
-        // consume the stream — the control connection has to stay
-        // free for further RPCs.
-        let stream = self
-            .transport
-            .connect()
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        // `socket_for_handle` is held in the SubscribeHandle so
-        // Drop can `shutdown(Both)` and unblock the reader thread
-        // (which is otherwise blocked in `read_msg`, never
-        // observing the stop flag).
-        let socket_for_handle = stream
-            .try_clone()
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let reader_stream = stream
-            .try_clone()
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let mut reader = BufReader::new(reader_stream);
-        let mut writer = BufWriter::new(stream);
-        write_msg(&mut writer, &Request::Subscribe(pane))
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        // First reply: Ok or Err (NoSuchPane / etc.).
-        let ack: Response =
-            read_msg(&mut reader).map_err(|e| ControlError::Transport(e.to_string()))?;
-        match ack {
-            Response::Ok => {}
-            Response::Err(we) => return Err(ControlError::from(we)),
-            other => {
-                return Err(ControlError::Transport(format!(
-                    "unexpected ack to Subscribe: {other:?}"
-                )));
-            }
-        }
+        let (conn, socket) = self.subscription(&Request::Subscribe(pane), "Subscribe")?;
+        let mut reader = conn.reader;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
         let join = thread::Builder::new()
@@ -569,14 +664,14 @@ impl Client {
             .map_err(|e| ControlError::Transport(format!("spawn subscriber thread: {e}")))?;
         Ok(SubscribeHandle {
             stop,
-            socket: socket_for_handle,
+            socket,
             join: Some(join),
         })
     }
 
-    /// Subscribe to live-config change events. Opens a fresh UDS
-    /// connection to the same daemon, sends
-    /// `Request::SubscribeConfigChange`, then spawns a reader
+    /// Subscribe to live-config change events. Opens a fresh connection
+    /// to the same daemon through the control connection's handshake,
+    /// sends `Request::SubscribeConfigChange`, then spawns a reader
     /// thread that calls `on_change` for every
     /// `Response::ConfigChanged(yaml)` frame. The YAML is parsed
     /// to a typed `TearConfig` before the callback fires —
@@ -596,31 +691,9 @@ impl Client {
     where
         F: FnMut(Arc<tear_config::TearConfig>) + Send + 'static,
     {
-        let stream = self
-            .transport
-            .connect()
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let socket_for_handle = stream
-            .try_clone()
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let reader_stream = stream
-            .try_clone()
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let mut reader = BufReader::new(reader_stream);
-        let mut writer = BufWriter::new(stream);
-        write_msg(&mut writer, &Request::SubscribeConfigChange)
-            .map_err(|e| ControlError::Transport(e.to_string()))?;
-        let ack: Response =
-            read_msg(&mut reader).map_err(|e| ControlError::Transport(e.to_string()))?;
-        match ack {
-            Response::Ok => {}
-            Response::Err(we) => return Err(ControlError::from(we)),
-            other => {
-                return Err(ControlError::Transport(format!(
-                    "unexpected ack to SubscribeConfigChange: {other:?}"
-                )));
-            }
-        }
+        let (conn, socket) =
+            self.subscription(&Request::SubscribeConfigChange, "SubscribeConfigChange")?;
+        let mut reader = conn.reader;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
         let join = thread::Builder::new()
@@ -642,7 +715,7 @@ impl Client {
             .map_err(|e| ControlError::Transport(format!("spawn config subscriber thread: {e}")))?;
         Ok(SubscribeHandle {
             stop,
-            socket: socket_for_handle,
+            socket,
             join: Some(join),
         })
     }
@@ -656,21 +729,72 @@ impl Client {
     /// `Client` is internally serialised; the wire format is
     /// request-response per the daemon's contract.
     fn rpc(&self, req: Request) -> ControlResult<Response> {
-        let mut inner = self.inner.lock();
+        #[cfg(feature = "bench-probes")]
+        if tear_types::probes::active(tear_types::probes::Fault::LegacyReplay) {
+            return self.rpc_legacy(&req);
+        }
+        let body = encode_request(&req)?;
+        let mut link = self.link.lock();
+        self.call(&mut link, &req, &body)
+    }
+
+    fn call(&self, link: &mut Link, req: &Request, body: &[u8]) -> ControlResult<Response> {
         tear_types::probe!(ClientRpcs);
-        let first = exchange(&mut inner, &req);
+        let resp = match self.exchange(link, body) {
+            Ok(resp) => resp,
+            Err(Failure::Lost(_)) if replay(req) != Replay::Never => {
+                tear_types::probe!(ClientReplays);
+                self.exchange(link, body).map_err(Failure::into_control)?
+            }
+            Err(f) => return Err(f.into_control()),
+        };
+        if let Response::Err(we) = resp {
+            return Err(ControlError::from(we));
+        }
+        Ok(resp)
+    }
+
+    fn exchange(&self, link: &mut Link, body: &[u8]) -> Result<Response, Failure> {
+        let mut conn = match link.conn.take() {
+            Some(c) => c,
+            None => self.redial(link)?,
+        };
+        let resp = conn.exchange(body).map_err(Failure::of)?;
+        link.conn = Some(conn);
+        Ok(resp)
+    }
+
+    fn redial(&self, link: &Link) -> Result<Conn, Failure> {
+        tear_types::probe!(ClientRedials);
+        let (conn, daemon) =
+            Self::handshake(&self.transport, self.auth_token.as_deref(), link.identity)
+                .map_err(Failure::Unreachable)?;
+        *self.daemon.write() = Arc::new(daemon);
+        Ok(conn)
+    }
+
+    #[cfg(feature = "bench-probes")]
+    fn rpc_legacy(&self, req: &Request) -> ControlResult<Response> {
+        let body = encode_request(req)?;
+        let mut link = self.link.lock();
+        tear_types::probe!(ClientRpcs);
+        let first = match link.conn.as_mut() {
+            Some(conn) => conn.exchange(&body),
+            None => Err(io::Error::from(io::ErrorKind::NotConnected)),
+        };
         let resp = match first {
             Err(lost) => {
                 let Ok(fresh) = Self::dial(&self.transport, self.auth_token.as_deref()) else {
                     return Err(ControlError::Transport(lost.to_string()));
                 };
                 tear_types::probe!(ClientRedials);
-                *inner = fresh;
-                if !replayable(&req) {
+                let conn = link.conn.insert(fresh);
+                if replay(req) == Replay::Never {
                     return Err(ControlError::Transport(lost.to_string()));
                 }
                 tear_types::probe!(ClientReplays);
-                exchange(&mut inner, &req).map_err(|e| ControlError::Transport(e.to_string()))?
+                conn.exchange(&body)
+                    .map_err(|e| ControlError::Transport(e.to_string()))?
             }
             Ok(resp) => resp,
         };
@@ -678,6 +802,52 @@ impl Client {
             return Err(ControlError::from(we));
         }
         Ok(resp)
+    }
+
+    fn send_keys_chunked(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()> {
+        let total = bytes.len();
+        let mut link = self.link.lock();
+        let mut delivered = 0;
+        for chunk in bytes.chunks(INPUT_CHUNK_BYTES) {
+            let req = Request::SendKeys {
+                id,
+                bytes: chunk.to_vec(),
+            };
+            let outcome = encode_request(&req).and_then(|body| self.call(&mut link, &req, &body));
+            match outcome {
+                Ok(Response::Ok) => delivered += chunk.len(),
+                Ok(other) => {
+                    return Err(ControlError::PartialInput {
+                        delivered,
+                        total,
+                        cause: Box::new(unexpected("Ok", other)),
+                    });
+                }
+                Err(cause) if delivered == 0 => return Err(cause),
+                Err(cause) => {
+                    return Err(ControlError::PartialInput {
+                        delivered,
+                        total,
+                        cause: Box::new(cause),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn input_chunked(len: usize) -> bool {
+    #[cfg(feature = "bench-probes")]
+    if tear_types::probes::active(tear_types::probes::Fault::UnchunkedInput) {
+        return false;
+    }
+    len > INPUT_CHUNK_BYTES
+}
+
+fn failure_io(f: Failure) -> io::Error {
+    match f {
+        Failure::Lost(e) | Failure::Broken(e) | Failure::Unreachable(e) => e,
     }
 }
 
@@ -702,7 +872,7 @@ impl Client {
         if args.is_empty() {
             return Ok(());
         }
-        self.daemon.require(
+        self.daemon().require(
             Capability::SpawnArgs,
             &format!("{call} was given {} argument(s)", args.len()),
         )
@@ -715,7 +885,7 @@ impl MultiplexerControl for Client {
     /// build may be older than ours — the assumption the default
     /// makes is exactly the one that fails here.
     fn capabilities(&self) -> DaemonIdentity {
-        self.daemon.clone()
+        self.daemon().as_ref().clone()
     }
 
     fn list_sessions(&self) -> ControlResult<Vec<TearSession>> {
@@ -793,7 +963,7 @@ impl MultiplexerControl for Client {
         env: &tear_types::SpawnEnv,
     ) -> ControlResult<SessionId> {
         self.require_spawn_args(args, "new_session_in")?;
-        self.daemon.require(
+        self.daemon().require(
             Capability::SpawnEnv,
             "new_session_in carries a per-spawn env/cwd",
         )?;
@@ -912,6 +1082,9 @@ impl MultiplexerControl for Client {
     }
 
     fn send_keys(&self, id: PaneId, bytes: &[u8]) -> ControlResult<()> {
+        if input_chunked(bytes.len()) {
+            return self.send_keys_chunked(id, bytes);
+        }
         match self.rpc(Request::SendKeys {
             id,
             bytes: bytes.to_vec(),
@@ -1165,33 +1338,54 @@ fn unexpected(want: &'static str, got: Response) -> ControlError {
     ))
 }
 
-fn exchange(inner: &mut ClientInner, req: &Request) -> io::Result<Response> {
-    let ClientInner { reader, writer } = inner;
-    write_msg::<_, Request>(writer, req)?;
-    read_msg(reader)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Replay {
+    Read,
+    AbsoluteWrite,
+    Never,
 }
 
-fn replayable(req: &Request) -> bool {
-    matches!(
-        req,
+fn replay(req: &Request) -> Replay {
+    match req {
         Request::ListSessions
-            | Request::GetSession(_)
-            | Request::GetWindow(_)
-            | Request::GetPane(_)
-            | Request::PaneSnapshot(_)
-            | Request::GetConfig
-            | Request::ExportPaneRecording(_)
-            | Request::PaneRecordingStatus(_)
-            | Request::PaneBlocksList { .. }
-            | Request::PaneBlockAt { .. }
-            | Request::PaneBlocksStatus(_)
-            | Request::PaneSubscriberCount(_)
-            | Request::GetFreio
-            | Request::SelectWindow(_)
-            | Request::SelectPane(_)
-            | Request::PaneResizeAbsolute { .. }
-            | Request::SetSpawnEnv(_)
-    )
+        | Request::GetSession(_)
+        | Request::GetWindow(_)
+        | Request::GetPane(_)
+        | Request::PaneSnapshot(_)
+        | Request::GetConfig
+        | Request::ExportPaneRecording(_)
+        | Request::PaneRecordingStatus(_)
+        | Request::PaneBlocksList { .. }
+        | Request::PaneBlockAt { .. }
+        | Request::PaneBlocksStatus(_)
+        | Request::PaneSubscriberCount(_)
+        | Request::GetFreio
+        | Request::Hello { .. } => Replay::Read,
+        Request::SelectWindow(_)
+        | Request::SelectPane(_)
+        | Request::PaneResizeAbsolute { .. }
+        | Request::SetSpawnEnv(_) => Replay::AbsoluteWrite,
+        Request::NewSession { .. }
+        | Request::RenameSession { .. }
+        | Request::KillSession(_)
+        | Request::NewWindow { .. }
+        | Request::KillWindow(_)
+        | Request::SplitPane { .. }
+        | Request::KillPane(_)
+        | Request::ResizePane { .. }
+        | Request::ApplyLayout { .. }
+        | Request::SendKeys { .. }
+        | Request::Subscribe(_)
+        | Request::ReloadConfig
+        | Request::SetConfig(_)
+        | Request::StartPaneRecording(_)
+        | Request::StopPaneRecording(_)
+        | Request::SetInputPolicy { .. }
+        | Request::SetFreio { .. }
+        | Request::SubscribeConfigChange
+        | Request::Authenticate(_)
+        | Request::IdentifyClient(_) => Replay::Never,
+    }
 }
 
 #[cfg(test)]
@@ -2173,16 +2367,19 @@ mod tests {
 
         let stream = UnixStream::connect(&socket).unwrap();
         let mut me = Client {
-            inner: parking_lot::Mutex::new(ClientInner {
-                reader: BufReader::new(TransportStream::Unix(stream.try_clone().unwrap())),
-                writer: BufWriter::new(TransportStream::Unix(stream)),
+            link: parking_lot::Mutex::new(Link {
+                conn: Some(Conn {
+                    reader: BufReader::new(TransportStream::Unix(stream.try_clone().unwrap())),
+                    writer: BufWriter::new(TransportStream::Unix(stream)),
+                }),
+                identity: None,
             }),
             socket_path: socket.clone(),
             transport: Transport::Unix(socket.clone()),
             // Hand-built to exercise `authenticate` in isolation, so
             // the probe never ran. Protocol 0 is the honest value —
             // and the right default for a client assembled by hand.
-            daemon: DaemonIdentity::pre_capability(),
+            daemon: RwLock::new(Arc::new(DaemonIdentity::pre_capability())),
             auth_token: None,
         };
         let err = match me.authenticate("wrong-secret") {

@@ -9,9 +9,9 @@ use crate::harness::cases;
 use crate::harness::daemon::Daemon;
 use crate::harness::daemon::Options;
 use crate::harness::rig::Rig;
-use crate::harness::{Harness, isolated_rig_with, procs};
+use crate::harness::{Harness, Tag, arm_client, isolated_rig_with, procs};
 use crate::matrix::{
-    Band, Budget, Case, Cell, Control, Floor, JournalSync, Metric, Variant, cells,
+    Band, Budget, Case, Cell, Control, Floor, Input, JournalSync, Metric, Remote, Variant, cells,
 };
 use crate::receipt::{RUNS, Sample};
 use crate::verdict::{
@@ -89,7 +89,17 @@ pub const AUDIT_KEYS: usize = 200;
 fn audited() -> Options {
     Options {
         audit_log: true,
-        faults: None,
+        ..Options::default()
+    }
+}
+
+pub const BENCH_TOKEN: &str = "tearbench-r3-token";
+
+#[must_use]
+pub fn tokened() -> Options {
+    Options {
+        auth_token: Some(BENCH_TOKEN.to_string()),
+        ..Options::default()
     }
 }
 
@@ -113,8 +123,21 @@ pub fn audit(h: &Harness, bands: &mut Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-pub fn audit_control(h: &Harness, bands: &mut Vec<String>) -> (ControlRun, String) {
-    let control = Control::AuditEveryKey;
+pub struct ControlSpec {
+    pub control: Control,
+    pub variant: Variant,
+    pub opts: Options,
+    pub daemon: &'static [Control],
+    pub client: &'static [Control],
+}
+
+pub fn control_run(
+    h: &Harness,
+    bands: &mut Vec<String>,
+    spec: &ControlSpec,
+    run: impl FnOnce(&Daemon, &Rig) -> io::Result<Vec<(Cell, f64)>>,
+) -> (ControlRun, String) {
+    let control = spec.control;
     if !cfg!(feature = "bench-probes") {
         return (
             ControlRun::Blind,
@@ -122,52 +145,166 @@ pub fn audit_control(h: &Harness, bands: &mut Vec<String>) -> (ControlRun, Strin
         );
     }
     let opts = Options {
-        audit_log: true,
-        faults: Some(control.name().to_string()),
+        faults: Some(
+            spec.daemon
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        ..spec.opts.clone()
     };
-    let run = with_daemon_opts(
+    arm_client(spec.client);
+    let res = with_daemon_opts(
         h,
-        Variant::BOUND,
-        "control-audit",
+        spec.variant,
+        &format!("control-{}", control.name()),
         &opts,
         bands,
-        |d, rig| cases::audit(h, d, rig, AUDIT_KEYS),
+        run,
     );
-    let (count, d) = match run {
+    arm_client(&[]);
+    let (values, d) = match res {
         Ok(v) => v,
         Err(e) => return (ControlRun::Failed, format!("the control run errored: {e}")),
     };
-    if d.daemon_dump_rows == 0 {
+    if !spec.daemon.is_empty() && d.daemon_dump_rows == 0 {
         return (
             ControlRun::Blind,
             "the daemon wrote no probe dump: its build has no bench-probes, so the fault was never armed".into(),
         );
     }
-    let cell = Cell::new(Case::C13, Metric::Flushes);
-    let samples = count.samples(
-        &format!("control:{}", control.name()),
-        &Variant::BOUND.label(),
-    );
-    h.emit_all(samples.to_vec());
-    let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
-    let v = derive(
-        cell.budget(),
-        &values,
-        &FloorSet::default(),
-        &Preconditions::met(1),
-    );
-    match crate::verdict::audit_control(control, &[(cell, v.clone())]) {
+    let verdicts: Vec<(Cell, Verdict)> = crate::matrix::red_set(control)
+        .into_iter()
+        .map(|cell| {
+            let of_cell: Vec<f64> = values
+                .iter()
+                .filter(|(c, _)| *c == cell)
+                .map(|(_, v)| *v)
+                .collect();
+            let v = derive(
+                cell.budget(),
+                &of_cell,
+                &FloorSet::default(),
+                &Preconditions::met(1),
+            );
+            (cell, v)
+        })
+        .collect();
+    match crate::verdict::audit_control(control, &verdicts) {
         Ok(()) => (
             ControlRun::Reddened,
-            format!(
-                "{} read {} with {} on",
-                cell.name(),
-                v.name(),
-                control.name()
-            ),
+            verdicts
+                .iter()
+                .map(|(cell, v)| {
+                    format!(
+                        "{} read {} with {} on",
+                        cell.name(),
+                        v.name(),
+                        control.name()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
         ),
         Err(e) => (ControlRun::Failed, e),
     }
+}
+
+pub fn audit_control(h: &Harness, bands: &mut Vec<String>) -> (ControlRun, String) {
+    let control = Control::AuditEveryKey;
+    let spec = ControlSpec {
+        control,
+        variant: Variant::BOUND,
+        opts: audited(),
+        daemon: &[Control::AuditEveryKey],
+        client: &[],
+    };
+    control_run(h, bands, &spec, |d, rig| {
+        let count = cases::audit(h, d, rig, AUDIT_KEYS)?;
+        let samples = count.samples(
+            &format!("control:{}", control.name()),
+            &Variant::BOUND.label(),
+        );
+        h.emit_all(samples.to_vec());
+        let cell = Cell::new(Case::C13, Metric::Flushes);
+        Ok(samples.iter().map(|s| (cell, s.value)).collect())
+    })
+}
+
+fn keyloss_cells(h: &Harness, rig: &Rig, tag: Tag) -> io::Result<Vec<(Cell, f64)>> {
+    let k = cases::keyloss(h, rig, cases::KEYLOSS_ROWS, tag)?;
+    let cell = Cell::new(Case::C3, Metric::Loss);
+    Ok(std::iter::once(k.lost())
+        .chain(k.redials)
+        .map(|v| (cell, v as f64))
+        .collect())
+}
+
+pub fn wire_controls(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, ControlRun, String)> {
+    let mut out = Vec::new();
+    for (control, client) in [
+        (Control::ResponseSizeUnchecked, &[][..]),
+        (Control::LegacyReplay, &[Control::LegacyReplay][..]),
+    ] {
+        let spec = ControlSpec {
+            control,
+            variant: Variant::BOUND,
+            opts: Options::default(),
+            daemon: &[Control::ResponseSizeUnchecked],
+            client,
+        };
+        let (run, detail) = control_run(h, bands, &spec, |_, rig| {
+            keyloss_cells(h, rig, Tag::Control(control))
+        });
+        out.push((control, run, detail));
+    }
+    let control = Control::RawSubscribe;
+    let spec = ControlSpec {
+        control,
+        variant: Variant::TCP,
+        opts: tokened(),
+        daemon: &[],
+        client: &[Control::RawSubscribe],
+    };
+    let (run, detail) = control_run(h, bands, &spec, |_, rig| {
+        let t = cases::tokened(h, rig, cases::TOKENED_KEYS, Tag::Control(control))?;
+        Ok(vec![(
+            Cell::new(Case::C6(Remote::Tcp), Metric::Loss),
+            t.lost() as f64,
+        )])
+    });
+    out.push((control, run, detail));
+    let control = Control::UnchunkedInput;
+    let spec = ControlSpec {
+        control,
+        variant: Variant::BOUND,
+        opts: Options::default(),
+        daemon: &[],
+        client: &[Control::UnchunkedInput],
+    };
+    let (run, detail) = control_run(h, bands, &spec, |_, rig| {
+        let p = cases::paste(h, rig, cases::PASTE_BYTES, Tag::Control(control))?;
+        let cell = Cell::new(Case::C12(Input::Paste), Metric::Loss);
+        Ok(vec![
+            (cell, p.missing() as f64),
+            (cell, p.mismatched() as f64),
+        ])
+    });
+    out.push((control, run, detail));
+    out
+}
+
+fn report_control(h: &Harness, control: Control, run: ControlRun, detail: &str) {
+    h.log(&format!(
+        "control {}: {} — {detail}",
+        control.name(),
+        run.name()
+    ));
+    let _ = h.receipt.fact(
+        &format!("control:{}", control.name()),
+        &format!("{}: {detail}", run.name()),
+    );
 }
 
 fn step(h: &Harness, name: &str, r: io::Result<()>) {
@@ -187,20 +324,33 @@ pub fn structural(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, Control
     step(h, "allocations", cases::allocations(h).map(drop));
     step(h, "audit", audit(h, bands));
     let (run, detail) = audit_control(h, bands);
-    h.log(&format!(
-        "control {}: {} — {detail}",
-        Control::AuditEveryKey.name(),
-        run.name()
-    ));
-    let _ = h.receipt.fact(
-        &format!("control:{}", Control::AuditEveryKey.name()),
-        &format!("{}: {detail}", run.name()),
-    );
+    report_control(h, Control::AuditEveryKey, run, &detail);
+    let mut controls = vec![(Control::AuditEveryKey, run, detail)];
     step(
         h,
         "keyloss",
         with_daemon(h, Variant::BOUND, "gate-keyloss", bands, |_, rig| {
-            cases::keyloss(h, rig, cases::KEYLOSS_ROWS).map(drop)
+            cases::keyloss(h, rig, cases::KEYLOSS_ROWS, Tag::Cells).map(drop)
+        }),
+    );
+    step(
+        h,
+        "tokened",
+        with_daemon_opts(
+            h,
+            Variant::TCP,
+            "gate-tokened",
+            &tokened(),
+            bands,
+            |_, rig| cases::tokened(h, rig, cases::TOKENED_KEYS, Tag::Cells).map(drop),
+        )
+        .map(drop),
+    );
+    step(
+        h,
+        "paste",
+        with_daemon(h, Variant::BOUND, "gate-paste", bands, |_, rig| {
+            cases::paste(h, rig, cases::PASTE_BYTES, Tag::Cells).map(drop)
         }),
     );
     step(
@@ -224,7 +374,11 @@ pub fn structural(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, Control
             cases::stall(h, d, rig, Duration::from_secs(3)).map(drop)
         }),
     );
-    vec![(Control::AuditEveryKey, run, detail)]
+    for (control, run, detail) in wire_controls(h, bands) {
+        report_control(h, control, run, &detail);
+        controls.push((control, run, detail));
+    }
+    controls
 }
 
 pub fn timing(h: &Harness, bands: &mut Vec<String>) {
@@ -268,14 +422,10 @@ pub fn timing(h: &Harness, bands: &mut Vec<String>) {
             }),
         );
     }
-    let tcp = Variant {
-        transport: crate::matrix::TransportKind::Tcp,
-        ..Variant::BOUND
-    };
     step(
         h,
         "connect",
-        with_daemon(h, tcp, "gate-connect", bands, |_, rig| {
+        with_daemon(h, Variant::TCP, "gate-connect", bands, |_, rig| {
             cases::connect(h, rig, 30)
         }),
     );

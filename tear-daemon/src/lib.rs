@@ -938,8 +938,45 @@ pub fn serve_connection_shutai<S: io::Read + io::Write>(
             praca.as_ref(),
             Some(&shutai),
         );
-        write_msg(&mut stream, &resp)?;
+        write_response(&mut stream, &resp)?;
     }
+}
+
+fn write_response<S: io::Write>(stream: &mut S, resp: &Response) -> io::Result<()> {
+    #[cfg(feature = "bench-probes")]
+    if tear_types::probes::active(tear_types::probes::Fault::ResponseSizeUnchecked) {
+        return tear_types::wire::write_msg_uncapped(stream, resp);
+    }
+    match tear_types::wire::encode(resp) {
+        Ok(body) => tear_types::wire::write_frame(stream, &body),
+        Err(e) => {
+            let Some(len) = tear_types::wire::FrameTooLarge::of(&e) else {
+                return Err(e);
+            };
+            warn!(
+                kind = resp.kind(),
+                len, "response over the frame cap: answering response-too-large in its place"
+            );
+            write_msg(
+                stream,
+                &Response::Err(tear_types::wire::response_too_large(
+                    resp.kind(),
+                    tear_types::wire::FrameSize::Encoded(len),
+                )),
+            )
+        }
+    }
+}
+
+fn wire_snapshot(
+    inproc: &InProcess,
+    id: tear_types::PaneId,
+) -> tear_types::ControlResult<tear_types::PaneSnapshot> {
+    #[cfg(feature = "bench-probes")]
+    if tear_types::probes::active(tear_types::probes::Fault::ResponseSizeUnchecked) {
+        return inproc.pane_snapshot(id);
+    }
+    inproc.pane_snapshot_within(id, tear_types::wire::MAX_FRAME_BYTES)
 }
 
 /// Constant-time byte-slice equality. Returns false for differing
@@ -1182,7 +1219,7 @@ pub fn dispatch(inproc: &InProcess, req: Request) -> Response {
                 Response::BlocksStatus { total, in_progress }
             })
         }
-        Request::PaneSnapshot(id) => map_result(inproc.pane_snapshot(id), Response::PaneSnapshot),
+        Request::PaneSnapshot(id) => map_result(wire_snapshot(inproc, id), Response::PaneSnapshot),
         Request::PaneResizeAbsolute { id, cols, rows } => {
             map_unit(inproc.pane_resize_absolute(id, cols, rows))
         }
@@ -1669,6 +1706,115 @@ mod tests {
     // The serve loop reads via `read_frame` now; the tests still
     // decode single frames the simple way.
     use tear_types::wire::read_msg;
+
+    #[test]
+    fn a_response_past_the_frame_cap_is_answered_with_a_typed_refusal_instead() {
+        let mut out = Vec::new();
+        let big = Response::ConfigYaml("x".repeat(tear_types::wire::MAX_FRAME_BYTES));
+        write_response(&mut out, &big).unwrap();
+        assert!(out.len() < 1_024, "{} B written", out.len());
+        match read_msg::<_, Response>(&mut Cursor::new(out)).unwrap() {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(
+                    msg.starts_with(tear_types::wire::RESPONSE_TOO_LARGE),
+                    "{msg}"
+                );
+                assert!(msg.contains("ConfigYaml"), "{msg}");
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut small = Vec::new();
+        write_response(&mut small, &Response::Ok).unwrap();
+        assert!(matches!(
+            read_msg::<_, Response>(&mut Cursor::new(small)).unwrap(),
+            Response::Ok
+        ));
+    }
+
+    #[test]
+    fn the_serve_loop_answers_any_oversized_response_with_a_typed_refusal_and_keeps_serving() {
+        let live = Arc::new(LiveConfig::default());
+        let mut cfg = (*live.load()).clone();
+        cfg.default_shell = "x".repeat(tear_types::wire::MAX_FRAME_BYTES);
+        live.replace(cfg);
+        let inproc = Arc::new(InProcess::new());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let serving = thread::spawn(move || serve_connection(server, inproc, live, None));
+        write_msg(&mut client, &Request::GetConfig).unwrap();
+        match read_msg::<_, Response>(&mut client).unwrap() {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(
+                    msg.starts_with(tear_types::wire::RESPONSE_TOO_LARGE),
+                    "{msg}"
+                );
+                assert!(msg.contains("ConfigYaml"), "{msg}");
+            }
+            other => panic!("expected a typed refusal, got {}", other.kind()),
+        }
+        write_msg(&mut client, &Request::ListSessions).unwrap();
+        assert!(matches!(
+            read_msg::<_, Response>(&mut client).unwrap(),
+            Response::Sessions(s) if s.is_empty()
+        ));
+        drop(client);
+        serving.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_past_the_cap_is_refused_before_it_is_cloned_and_the_connection_keeps_serving() {
+        let inproc = Arc::new(InProcess::new());
+        let sid = inproc
+            .new_session_with_source_and_size(
+                "deep",
+                "/bin/sh",
+                &[
+                    "-c".into(),
+                    "i=0; while [ $i -lt 1200 ]; do echo line $i; i=$((i+1)); done; printf DONE; exec cat".into(),
+                ],
+                tear_types::SessionSource::Human,
+                (300, 24),
+            )
+            .unwrap();
+        let pane = inproc.with_registry(|r| *r.sessions[&sid].panes.keys().next().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while inproc
+            .pane_snapshot_within(pane, tear_types::wire::MAX_FRAME_BYTES)
+            .is_ok()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pane never grew past the cap"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let live = Arc::new(LiveConfig::default());
+        let inproc_for_server = Arc::clone(&inproc);
+        let serving =
+            thread::spawn(move || serve_connection(server, inproc_for_server, live, None));
+        write_msg(&mut client, &Request::PaneSnapshot(pane)).unwrap();
+        match read_msg::<_, Response>(&mut client).unwrap() {
+            Response::Err(WireError::Rejected(msg)) => {
+                assert!(
+                    msg.starts_with(tear_types::wire::RESPONSE_TOO_LARGE),
+                    "{msg}"
+                );
+                assert!(
+                    msg.contains("PaneSnapshot") && msg.contains("at least"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected a typed refusal, got {}", other.kind()),
+        }
+        write_msg(&mut client, &Request::ListSessions).unwrap();
+        assert!(matches!(
+            read_msg::<_, Response>(&mut client).unwrap(),
+            Response::Sessions(s) if s.len() == 1
+        ));
+        drop(client);
+        serving.join().unwrap().unwrap();
+        inproc.kill_session(sid).unwrap();
+    }
 
     /// ── freio, end to end through the daemon ────────────────────
     ///

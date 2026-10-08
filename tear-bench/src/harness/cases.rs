@@ -10,11 +10,14 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tear_core::pty::PtyHandle;
 use tear_types::wire::{Request, Response, write_msg};
-use tear_types::{Durability, MultiplexerControl, PaneId, SessionSource};
+use tear_types::{
+    BRACKETED_PASTE_CLOSE, BRACKETED_PASTE_OPEN, Durability, MultiplexerControl, PaneId,
+    SessionSource,
+};
 
 use super::daemon::Daemon;
 use super::rig::{Rig, drain, raw_frame_probe, raw_subscribe, wait_byte};
-use super::{COLS, ECHO_SCRIPT, FLOOD_SCRIPT, Harness, ROWS, files};
+use super::{COLS, ECHO_SCRIPT, FLOOD_SCRIPT, Harness, PASTE_SCRIPT, ROWS, Tag, files};
 use crate::matrix::{Case, Cell, Floor, Handover, Input, Metric, Remote, Runtime, TransportKind};
 use crate::receipt::{Sample, Unit};
 
@@ -24,6 +27,8 @@ pub const OFF_LAG_MS: (f64, f64) = (1_490.0, 1_540.0);
 pub const FLOOD_BYTES: u64 = 64 * 1024 * 1024;
 pub const KEYLOSS_ROWS: usize = 3_000;
 pub const KEYLOSS_KEYS: usize = 20;
+pub const TOKENED_KEYS: usize = 20;
+pub const PASTE_BYTES: usize = 16 * 1024 * 1024;
 
 fn ns(d: Duration) -> f64 {
     d.as_nanos() as f64
@@ -229,16 +234,28 @@ pub fn echo(h: &Harness, rig: &Rig) -> io::Result<()> {
     Ok(())
 }
 
+fn client_rpcs() -> Option<u64> {
+    client_count(ClientCount::Rpcs)
+}
+
+#[derive(Copy, Clone)]
+enum ClientCount {
+    Rpcs,
+    Redials,
+}
+
 #[cfg(feature = "bench-probes")]
 #[allow(clippy::unnecessary_wraps)]
-fn client_rpcs() -> Option<u64> {
-    Some(tear_types::probes::count(
-        tear_types::probes::Counter::ClientRpcs,
-    ))
+fn client_count(c: ClientCount) -> Option<u64> {
+    use tear_types::probes::{Counter, count};
+    Some(count(match c {
+        ClientCount::Rpcs => Counter::ClientRpcs,
+        ClientCount::Redials => Counter::ClientRedials,
+    }))
 }
 
 #[cfg(not(feature = "bench-probes"))]
-fn client_rpcs() -> Option<u64> {
+fn client_count(_: ClientCount) -> Option<u64> {
     None
 }
 
@@ -808,9 +825,44 @@ pub struct KeyLoss {
     pub control_delivered: usize,
     pub control_sent: usize,
     pub snapshot_frame: u64,
+    pub redials: Option<u64>,
 }
 
-pub fn keyloss(h: &Harness, rig: &Rig, rows: usize) -> io::Result<KeyLoss> {
+impl KeyLoss {
+    #[must_use]
+    pub fn lost(&self) -> u64 {
+        (self.sent - self.delivered) as u64
+    }
+
+    fn emit(&self, h: &Harness, label: &str, rows: usize, tag: Tag) {
+        let cell = Cell::new(Case::C3, Metric::Loss);
+        if let Some(n) = self.redials {
+            tag.emit(
+                h,
+                Sample::new("keyloss", label, "redials", 0, n as f64, Unit::Count)
+                    .cell(cell)
+                    .detail(format!(
+                        "tear-client probe: ClientRedials over {KEYLOSS_KEYS} mado-shaped keys at {rows} rows"
+                    )),
+            );
+        }
+        tag.emit(
+            h,
+            Sample::new("keyloss", label, "keys-lost", 0, self.lost() as f64, Unit::Count)
+                .cell(cell)
+                .detail(format!(
+                    "{} of {} mado-shaped keys delivered at {rows} rows; control {} of {}; snapshot frame {} B",
+                    self.delivered,
+                    self.sent,
+                    self.control_delivered,
+                    self.control_sent,
+                    self.snapshot_frame
+                )),
+        );
+    }
+}
+
+pub fn keyloss(h: &Harness, rig: &Rig, rows: usize, tag: Tag) -> io::Result<KeyLoss> {
     let t = rig
         .transport
         .clone()
@@ -832,6 +884,7 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize) -> io::Result<KeyLoss> {
         control_delivered: 0,
         control_sent: 0,
         snapshot_frame: probe.bytes,
+        redials: None,
     };
     let snapshot_request = frame_bytes(&Request::PaneSnapshot(pane))?;
     let keys_request = frame_bytes(&Request::SendKeys {
@@ -840,7 +893,8 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize) -> io::Result<KeyLoss> {
     })?;
     let keys_reply = frame_bytes(&Response::Ok)?;
     let snapshot_reply = 4 + probe.bytes;
-    h.emit(
+    tag.emit(
+        h,
         Sample::new(
             "keyloss",
             &rig.label,
@@ -857,6 +911,7 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize) -> io::Result<KeyLoss> {
     );
     for (phase, count) in [("send-only-control", 5usize), ("mado-shaped", KEYLOSS_KEYS)] {
         let client = rig.fresh_client()?;
+        let redials_before = client_count(ClientCount::Redials);
         for i in 0..count {
             let b = if phase == "mado-shaped" {
                 b'A' + u8::try_from(i).unwrap_or(0)
@@ -883,7 +938,8 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize) -> io::Result<KeyLoss> {
                 out.control_sent += 1;
                 out.control_delivered += usize::from(got);
             }
-            h.emit(
+            tag.emit(
+                h,
                 Sample::new(
                     "keyloss",
                     &rig.label,
@@ -897,15 +953,252 @@ pub fn keyloss(h: &Harness, rig: &Rig, rows: usize) -> io::Result<KeyLoss> {
             );
             thread::sleep(Duration::from_millis(100));
         }
+        if phase == "mado-shaped"
+            && let (Some(before), Some(after)) =
+                (redials_before, client_count(ClientCount::Redials))
+        {
+            out.redials = Some(after - before);
+        }
     }
-    h.emit(
-        Sample::new("keyloss", &rig.label, "keys-lost", 0, (out.sent - out.delivered) as f64, Unit::Count)
-            .cell(Cell::new(Case::C3, Metric::Loss))
-            .detail(format!(
-                "{} of {} mado-shaped keys delivered at {rows} rows; control {} of {}; snapshot frame {} B",
-                out.delivered, out.sent, out.control_delivered, out.control_sent, out.snapshot_frame
-            )),
+    out.emit(h, &rig.label, rows, tag);
+    rig.kill(sid);
+    Ok(out)
+}
+
+pub struct Tokened {
+    pub sent: usize,
+    pub delivered: usize,
+    pub refusal: Option<String>,
+}
+
+impl Tokened {
+    #[must_use]
+    pub fn lost(&self) -> u64 {
+        (self.sent - self.delivered) as u64
+    }
+}
+
+pub fn tokened(h: &Harness, rig: &Rig, keys: usize, tag: Tag) -> io::Result<Tokened> {
+    if rig.auth.is_none() {
+        return Err(io::Error::other(
+            "the tokened case needs a daemon started with a token",
+        ));
+    }
+    let (sid, pane) = rig.new_pane("tokened", ECHO_SCRIPT, &[])?;
+    rig.wait_text(pane, "READY", Duration::from_secs(10))?;
+    let client = rig.fresh_client()?;
+    let (tx, rx) = std::sync::mpsc::channel::<(Instant, Vec<u8>)>();
+    let mut out = Tokened {
+        sent: keys,
+        delivered: 0,
+        refusal: None,
+    };
+    match client.subscribe_pane_bytes(pane, move |b: &[u8]| {
+        let _ = tx.send((Instant::now(), b.to_vec()));
+    }) {
+        Err(e) => out.refusal = Some(e.to_string()),
+        Ok(handle) => {
+            drain(&rx, Duration::from_millis(150));
+            for i in 0..keys {
+                let b = key_byte(i);
+                client.send_keys(pane, &[b]).map_err(|e| {
+                    io::Error::other(format!("send over the tokened connection: {e}"))
+                })?;
+                out.delivered +=
+                    usize::from(wait_byte(&rx, b, Duration::from_millis(1_500)).is_some());
+            }
+            drop(handle);
+        }
+    }
+    let mut s = Sample::new(
+        "tokened",
+        &rig.label,
+        "keys-lost",
+        0,
+        out.lost() as f64,
+        Unit::Count,
+    )
+    .detail(match &out.refusal {
+        Some(e) => {
+            format!("the subscription was refused, so no echo of {keys} keys reached it: {e}")
+        }
+        None => format!(
+            "{} of {keys} echoes reached a subscription to a daemon that requires a token",
+            out.delivered
+        ),
+    });
+    if rig.variant.transport == TransportKind::Tcp {
+        s = s.cell(Cell::new(Case::C6(Remote::Tcp), Metric::Loss));
+    }
+    tag.emit(h, s);
+    h.log(&format!(
+        "{} tokened: {} of {keys} delivered{}",
+        rig.label,
+        out.delivered,
+        out.refusal
+            .as_ref()
+            .map(|e| format!("; subscribe refused: {e}"))
+            .unwrap_or_default()
+    ));
+    rig.kill(sid);
+    Ok(out)
+}
+
+#[must_use]
+pub fn paste_body(len: usize) -> Vec<u8> {
+    let mut state: u32 = 0x9e37_79b9;
+    (0..len)
+        .map(|i| {
+            if i % 64 == 63 {
+                b'\n'
+            } else {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                b'a' + u8::try_from((state >> 24) % 26).unwrap_or(0)
+            }
+        })
+        .collect()
+}
+
+const fn cksum_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = (i as u32) << 24;
+        let mut bit = 0;
+        while bit < 8 {
+            c = if c & 0x8000_0000 == 0 {
+                c << 1
+            } else {
+                (c << 1) ^ 0x04c1_1db7
+            };
+            bit += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+}
+
+const CKSUM: [u32; 256] = cksum_table();
+
+#[must_use]
+pub fn posix_cksum(parts: &[&[u8]]) -> (u32, u64) {
+    let step = |crc: u32, b: u8| (crc << 8) ^ CKSUM[usize::from(((crc >> 24) as u8) ^ b)];
+    let mut crc = 0u32;
+    let mut len = 0u64;
+    for p in parts {
+        crc = p.iter().fold(crc, |c, b| step(c, *b));
+        len += p.len() as u64;
+    }
+    let mut n = len;
+    while n != 0 {
+        crc = step(crc, (n & 0xff) as u8);
+        n >>= 8;
+    }
+    (!crc, len)
+}
+
+fn parse_cksum(text: &str) -> Option<(u32, u64)> {
+    text.lines().rev().find_map(|line| {
+        let mut words = line.split_whitespace();
+        let crc = words.next()?.parse().ok()?;
+        let len = words.next()?.parse().ok()?;
+        words.next().is_none().then_some((crc, len))
+    })
+}
+
+pub struct Pasted {
+    pub expected: (u32, u64),
+    pub got: Option<(u32, u64)>,
+    pub took: Duration,
+    pub sends: Vec<String>,
+}
+
+impl Pasted {
+    #[must_use]
+    pub fn missing(&self) -> u64 {
+        self.got
+            .map_or(self.expected.1, |(_, len)| self.expected.1.abs_diff(len))
+    }
+
+    #[must_use]
+    pub fn mismatched(&self) -> u64 {
+        u64::from(self.got.is_none_or(|g| g != self.expected))
+    }
+}
+
+pub fn paste(h: &Harness, rig: &Rig, body_len: usize, tag: Tag) -> io::Result<Pasted> {
+    let body = paste_body(body_len);
+    let parts: [&[u8]; 3] = [BRACKETED_PASTE_OPEN, &body, BRACKETED_PASTE_CLOSE];
+    let expected = posix_cksum(&parts);
+    let (sid, pane) = rig.new_pane("paste", PASTE_SCRIPT, &[expected.1.to_string()])?;
+    rig.wait_text(pane, "READY", Duration::from_secs(10))?;
+    let sub = rig.subscribe(pane)?;
+    drain(&sub.rx, Duration::from_millis(150));
+    let t0 = Instant::now();
+    let sends: Vec<String> = parts
+        .iter()
+        .map(|part| match rig.ctl().send_keys(pane, part) {
+            Ok(()) => format!("{} B ok", part.len()),
+            Err(e) => format!("{} B err: {e}", part.len()),
+        })
+        .collect();
+    let mut text = String::new();
+    let wait = if sends.iter().all(|s| s.ends_with(" ok")) {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(3)
+    };
+    let until = Instant::now() + wait;
+    let mut got = None;
+    while got.is_none() {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match sub.rx.recv_timeout(left) {
+            Ok((_, v)) => {
+                text.push_str(&String::from_utf8_lossy(&v));
+                if text.ends_with('\n') {
+                    got = parse_cksum(&text);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let out = Pasted {
+        expected,
+        got,
+        took: t0.elapsed(),
+        sends,
+    };
+    let detail = format!(
+        "mado-shaped paste of {} B ({} B body inside ESC[200~ … ESC[201~), sends [{}]; child cksum {}; expected {} {}; {:.1} ms",
+        expected.1,
+        body_len,
+        out.sends.join(", "),
+        out.got.map_or_else(
+            || format!("never printed within {} s", wait.as_secs()),
+            |(c, l)| format!("{c} {l}")
+        ),
+        expected.0,
+        expected.1,
+        out.took.as_secs_f64() * 1e3
     );
+    let cell = is_canonical_bound(rig).then(|| Cell::new(Case::C12(Input::Paste), Metric::Loss));
+    for (name, value) in [
+        ("paste-bytes-missing", out.missing()),
+        ("paste-checksum-mismatch", out.mismatched()),
+    ] {
+        let mut s = Sample::new("paste", &rig.label, name, 0, value as f64, Unit::Count)
+            .detail(detail.clone());
+        if let Some(c) = cell {
+            s = s.cell(c);
+        }
+        tag.emit(h, s);
+    }
+    h.log(&format!("{} paste: {detail}", rig.label));
+    drop(sub);
     rig.kill(sid);
     Ok(out)
 }
@@ -1410,6 +1703,32 @@ pub fn replay_file(h: &Harness, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn posix_cksum_matches_the_posix_check_value() {
+        assert_eq!(posix_cksum(&[b"123456789"]), (930_766_865, 9));
+        assert_eq!(posix_cksum(&[b"1234", b"56789"]), (930_766_865, 9));
+        assert_eq!(posix_cksum(&[]), (4_294_967_295, 0));
+    }
+
+    #[test]
+    fn the_child_s_cksum_line_is_read_from_the_stream_tail() {
+        assert_eq!(parse_cksum("READY\n930766865 9\n"), Some((930_766_865, 9)));
+        assert_eq!(parse_cksum("noise"), None);
+        assert_eq!(parse_cksum("1 2 3\n"), None);
+    }
+
+    #[test]
+    fn a_paste_body_is_printable_and_never_frames_itself() {
+        let body = paste_body(4_096);
+        assert_eq!(body.len(), 4_096);
+        assert!(body.iter().all(|b| b.is_ascii_lowercase() || *b == b'\n'));
+        assert!(
+            !body
+                .windows(BRACKETED_PASTE_CLOSE.len())
+                .any(|w| w == BRACKETED_PASTE_CLOSE)
+        );
+    }
 
     fn series(spikes_ms: &[f64]) -> Series {
         let mut echoes: Vec<(f64, f64)> = (0..1_500)

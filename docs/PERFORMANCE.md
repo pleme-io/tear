@@ -619,6 +619,79 @@ negative control is a fault injector compiled only for tests (§6).
   tokened-subscription row and a 16 MiB paste hashed in the child, each red on
   today's code.
 - **Old behaviour:** none to keep; this removes failures.
+- **State (2026-10-07, landed on tear and mado `main`):** landed as written,
+  with these refinements the code forced. The size refusal is two layers: a
+  floor before cloning and a writer-side cap for every frame. The floor
+  (`PaneGrid::snapshot_wire_floor`) counts every cell the snapshot would carry
+  — screen plus scrollback, none under an alternate screen, each row at its
+  own width, because a resize leaves history rows as wide as they were — at 57
+  B, the smallest cell CBOR can encode, plus 1 B a graphics byte; a typical
+  cell encodes ~60 B, so the floor sits within 5 % of the encoding and never
+  above it, and a snapshot that fits is never refused. The rung's rows ×
+  columns × 61 B estimate ran 3 % above the encoding, so it refused a
+  163-column snapshot that fit, between ~1,615 and ~1,667 rows, and more of
+  any pane whose history was narrower than its screen. Between the floor and
+  the cap the snapshot is cloned and encoded once and the writer-side cap
+  refuses it: `wire::write_msg` refuses a frame over `MAX_FRAME_BYTES` before
+  writing a byte, and the daemon's `write_response` answers
+  `response-too-large` in place of any response that encodes past it, not only
+  a snapshot. tear-client moves its connection out of the client for each
+  exchange and puts it back only after a whole frame, so a connection left
+  mid-frame is dropped by construction; a lost connection (EOF, reset, broken
+  pipe) is replayed once, on a fresh connection, only for a request whose
+  second application changes nothing — a read, or a write that sets absolute
+  state (`SelectWindow`, `SelectPane`, `PaneResizeAbsolute`, `SetSpawnEnv`),
+  as before R3; the rung's "idempotent reads" alone would have failed mado's
+  first resize after every daemon restart. An exhaustive match sorts every
+  `Request` into `Read`, `AbsoluteWrite` or `Never`, so a new variant cannot
+  land unclassified. Every connection — control, each re-dial, each
+  subscription — runs one handshake (dial, `Authenticate`, `Hello`, then the
+  stored `IdentifyClient`), and a re-dial replaces `Client::daemon()`, which
+  now returns an `Arc<DaemonIdentity>`. `SendKeys` above 64 KiB travels as
+  chunks under one lock; a failure after the first chunk is
+  `ControlError::PartialInput{delivered, total, cause}`, and a client-side
+  refusal of an oversized request is `response-too-large` too.
+  `MultiplexerControl::send_paste` frames a bracketed paste in one buffer and,
+  when bytes may have landed, closes the bracket itself; mado's engine still
+  writes a paste as three sink writes (open, body, close), so its close
+  already follows a failed body, and mado moves onto `send_paste` at its next
+  tear bump, since it builds tear from crates.io. mado's PTY, resize,
+  switch-resize, query-answer and prewarm writes count each failure in
+  `frame_perf`'s `tear_write_failures` and log at most once a second per kind
+  of write, naming what that failure costs (an unanswered DSR/DA/OSC query may
+  stall the shell); a test drives the PTY and resize sinks against a control
+  that refuses them. The gate's cells, all `Count{max: 0}`: C3/loss (keys
+  lost, and re-dials, a `bench-probes` probe, over 20 mado-shaped keys at
+  3,000 rows), C6-tcp/loss (the tokened-subscription row: echoes of 20 keys
+  that never reach a subscription to a TCP daemon requiring a token — tokens
+  are what a reachable daemon needs) and C12-paste/loss (bytes missing and a
+  checksum mismatch after a mado-shaped 16 MiB paste, hashed in the child by
+  POSIX `cksum`). Against the pre-rung code, built with this gate, the
+  structural tier read C3/loss 40 (0 of 20 keys, 40 re-dials), C6-tcp/loss 20
+  (the subscription refused: "authentication required") and C12-paste/loss
+  16,777,228 (the body's frame broke the pipe; the child never printed);
+  against R3 all three read 0 (20 of 20 keys and 0 re-dials, 20 of 20 echoes,
+  the child's checksum equal to the sender's, 16 MiB in 1.05 s), and each
+  control read `Over` on its cell: `response-size-unchecked` 20 re-dials,
+  `legacy-replay` 0 of 20 and 40 re-dials, `raw-subscribe` 20 of 20 lost,
+  `unchunked-input` 16,777,228 B missing. Load averages were 39–109 across
+  these runs, so no timing here is a receipt. The final build, with the floor
+  and the replay classes, read the same on run 1791427197962 at load averages
+  8–10, every control again `Over`. The §7 pairings, each case run against the
+  other side's build: R3's daemon with the pre-R3 client delivered 20 of 20
+  keys with 0 re-dials, since the old client decodes the refusal on an aligned
+  connection, while its paste and tokened subscription stay lost, as the fixes
+  there are the client's; the pre-R3 daemon with R3's client delivered 20 of
+  20 keys at one re-dial each, the 16 MiB paste whole and 20 of 20 tokened
+  echoes. Holders are untouched, so a holder from before R3 meets R3's daemon
+  on the same PROTO 1. `tearbench reproduce` now re-measures the 2026-10-07
+  key loss through `legacy-replay` with `response-size-unchecked`, the only
+  way the 0 of 20 still exists. One side effect lands on R5's pending cell: a
+  mado-shaped key at 3,000 rows now moves 195 B on the wire, its DECCKM read
+  refused in one small frame, where the snapshot took 29.4 MB; until R5 the
+  refused read answers normal cursor-key mode, which matters only for a
+  primary-screen program that sets DECCKM in a pane past the cap, since a
+  snapshot under the alternate screen carries no history.
 
 #### R4 · A holder never mutes a pane
 *Destination · after R1.*
@@ -1840,8 +1913,15 @@ then `Within` or `Over`; the sentinels gate timing cells only, and the
 host-class table holds the reference Mac's four p50s (F-a 7.38 µs, F-d
 5.79 µs, F-e 7.08 µs, F-d 6.46 µs). The negative controls are declared per
 row and checked statically — each reddens at least one cell that is not
-`NotApplicable`, and every budgeted cell has one — but no run switches them
-on except R1's own `audit-every-key`: the kept configurations arrive with
+`NotApplicable`, and every budgeted cell has one — and the structural tier
+switches on every fault whose rung has landed: R1's `audit-every-key` and
+R3's four (§5 R3). One `control_run` arms a control's faults in the daemon
+(`TEAR_BENCH_FAULTS`) and, for a client-side fault, in tearbench's own
+process, runs the case, and disarms; its samples land under
+`control:<name>:<bench>` with no cell, so a control never grades a clean
+cell. A control may arm more than one fault when its bad state needs a
+peer's: `legacy-replay` runs against a daemon with `response-size-unchecked`
+armed, as an old daemon behaves. The kept configurations arrive with
 their rungs, and the three tear faults phase A–C needs (the mute sink,
 `snapshot.history: all`, the unbounded subscriber queue) are today's only
 behaviour, so each fault's injection point lands with the rung that builds
@@ -1951,7 +2031,7 @@ kotae's four outcomes, so blind never reads as found.
 
 | Tier | What | Where | When |
 |---|---|---|---|
-| structural | count metrics (RPCs, bytes, frames, flushes, parses, encodes, allocations per KiB, idle ticks, paints per change), negative controls, `trybuild` proofs, the ledger test | tear's existing test gate on Linux with `--all-features`, and `ci.yml` on pull requests | every push |
+| structural | count metrics (RPCs, bytes, frames, flushes, parses, encodes, allocations per KiB, idle ticks, paints per change), negative controls, `trybuild` proofs, the ledger test | the static half — the matrix's const checks, `trybuild` proofs and each rung's own tests (R3's `tear-client/tests/wire_loss.rs`) — in tear's test gate on Linux with `--all-features`, and `ci.yml` on pull requests; the measured cells and the negative controls only through `tearbench gate --tier structural`, which no CI job runs yet, so by hand on the reference Mac | the static half on every push; the gate at every rung boundary |
 | timing | floor-relative latency and throughput, A/B against the previous release in interleaved ABBA blocks on one VM; a regression is a bootstrap 95 % lower bound of head/base p50 above 1.10, retried once | pleme-io/actions' `benchmark-runner`, extended rather than forked: its body becomes a `run.tlisp` that runs `tearbench gate --tier timing` and fails on the matrix's verdicts, where today it runs `cargo bench` under `\|\| true` and reports 0 regressions whatever happens (S actions `benchmark-runner/action.yml`); never on pull requests | every push to `main` and nightly; report-only for a new host class's first two weeks |
 | reference | every tier | `nix run .#bench -- gate --tier all` on the reference Mac | at every rung boundary; the receipt and the red run go in the commit message |
 
@@ -2037,8 +2117,8 @@ older daemon with state a newer one wrote; C6 adds skew across hosts.
 
 | Pairing | What happens |
 |---|---|
-| old daemon × new mado | the old capability set selects DECCKM over RPC, the legacy subscribe, lockstep keys and full snapshots; client-side fixes still apply (R3, R10 — `PaneClosed` is already sent — R11, R12, R13); mado answers what it displays, as it does today (R42) |
-| new daemon × old mado, the normal state right after a rebuild | no client capabilities, so a `LegacySink`: `PaneBytes`, now byte strings old readers decode, and `PaneClosed`; the replay now carries modes as absolute restores, which old mirrors parse correctly even when they replay twice; a lagging legacy subscriber is never closed — it reads a held pane's journal by offset, or past a process-bound pane's backlog cap receives an in-band resync (R22); the old mado holds the answering lease; its impose keeps every key newer than its schema (rule 7) |
+| old daemon × new mado | the old capability set selects DECCKM over RPC, the legacy subscribe, lockstep keys and full snapshots; client-side fixes still apply (R3, R10 — `PaneClosed` is already sent — R11, R12, R13); mado answers what it displays, as it does today (R42). An old daemon still writes a snapshot past the cap: R3's client refuses the frame, drops that connection and re-dials for the next call, so a key costs one reconnect instead of being lost |
+| new daemon × old mado, the normal state right after a rebuild | no client capabilities, so a `LegacySink`: `PaneBytes`, now byte strings old readers decode, and `PaneClosed`; a response past the frame cap arrives as `Rejected("response-too-large: …")`, which every client decodes and which leaves its connection aligned (R3); the replay now carries modes as absolute restores, which old mirrors parse correctly even when they replay twice; a lagging legacy subscriber is never closed — it reads a held pane's journal by offset, or past a process-bound pane's backlog cap receives an in-band resync (R22); the old mado holds the answering lease; its impose keeps every key newer than its schema (rule 7) |
 | new daemon × old holder, at every daemon upgrade | `Hello{proto: 1}` with no names, so PROTO-1 verbs only; daemon-side gains apply (fencing through `Attach{from}`, mute detection through `Status.end`, the store lease, checkpoint + tail); holder-side gains (R4, R17, R21, R35's dedup) reach a running shell only through R16, which holders older than R16 lack — they keep their behaviour until their shell exits, which is why R15 and R16 precede the holder's protocol growth |
 | rollback: daemon N-1 × holders and documents from N | the holder answers `Hello{proto: 1}` and its names are ignored; documents read (version 1, unknown fields ignored); checkpoints ignored, so offset-0 replay; config rolls back with the binary |
 | new mado × a daemon without `view-lane`, after R38 | doorbell-driven snapshot reads per pane through the authority's own snapshot; a pane whose snapshot exceeds the frame cap is refused, typed, for that pane alone; the embedded runtime stays available |
@@ -2060,7 +2140,11 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a session-hosting daemon rendered in the background band | `session-host` renders only `Interactive`; a `processType` beside a class is not rendered and is named in a warning | module-trio evaluation tests `testSessionHostBesideBackgroundRendersInteractive` (pinned output) and `testSessionHostBesideBackgroundWarns` (a spy `lib.warn`); a `session-host` row moved to `Background` reds 7 rows | a daemon that declares no class; a deliberate `xpc-adaptive`; a deliberate `mkForce` on the unit's own `ProcessType`; panes born in the band before R2 that the OS will not reclass | truly-unrep (no class renders it) |
 | a case or metric with no budget | the row is the only declaration; `Budgets` has no `Default` | `trybuild`, pinned E0063 and E0004 | enums of mado and madori, red only when mado builds against them | truly-unrep |
 | a capability that is never advertised | one `capabilities!` row per variant | `trybuild`: a variant with no row, E0004; mutation A, which left 9 of 9 tests green before the seal (P) | a deliberate macro edit | truly-unrep |
-| a key lost after an oversized response | a connection left mid-frame is never reused; a size refusal is never replayed | today's replay policy as a test double: 0 of 20 | other transport faults mid-frame | only-mitigated (C1) |
+| a key lost after an oversized response | the daemon refuses before cloning when the snapshot's floor passes the cap, and after encoding otherwise; tear-client takes its connection out for each exchange and puts it back only after a whole frame, and replays a lost connection only for a read or an absolute-state write | faults `response-size-unchecked` (20 re-dials) and `legacy-replay` (today's replay policy as a test double: 0 of 20); `tear-client/tests/wire_loss.rs`, red when a connection is kept after a failed exchange, when `SendKeys` is classified replayable or when a refused frame is replayed (mutations, 2026-10-07) | a peer that writes frames without tear-types' writer | only-mitigated (C1) |
+| a frame written that its reader refuses | `wire::write_msg` refuses a frame over `MAX_FRAME_BYTES` before writing a byte; the daemon answers `response-too-large` in place of any oversized response | `response-size-unchecked`; a wire test that a refused frame writes 0 B; a serve-loop test whose oversized `ConfigYaml` must come back `response-too-large` on a connection that keeps serving, red with the loop's plain `write_msg` | a hand-written frame | only-mitigated (C1) |
+| a snapshot refused that would fit its frame | the pre-clone refusal reads a floor — every carried cell, each row at its own width, at 57 B, the smallest cell CBOR encodes — so it refuses only a snapshot that cannot fit; the encoded check decides the rest | `the_smallest_cell_encodes_to_the_wire_floor` (57 B, pinned); the widened-pane floor test, red with the rung's rows × columns estimate (mutation, 2026-10-07) | a snapshot between its floor and the cap is cloned and encoded once before it is refused | only-mitigated (C1) |
+| input lost past the frame cap | `SendKeys` above 64 KiB travels as chunks under one lock; a failure is `PartialInput{delivered}`; `send_paste` closes its bracket when bytes may have landed | `unchunked-input`; the 16 MiB paste row | another client's input between two chunks (R23) | only-mitigated (C1) |
+| a connection that skips the handshake | the control connection, every re-dial and every subscription run one handshake: `Authenticate`, `Hello`, the stored `IdentifyClient` | `raw-subscribe`; the tokened-subscription row; a re-dial test against a daemon double | — | only-mitigated (C1) |
 | a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways | `trybuild`: a sink around a borrowed connection, pinned stderr; the mute-sink fault | holders spawned before R4, which the daemon's `Status.end` check only mitigates | truly-unrep (R4 holders) |
 | an incomplete UTF-8 tail reaches a parser | `PaneGrid::feed` takes a `Chunk` only the feeder mints | `trybuild`: a `Chunk` minted outside the feeder, E0451; the old splitter as a test double | — | parse-time-rejected |
 | modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451; the `daemon-rpc` control | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does | truly-unrep (at R38) |
@@ -2201,6 +2285,7 @@ All land with R0 unless named; each corrects the body, not a footnote.
 | mado REMEDIATION-PLAN §M7 and GRID-THREADING-CONTRACT's "never restructured again" | M7 owns the render decouple, damage and the mailbox | on the tear path these are R13, R30 and R31; M7 keeps the local-PTY path until R38 | R0 |
 | mado's contributor guide, threading section | a PTY thread reads and parses | true of the local-PTY runtime only | R0 |
 | mado `gui_tear_attach.rs:681-684` | a dropped VT-query answer kills reedline-based shells | true of upstream reedline; frost builds against pleme-io's fork, whose painter falls back after a failed cursor report (S reedline `painter.rs:204-224`), so there a dropped answer costs 2 s per cursor report (R crossterm) | R0 |
+| tear-types `MAX_FRAME_BYTES` | 16 MiB is far above any real Request or Response | a 163-column snapshot crosses it at ~1,667 rows (H) | R3 |
 | tear-types `wire.rs:10-11` and `:28-32` | CBOR's cost is negligible; appended variants are safe | byte payloads cost 1.98× the bytes and 60–173× the round trip (F-f); appended *responses* pushed unprompted break old clients | R0, R6, R15 |
 | tear-types `engate_wrap.rs` | attach cost is cells × 4 | it omits scrollback, graphics and encoding: 469,816 B + 9,782 B a row (H) | R0 |
 | tear-types `capability.rs:309-311` | a variant missing from `ALL` fails this assertion | it passes (P) | R0 |

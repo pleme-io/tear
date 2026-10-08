@@ -15,7 +15,7 @@ tear_types::closed_vocabulary! {
     }
 }
 
-pub const LANDED: &[Rung] = &[Rung::R1];
+pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3];
 
 #[must_use]
 pub const fn landed(rung: Rung) -> bool {
@@ -414,6 +414,10 @@ tear_types::closed_vocabulary! {
         UnboundedSubscriberQueue => "unbounded-subscriber-queue",
         AllocatingRow => "allocating-row",
         AuditEveryKey => "audit-every-key",
+        ResponseSizeUnchecked => "response-size-unchecked",
+        LegacyReplay => "legacy-replay",
+        RawSubscribe => "raw-subscribe",
+        UnchunkedInput => "unchunked-input",
     }
 }
 
@@ -441,7 +445,11 @@ impl Control {
             | Control::SnapshotHistoryAll
             | Control::UnboundedSubscriberQueue
             | Control::AllocatingRow
-            | Control::AuditEveryKey => ControlKind::Fault,
+            | Control::AuditEveryKey
+            | Control::ResponseSizeUnchecked
+            | Control::LegacyReplay
+            | Control::RawSubscribe
+            | Control::UnchunkedInput => ControlKind::Fault,
         }
     }
 
@@ -460,6 +468,10 @@ impl Control {
             Control::UnboundedSubscriberQueue => Rung::R22,
             Control::AllocatingRow => Rung::R24,
             Control::AuditEveryKey => Rung::R1,
+            Control::ResponseSizeUnchecked
+            | Control::LegacyReplay
+            | Control::RawSubscribe
+            | Control::UnchunkedInput => Rung::R3,
         }
     }
 
@@ -494,6 +506,18 @@ impl Control {
             Control::AllocatingRow => "513 allocations per KiB of yes (G): today's only behaviour",
             Control::AuditEveryKey => {
                 "no audit write on the key path (S daemon audit.rs:65-78); the fault writes one per SendKeys"
+            }
+            Control::ResponseSizeUnchecked => {
+                "the daemon clones and encodes a response of any size and writes a frame its peer refuses to read (S tear-daemon dispatch, tear-types wire.rs read_frame): today's only behaviour"
+            }
+            Control::LegacyReplay => {
+                "tear-client reuses a connection left mid-frame and replays a failed read whatever failed (S tear-client lib.rs:658-681): today's only behaviour; its run arms response-size-unchecked in the daemon too, as an old daemon behaves"
+            }
+            Control::RawSubscribe => {
+                "a subscription dials a bare connection, so a daemon that requires a token refuses it (S tear-client lib.rs:525-528): today's only behaviour"
+            }
+            Control::UnchunkedInput => {
+                "SendKeys carries any input in one frame, so input past ~8.1 MiB crosses the 16 MiB cap and is lost (W): today's only behaviour"
             }
         }
     }
@@ -801,6 +825,11 @@ impl Variant {
         ..Variant::BOUND
     };
 
+    pub const TCP: Variant = Variant {
+        transport: TransportKind::Tcp,
+        ..Variant::BOUND
+    };
+
     pub const PRESETS: &'static [(&'static str, Variant)] = &[
         ("embedded", Variant::EMBEDDED),
         ("bound", Variant::BOUND),
@@ -841,13 +870,7 @@ impl Variant {
                 ..Variant::HELD
             },
         ),
-        (
-            "tcp",
-            Variant {
-                transport: TransportKind::Tcp,
-                ..Variant::BOUND
-            },
-        ),
+        ("tcp", Variant::TCP),
     ];
 
     #[must_use]
@@ -897,5 +920,9 @@ product_rows! {
         tear_types::probes::Fault::SnapshotHistoryAll => Control::SnapshotHistoryAll,
         tear_types::probes::Fault::UnboundedSubscriberQueue => Control::UnboundedSubscriberQueue,
         tear_types::probes::Fault::AuditEveryKey => Control::AuditEveryKey,
+        tear_types::probes::Fault::ResponseSizeUnchecked => Control::ResponseSizeUnchecked,
+        tear_types::probes::Fault::LegacyReplay => Control::LegacyReplay,
+        tear_types::probes::Fault::RawSubscribe => Control::RawSubscribe,
+        tear_types::probes::Fault::UnchunkedInput => Control::UnchunkedInput,
     }
 }

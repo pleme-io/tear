@@ -8,6 +8,10 @@ crate::closed_vocabulary! {
         SnapshotHistoryAll => "snapshot-history-all",
         UnboundedSubscriberQueue => "unbounded-subscriber-queue",
         AuditEveryKey => "audit-every-key",
+        ResponseSizeUnchecked => "response-size-unchecked",
+        LegacyReplay => "legacy-replay",
+        RawSubscribe => "raw-subscribe",
+        UnchunkedInput => "unchunked-input",
     }
 }
 

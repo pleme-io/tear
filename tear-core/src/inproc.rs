@@ -376,6 +376,28 @@ impl InProcess {
         Ok(grid.snapshot())
     }
 
+    pub fn pane_snapshot_within(
+        &self,
+        pane_id: PaneId,
+        max_bytes: usize,
+    ) -> ControlResult<tear_types::PaneSnapshot> {
+        let grid_arc = {
+            let map = self.grids.lock();
+            map.get(&pane_id)
+                .cloned()
+                .ok_or(ControlError::NoSuchPane(pane_id))?
+        };
+        let grid = grid_arc.lock();
+        let floor = grid.snapshot_wire_floor();
+        if floor > max_bytes {
+            return Err(ControlError::Rejected(tear_types::wire::too_large(
+                "PaneSnapshot",
+                tear_types::wire::FrameSize::AtLeast(floor),
+            )));
+        }
+        Ok(grid.snapshot())
+    }
+
     /// No-alloc DECCKM lookup — reads one `bool` off the live
     /// `PaneGrid` rather than building a full `PaneSnapshot`.
     /// Mado's embedded-tear input loop hits this on every arrow

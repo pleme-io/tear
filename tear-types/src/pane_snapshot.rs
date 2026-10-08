@@ -332,6 +332,15 @@ fn default_true() -> bool {
 }
 
 impl PaneSnapshot {
+    pub const WIRE_BYTES_PER_CELL_MIN: usize = 57;
+
+    #[must_use]
+    pub const fn wire_floor(cells: usize, graphic_bytes: usize) -> usize {
+        cells
+            .saturating_mul(Self::WIRE_BYTES_PER_CELL_MIN)
+            .saturating_add(graphic_bytes)
+    }
+
     #[must_use]
     pub fn blank(rows: usize, cols: usize) -> Self {
         Self {
@@ -512,6 +521,56 @@ mod to_ansi_tests {
             cell.ch = ch;
         }
         snap
+    }
+
+    #[test]
+    fn the_smallest_cell_encodes_to_the_wire_floor() {
+        let smallest = Cell {
+            ch: ' ',
+            fg: Color::BLACK,
+            bg: Color::BLACK,
+            attrs: CellAttrs::NONE,
+            width: 1,
+            combining: 0,
+        };
+        assert_eq!(
+            crate::wire::encode(&smallest).unwrap().len(),
+            PaneSnapshot::WIRE_BYTES_PER_CELL_MIN
+        );
+        let largest = Cell {
+            ch: '\u{1F600}',
+            fg: Color::WHITE,
+            bg: Color::WHITE,
+            attrs: CellAttrs(0xff),
+            width: 2,
+            combining: u16::MAX,
+        };
+        assert!(
+            crate::wire::encode(&largest).unwrap().len() > PaneSnapshot::WIRE_BYTES_PER_CELL_MIN
+        );
+    }
+
+    #[test]
+    fn the_wire_floor_never_exceeds_an_encoded_snapshot_and_stays_near_it() {
+        let mut snap = snap_with(48, 163, 'x');
+        snap.scrollback = (0..200)
+            .map(|i| vec![Cell::BLANK; if i % 2 == 0 { 163 } else { 80 }])
+            .collect();
+        for (i, cell) in snap.scrollback.iter_mut().flatten().enumerate() {
+            cell.ch = char::from(b'a' + u8::try_from(i % 26).unwrap());
+        }
+        let cells = snap
+            .cells
+            .iter()
+            .chain(&snap.scrollback)
+            .map(Vec::len)
+            .sum();
+        let encoded = crate::wire::encode(&crate::wire::Response::PaneSnapshot(snap))
+            .unwrap()
+            .len();
+        let floor = PaneSnapshot::wire_floor(cells, 0);
+        assert!(floor <= encoded, "{floor} > {encoded}");
+        assert!(floor * 10 >= encoded * 9, "{floor} vs {encoded}");
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub struct Rig {
     pub variant: Variant,
     pub label: String,
     pub daemon_pid: Option<i32>,
+    pub auth: Option<String>,
     sessions: Mutex<Vec<SessionId>>,
 }
 
@@ -44,6 +45,7 @@ impl Rig {
             variant: Variant::EMBEDDED,
             label: label.to_string(),
             daemon_pid: None,
+            auth: None,
             sessions: Mutex::new(Vec::new()),
         }
     }
@@ -62,8 +64,15 @@ impl Rig {
             variant,
             label: label.to_string(),
             daemon_pid: Some(pid),
+            auth: None,
             sessions: Mutex::new(Vec::new()),
         }
+    }
+
+    #[must_use]
+    pub fn with_auth(mut self, token: Option<String>) -> Self {
+        self.auth = token;
+        self
     }
 
     #[must_use]
@@ -95,7 +104,7 @@ impl Rig {
             .transport
             .clone()
             .ok_or_else(|| io::Error::other("an embedded rig has no transport"))?;
-        Client::connect_transport(t).map(Arc::new)
+        Client::connect_transport_with_auth(t, self.auth.clone()).map(Arc::new)
     }
 
     pub fn new_pane(

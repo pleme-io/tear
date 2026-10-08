@@ -89,7 +89,7 @@ crate::bench_matrix! {
         ],
     },
     Case::C3 => Row {
-        receipt: "§2 C3: L (567 s), H, S",
+        receipt: "§2 C3: L (567 s), H, S; loss: keys lost and re-dials over 20 mado-shaped keys at 3,000 rows, 0 of 20 and 40 on the pre-R3 wire (R3)",
         budgets: Budgets {
             echo_warm: RESIDENT,
             echo_gap: RESIDENT,
@@ -119,7 +119,7 @@ crate::bench_matrix! {
             idle_ticks: MADO,
             idle_wakeups: ELSEWHERE,
             paints: MADO,
-            loss: pending(Rung::R3, "20 of 20 mado-shaped keys lost in a 3,000-row pane: each DECCKM snapshot exceeds the 16 MiB cap and the reused connection desynchronises", "H; target 0 lost, 0 reconnects"),
+            loss: Budget::Count { max: 0 },
             answers: pending(Rung::R42, "0 answers to a query in a pane no window shows: the asker waits out its timeout, 2 s for a crossterm cursor report", "S tear pane_grid.rs:1615, 1625; R crossterm 0.28.1 cursor/sys/unix.rs:39; target 1"),
             replays: ELSEWHERE,
             modes: ELSEWHERE,
@@ -128,6 +128,8 @@ crate::bench_matrix! {
             Red { control: Control::BandBackground, metrics: &[Metric::Throughput] },
             Red { control: Control::PaneFatePoll, metrics: &[Metric::Rpcs] },
             Red { control: Control::LeaseOff, metrics: &[Metric::Answers] },
+            Red { control: Control::ResponseSizeUnchecked, metrics: &[Metric::Loss] },
+            Red { control: Control::LegacyReplay, metrics: &[Metric::Loss] },
         ],
     },
     Case::C4 => Row {
@@ -214,7 +216,7 @@ crate::bench_matrix! {
         ],
     },
     Case::C6(Remote::Tcp) => Row {
-        receipt: "§2 C6: H (n=30), F-a, S",
+        receipt: "§2 C6: H (n=30), F-a, S; loss: echoes of 20 keys that never reach a subscription to a daemon requiring a token, 20 of 20 lost on the pre-R3 wire (R3)",
         budgets: Budgets {
             echo_warm: ELSEWHERE,
             echo_gap: ELSEWHERE,
@@ -244,7 +246,7 @@ crate::bench_matrix! {
             idle_ticks: MADO,
             idle_wakeups: pending(Rung::R8, "+20 timer wakeups/s from the 50 ms TCP accept sleep", "S (R18's effect line); target 0"),
             paints: MADO,
-            loss: ELSEWHERE,
+            loss: Budget::Count { max: 0 },
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
@@ -252,6 +254,7 @@ crate::bench_matrix! {
         controls: &[
             Red { control: Control::UdsBufferOsDefault, metrics: &[Metric::RoundTrip] },
             Red { control: Control::TwoWriteFraming, metrics: &[Metric::RoundTrip] },
+            Red { control: Control::RawSubscribe, metrics: &[Metric::Loss] },
         ],
     },
     Case::C6(Remote::Ssh) => Row {
@@ -682,7 +685,7 @@ crate::bench_matrix! {
         ],
     },
     Case::C12(Input::Paste) => Row {
-        receipt: "§2 C12 paste: F-b, W",
+        receipt: "§2 C12 paste: F-b, W; loss: bytes missing and a checksum mismatch, hashed in the child, after a mado-shaped 16 MiB paste, all 16,777,228 B missing on the pre-R3 wire (R3)",
         budgets: Budgets {
             echo_warm: ELSEWHERE,
             echo_gap: ELSEWHERE,
@@ -712,12 +715,14 @@ crate::bench_matrix! {
             idle_ticks: MADO,
             idle_wakeups: ELSEWHERE,
             paints: MADO,
-            loss: pending(Rung::R3, "anything above ~8.1 MiB of paste is lost", "W; target a 16 MiB paste arrives whole, hashed in the child"),
+            loss: Budget::Count { max: 0 },
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
         },
-        controls: &[],
+        controls: &[
+            Red { control: Control::UnchunkedInput, metrics: &[Metric::Loss] },
+        ],
     },
     Case::C12(Input::Mouse) => Row {
         receipt: "§2 C12 mouse: S; the pointer rate is estimated",

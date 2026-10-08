@@ -4,8 +4,9 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::cases::{self, FLOOD_BYTES, HZ_GAP_MS, KEYLOSS_KEYS, KEYLOSS_ROWS, OFF_LAG_MS};
-use super::{Harness, isolated_rig};
-use crate::matrix::{JournalSync, Variant};
+use super::daemon::Options;
+use super::{Harness, Tag, arm_client, isolated_rig, isolated_rig_with};
+use crate::matrix::{Control, JournalSync, Variant};
 use crate::receipt::{Sample, Unit};
 
 pub const FLOOD_FRAMES: u64 = 65_537;
@@ -21,19 +22,30 @@ pub struct Check {
 }
 
 pub fn key_loss(h: &Harness) -> io::Result<Check> {
-    let (mut d, rig) = isolated_rig(h, Variant::BOUND, "reproduce-keyloss")?;
-    let r = cases::keyloss(h, &rig, KEYLOSS_ROWS);
+    if !cfg!(feature = "bench-probes") {
+        return Err(io::Error::other(
+            "since R3 the 2026-10-07 key loss reproduces only through its fault double (response-size-unchecked in the daemon, legacy-replay in the client), and this tearbench has no bench-probes",
+        ));
+    }
+    let opts = Options {
+        faults: Some(Control::ResponseSizeUnchecked.name().to_string()),
+        ..Options::default()
+    };
+    let (mut d, rig) = isolated_rig_with(h, Variant::BOUND, "reproduce-keyloss", &opts)?;
+    arm_client(&[Control::LegacyReplay]);
+    let r = cases::keyloss(h, &rig, KEYLOSS_ROWS, Tag::Control(Control::LegacyReplay));
+    arm_client(&[]);
     rig.kill_all();
     drop(rig);
     d.stop(h);
     let r = r?;
     Ok(Check {
-        name: "keys delivered at 3,000 rows via the mado-shaped path",
+        name: "keys delivered at 3,000 rows via the mado-shaped path, on the pre-R3 wire's fault double",
         receipt: "§2 C3: 0 of 20 (H)",
         expected: format!("0 of {KEYLOSS_KEYS}, with the send-only control delivered"),
         measured: format!(
-            "{} of {}; control {} of {}; snapshot frame {} B",
-            r.delivered, r.sent, r.control_delivered, r.control_sent, r.snapshot_frame
+            "{} of {}; control {} of {}; snapshot frame {} B; re-dials {:?}",
+            r.delivered, r.sent, r.control_delivered, r.control_sent, r.snapshot_frame, r.redials
         ),
         reproduced: r.sent == KEYLOSS_KEYS
             && r.delivered == 0

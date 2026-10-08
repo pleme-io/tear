@@ -19,6 +19,7 @@ pub const COLS: u16 = 163;
 pub const ROWS: u16 = 48;
 pub const STARTED: &str = "started.pids";
 pub const ECHO_SCRIPT: &str = "stty raw -echo; printf READY; exec cat";
+pub const PASTE_SCRIPT: &str = "stty raw -echo; printf READY; head -c \"$0\" | cksum; exec cat";
 pub const FLOOD_SCRIPT: &str =
     "stty raw -echo; printf READY; dd bs=1 count=1 of=/dev/null 2>/dev/null; cat \"$0\"; exec cat";
 
@@ -220,6 +221,37 @@ impl Harness {
     }
 }
 
+#[cfg(feature = "bench-probes")]
+pub fn arm_client(faults: &[crate::matrix::Control]) {
+    let armed: Vec<tear_types::probes::Fault> = faults
+        .iter()
+        .filter_map(|c| tear_types::probes::Fault::parse(c.name()))
+        .collect();
+    tear_types::probes::arm(&armed);
+}
+
+#[cfg(not(feature = "bench-probes"))]
+pub fn arm_client(_: &[crate::matrix::Control]) {}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Tag {
+    Cells,
+    Control(crate::matrix::Control),
+}
+
+impl Tag {
+    pub fn emit(self, h: &Harness, s: Sample) {
+        h.emit(match self {
+            Tag::Cells => s,
+            Tag::Control(c) => Sample {
+                bench: format!("control:{}:{}", c.name(), s.bench),
+                cell: None,
+                ..s
+            },
+        });
+    }
+}
+
 #[must_use]
 pub fn now_secs() -> f64 {
     SystemTime::now()
@@ -269,7 +301,8 @@ pub fn isolated_rig_with(
     opts: &daemon::Options,
 ) -> io::Result<(daemon::Daemon, rig::Rig)> {
     let mut d = daemon::Daemon::start_with(h, variant, tag, opts)?;
-    let rig = rig::Rig::daemon(d.client()?, d.transport.clone(), variant, &d.label, d.pid);
+    let rig = rig::Rig::daemon(d.client()?, d.transport.clone(), variant, &d.label, d.pid)
+        .with_auth(d.auth_token.clone());
     let probe = rig.echo_pane("isolation-probe");
     std::thread::sleep(std::time::Duration::from_millis(800));
     let isolated = d.require_isolated(h);
