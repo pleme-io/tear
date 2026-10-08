@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -163,8 +163,22 @@ fn pane() -> PaneId {
     PaneId::from_seed("r3")
 }
 
+static CLIENT_FAULTS: RwLock<()> = RwLock::new(());
+
+fn unarmed() -> RwLockReadGuard<'static, ()> {
+    CLIENT_FAULTS.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(feature = "bench-probes")]
+fn arming() -> std::sync::RwLockWriteGuard<'static, ()> {
+    CLIENT_FAULTS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 #[test]
 fn an_oversized_reply_is_never_read_past_nor_replayed_and_the_next_key_lands() {
+    let _faults = unarmed();
     let fake = Fake::start("oversized", Script::default());
     let client = fake.client();
     let err = client.pane_snapshot(pane()).unwrap_err();
@@ -189,6 +203,7 @@ fn an_oversized_reply_is_never_read_past_nor_replayed_and_the_next_key_lands() {
 #[test]
 fn today_s_replay_policy_loses_the_key_after_an_oversized_reply() {
     use tear_types::probes::{Fault, arm};
+    let _faults = arming();
     let fake = Fake::start("legacy", Script::default());
     let client = fake.client();
     arm(&[Fault::LegacyReplay]);
@@ -202,6 +217,7 @@ fn today_s_replay_policy_loses_the_key_after_an_oversized_reply() {
 
 #[test]
 fn a_redial_re_identifies_and_re_probes() {
+    let _faults = unarmed();
     let fake = Fake::start("redial", Script::default());
     let mut client = fake.client();
     client.identify_as(42).unwrap();
@@ -227,6 +243,7 @@ fn a_redial_re_identifies_and_re_probes() {
 
 #[test]
 fn a_write_that_sets_absolute_state_is_replayed_on_a_fresh_connection() {
+    let _faults = unarmed();
     let fake = Fake::start("absolute", Script::default());
     let mut client = fake.client();
     client.identify_as(7).unwrap();
@@ -242,6 +259,7 @@ fn a_write_that_sets_absolute_state_is_replayed_on_a_fresh_connection() {
 
 #[test]
 fn input_travels_in_64_kib_chunks_back_to_back_on_one_connection() {
+    let _faults = unarmed();
     let fake = Fake::start("chunks", Script::default());
     let client = fake.client();
     let input: Vec<u8> = (b'a'..=b'z').cycle().take(200 * 1024).collect();
@@ -267,6 +285,7 @@ fn input_travels_in_64_kib_chunks_back_to_back_on_one_connection() {
 
 #[test]
 fn a_chunk_refused_mid_way_reports_what_was_delivered() {
+    let _faults = unarmed();
     let fake = Fake::start(
         "partial",
         Script {
@@ -296,6 +315,7 @@ fn a_chunk_refused_mid_way_reports_what_was_delivered() {
 
 #[test]
 fn a_bracketed_paste_that_fails_closes_its_own_bracket() {
+    let _faults = unarmed();
     let fake = Fake::start(
         "paste",
         Script {
@@ -314,6 +334,7 @@ fn a_bracketed_paste_that_fails_closes_its_own_bracket() {
 
 #[test]
 fn a_paste_refused_before_any_byte_landed_sends_no_stray_close() {
+    let _faults = unarmed();
     let fake = Fake::start(
         "paste-refused",
         Script {
@@ -332,6 +353,7 @@ fn a_paste_refused_before_any_byte_landed_sends_no_stray_close() {
 
 #[test]
 fn a_whole_paste_arrives_framed_once() {
+    let _faults = unarmed();
     let fake = Fake::start("paste-whole", Script::default());
     let client = fake.client();
     client.send_paste(pane(), b"hello", true).unwrap();
@@ -345,6 +367,7 @@ fn a_whole_paste_arrives_framed_once() {
 
 #[test]
 fn a_request_too_large_to_send_is_refused_before_any_io() {
+    let _faults = unarmed();
     let fake = Fake::start("too-large-request", Script::default());
     let client = fake.client();
     let err = client
@@ -357,6 +380,7 @@ fn a_request_too_large_to_send_is_refused_before_any_io() {
 
 #[test]
 fn a_subscription_authenticates_and_probes_like_the_control_connection() {
+    let _faults = unarmed();
     let fake = Fake::start(
         "tokened",
         Script {
@@ -381,6 +405,7 @@ fn a_subscription_authenticates_and_probes_like_the_control_connection() {
 
 #[test]
 fn a_tokened_daemon_streams_bytes_to_a_subscriber() -> io::Result<()> {
+    let _faults = unarmed();
     let socket = std::env::temp_dir().join(format!("tear-r3-auth-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket)?;
