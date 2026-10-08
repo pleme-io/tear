@@ -333,11 +333,11 @@ fn replay_high_speed_does_not_introduce_noticeable_latency() {
     use std::io::Write;
     use std::time::Instant;
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    // 1 second between rows; --speed 1000 + --max-delay-ms 0 must
+    // 10 seconds between rows; --speed 1000 + --max-delay-ms 0 must
     // both squash this to ~no delay.
     let cast = r#"{"version":2}
 [0.0,"o","a"]
-[1.0,"o","b"]
+[10.0,"o","b"]
 "#;
     tmp.write_all(cast.as_bytes()).unwrap();
     tmp.flush().unwrap();
@@ -354,10 +354,10 @@ fn replay_high_speed_does_not_introduce_noticeable_latency() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout, "ab");
     // Generous bound — we just want to assert "did not actually
-    // sleep ~1 second". A 500ms ceiling absorbs process startup +
-    // CI jitter.
+    // sleep the 10 s gap". A 5 s ceiling absorbs process startup on a
+    // loaded machine, where 500 ms against a 1 s gap measured 587 ms.
     assert!(
-        elapsed.as_millis() < 500,
+        elapsed.as_millis() < 5_000,
         "replay took {}ms; --speed/--max-delay-ms should have squashed the delay",
         elapsed.as_millis()
     );

@@ -1480,6 +1480,26 @@ mod tests {
     /// should say why at its own site rather than quietly picking another.
     const CHILD_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+    fn printed_line(rx: &mpsc::Receiver<Vec<u8>>, marker: &str) -> String {
+        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
+        let mut buf = Vec::<u8>::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                buf.extend_from_slice(&chunk);
+                let text = String::from_utf8_lossy(&buf);
+                let mut lines: Vec<&str> = text.split('\n').collect();
+                lines.pop();
+                if let Some(line) = lines
+                    .into_iter()
+                    .find(|l| l.contains(marker) && !l.contains("printf"))
+                {
+                    return line.trim_end_matches('\r').to_owned();
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
     #[test]
     fn new_inproc_starts_empty() {
         let inproc = InProcess::new();
@@ -1703,25 +1723,7 @@ mod tests {
             )
             .expect("send_keys");
 
-        // Collect output for up to 2 seconds.
-        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
-        let mut buf = Vec::<u8>::new();
-        while std::time::Instant::now() < deadline {
-            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                buf.extend_from_slice(&chunk);
-                if let Ok(s) = std::str::from_utf8(&buf) {
-                    if s.contains("SENTINEL[") && s.contains(']') {
-                        // Wait briefly for the rest of the line to arrive.
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                        while let Ok(more) = rx.try_recv() {
-                            buf.extend_from_slice(&more);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        let text = String::from_utf8_lossy(&buf);
+        let text = printed_line(&rx, "SENTINEL[");
         assert!(
             text.contains("SENTINEL["),
             "no sentinel in output: {text:?}"
@@ -1777,23 +1779,7 @@ mod tests {
             )
             .expect("send_keys");
 
-        let deadline = std::time::Instant::now() + CHILD_OUTPUT_TIMEOUT;
-        let mut buf = Vec::<u8>::new();
-        while std::time::Instant::now() < deadline {
-            if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                buf.extend_from_slice(&chunk);
-                if let Ok(s) = std::str::from_utf8(&buf) {
-                    if s.contains("SENV[") && s.contains(']') {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                        while let Ok(more) = rx.try_recv() {
-                            buf.extend_from_slice(&more);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        let text = String::from_utf8_lossy(&buf);
+        let text = printed_line(&rx, "SENV[");
         assert!(text.contains("SENV["), "no sentinel in output: {text:?}");
         assert!(
             text.contains("T=xterm-ghostty"),
