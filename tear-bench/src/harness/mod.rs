@@ -5,6 +5,7 @@ pub mod isolation;
 pub mod procs;
 pub mod reproduce;
 pub mod rig;
+pub mod window;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -28,6 +29,7 @@ pub struct Settings {
     pub tear_bin: PathBuf,
     pub prev_tear_bin: Option<PathBuf>,
     pub oldest_tear_bin: Option<PathBuf>,
+    pub mado_bin: Option<PathBuf>,
     pub forbid: PathBuf,
     pub path_env: String,
     pub faults: String,

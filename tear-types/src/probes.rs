@@ -13,6 +13,7 @@ crate::closed_vocabulary! {
         RawSubscribe => "raw-subscribe",
         UnchunkedInput => "unchunked-input",
         StoreLeaseOff => "store-lease-off",
+        WakeOff => "wake-off",
     }
 }
 

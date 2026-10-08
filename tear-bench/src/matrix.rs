@@ -15,7 +15,7 @@ tear_types::closed_vocabulary! {
     }
 }
 
-pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R4, Rung::R7];
+pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R4, Rung::R7, Rung::R10];
 
 #[must_use]
 pub const fn landed(rung: Rung) -> bool {
@@ -400,6 +400,7 @@ metrics! {
     idle_ticks => IdleTicks, "idle-ticks", "GUI loop ticks per idle second";
     idle_wakeups => IdleWakeups, "idle-wakeups", "context switches or timer wakeups per idle second";
     paints => Paints, "paints", "painted frames that repeat content";
+    present => Present, "present", "a byte's arrival in the window to the end of the frame that shows it, p50 (mado's frame_perf byte_to_present)";
     loss => Loss, "loss", "keys or bytes lost, or delivered twice";
     answers => Answers, "answers", "answers per terminal query";
     replays => Replays, "replays", "history replays per attach";
@@ -428,6 +429,7 @@ tear_types::closed_vocabulary! {
         UnchunkedInput => "unchunked-input",
         OldSplitter => "old-splitter",
         StoreLeaseOff => "store-lease-off",
+        WakeOff => "wake-off",
     }
 }
 
@@ -460,7 +462,8 @@ impl Control {
             | Control::LegacyReplay
             | Control::RawSubscribe
             | Control::UnchunkedInput
-            | Control::StoreLeaseOff => ControlKind::Fault,
+            | Control::StoreLeaseOff
+            | Control::WakeOff => ControlKind::Fault,
         }
     }
 
@@ -470,7 +473,7 @@ impl Control {
             Control::BandBackground => Rung::R2,
             Control::JournalWriteAhead => Rung::R17,
             Control::CursorKeysViaRpc => Rung::R5,
-            Control::PaneFatePoll => Rung::R10,
+            Control::PaneFatePoll | Control::WakeOff => Rung::R10,
             Control::ArrayEncoder => Rung::R6,
             Control::UdsBufferOsDefault | Control::TwoWriteFraming => Rung::R8,
             Control::MuteSink | Control::StoreLeaseOff => Rung::R4,
@@ -499,7 +502,9 @@ impl Control {
             Control::CursorKeysViaRpc => {
                 "the mado-shaped key: pane_cursor_keys_mode over RPC, then SendKeys (S mado gui_tear_attach.rs:891-899)"
             }
-            Control::PaneFatePoll => "one get_pane per idle tick (S gui_tear_attach.rs:1372)",
+            Control::PaneFatePoll => {
+                "mado's tear.pane_fate: poll, one get_pane per idle tick as before R10 (S mado gui_tear_attach.rs:1372 at ec50bfb)"
+            }
             Control::ArrayEncoder => "byte payloads as CBOR integer arrays (S tear-types wire.rs)",
             Control::UdsBufferOsDefault => "8 KiB AF_UNIX buffers (net.local.stream.sendspace)",
             Control::TwoWriteFraming => "a length write, then a body write (S wire.rs:523-533)",
@@ -536,6 +541,9 @@ impl Control {
             }
             Control::StoreLeaseOff => {
                 "no store lease: both daemons keep the pane, and either one's mute check re-attaches it from the other (SESSION-DURABILITY §7)"
+            }
+            Control::WakeOff => {
+                "no wake from output: a byte waits for mado's next Capped(60) tick, 0–16.7 ms (S mado gui_tear_attach.rs at de5949e); the fault hands mado's attach a no-op waker"
             }
         }
     }
@@ -610,6 +618,11 @@ pub fn cells() -> Vec<Cell> {
         .flat_map(|c| Metric::ALL.iter().map(move |m| Cell::new(*c, *m)))
         .collect()
 }
+
+pub const WINDOW_CELLS: &[Cell] = &[
+    Cell::new(Case::C3, Metric::Rpcs),
+    Cell::new(Case::C3, Metric::Present),
+];
 
 #[must_use]
 pub fn red_set(control: Control) -> Vec<Cell> {
@@ -943,5 +956,6 @@ product_rows! {
         tear_types::probes::Fault::RawSubscribe => Control::RawSubscribe,
         tear_types::probes::Fault::UnchunkedInput => Control::UnchunkedInput,
         tear_types::probes::Fault::StoreLeaseOff => Control::StoreLeaseOff,
+        tear_types::probes::Fault::WakeOff => Control::WakeOff,
     }
 }

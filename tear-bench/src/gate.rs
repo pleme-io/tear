@@ -10,10 +10,11 @@ use crate::harness::cases::{self, AfterStall};
 use crate::harness::daemon::Daemon;
 use crate::harness::daemon::Options;
 use crate::harness::rig::Rig;
+use crate::harness::window::{self, PaneFate, WindowOptions, WindowRun};
 use crate::harness::{Harness, Tag, arm_client, isolated_rig_with, procs};
 use crate::matrix::{
     Band, Budget, Case, Cell, Control, Floor, Handover, Input, JournalSync, Metric, Remote,
-    Variant, cells,
+    Variant, WINDOW_CELLS, cells,
 };
 use crate::receipt::{RUNS, Sample, Unit};
 use crate::verdict::{
@@ -475,6 +476,179 @@ pub fn muted_holders(h: &Harness, bands: &mut Vec<String>) {
     }
 }
 
+fn mado_window(
+    h: &Harness,
+    bands: &mut Vec<String>,
+    tag: &str,
+    opts: &WindowOptions,
+) -> Result<WindowRun, String> {
+    let Some(mado) = h.settings.mado_bin.clone() else {
+        return Err("no --mado-bin: a resident-window cell needs a mado to measure".into());
+    };
+    let (run, _) = with_daemon_opts(
+        h,
+        Variant::BOUND,
+        tag,
+        &Options::default(),
+        bands,
+        |d, rig| window::run_window(h, d, rig, &mado, tag, opts),
+    )
+    .map_err(|e| format!("the resident window could not be measured: {e}"))?;
+    Ok(run)
+}
+
+fn window_samples(run: &WindowRun, bench: &str, opts: &WindowOptions) -> Vec<Sample> {
+    let variant = Variant::BOUND.label();
+    let mut out = Vec::new();
+    if let Some(idle) = &run.idle {
+        out.push(
+            Sample::new(
+                bench,
+                &variant,
+                "ui-get-pane-at-idle",
+                0,
+                idle.get_pane as f64,
+                Unit::Count,
+            )
+            .cell(Cell::new(Case::C3, Metric::Rpcs))
+            .detail(format!(
+                "pane_fate: {}, fate_backstop_secs: {}, {:.1} s idle, mado pid {}",
+                opts.pane_fate.name(),
+                window::FATE_BACKSTOP_SECS,
+                idle.secs,
+                run.pid
+            )),
+        );
+    }
+    out.extend(run.presents_ns.iter().enumerate().map(|(i, ns)| {
+        Sample::new(bench, &variant, "byte-to-present", i, *ns, Unit::Ns)
+            .cell(Cell::new(Case::C3, Metric::Present))
+            .detail(format!(
+                "{} of {} isolated echoes presented ({} ms apart), the histogram bucket's upper bound; faults: [{}], mado pid {}",
+                run.presents_ns.len(),
+                run.echoes,
+                opts.echo_gap.as_millis(),
+                run.armed.join(","),
+                run.pid
+            ))
+    }));
+    out
+}
+
+pub fn window(h: &Harness, bands: &mut Vec<String>) -> Result<(), String> {
+    let opts = WindowOptions::clean();
+    let run = mado_window(h, bands, "gate-window", &opts)?;
+    h.emit_all(window_samples(&run, "window", &opts));
+    Ok(())
+}
+
+fn window_control(
+    h: &Harness,
+    bands: &mut Vec<String>,
+    control: Control,
+    opts: &WindowOptions,
+    floors: &FloorSet,
+    quiet: &Result<(), String>,
+) -> (ControlRun, String) {
+    let run = match mado_window(h, bands, &format!("control-{}", control.name()), opts) {
+        Ok(r) => r,
+        Err(e) => return (ControlRun::Blind, e),
+    };
+    let unarmed = run.unarmed(opts.faults);
+    if !unarmed.is_empty() {
+        return (
+            ControlRun::Blind,
+            format!(
+                "the mado window reported {} unarmed: its build has no bench-probes",
+                unarmed.join(", ")
+            ),
+        );
+    }
+    let samples = window_samples(&run, &format!("control:{}", control.name()), opts);
+    let values: Vec<(Cell, f64)> = samples
+        .iter()
+        .filter_map(|s| s.cell.map(|c| (c, s.value)))
+        .collect();
+    h.emit_all(
+        samples
+            .into_iter()
+            .map(|s| Sample { cell: None, ..s })
+            .collect(),
+    );
+    let mut verdicts = Vec::new();
+    for cell in crate::matrix::red_set(control) {
+        let budget = cell.budget();
+        let pre = Preconditions {
+            quiet: if matches!(budget, Budget::Floor { .. }) {
+                quiet.clone()
+            } else {
+                Ok(())
+            },
+            min_samples: min_samples(budget),
+            ..Preconditions::met(1)
+        };
+        let of_cell: Vec<f64> = values
+            .iter()
+            .filter(|(c, _)| *c == cell)
+            .map(|(_, v)| *v)
+            .collect();
+        let v = derive(budget, &of_cell, floors, &pre);
+        if let Verdict::Blind { reason } = &v {
+            return (
+                ControlRun::Blind,
+                format!(
+                    "{} read blind with {} on: {reason}",
+                    cell.name(),
+                    control.name()
+                ),
+            );
+        }
+        verdicts.push((cell, v));
+    }
+    match crate::verdict::audit_control(control, &verdicts) {
+        Ok(()) => (
+            ControlRun::Reddened,
+            verdicts
+                .iter()
+                .map(|(cell, v)| {
+                    format!(
+                        "{} read {} with {} on: {v:?}",
+                        cell.name(),
+                        v.name(),
+                        control.name()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        ),
+        Err(e) => (ControlRun::Failed, e),
+    }
+}
+
+pub fn window_controls(
+    h: &Harness,
+    bands: &mut Vec<String>,
+    floors: &FloorSet,
+    quiet: &Result<(), String>,
+) -> Vec<(Control, ControlRun, String)> {
+    [
+        (
+            Control::PaneFatePoll,
+            WindowOptions::idle_only(PaneFate::Poll),
+        ),
+        (
+            Control::WakeOff,
+            WindowOptions::echoes_only(&[Control::WakeOff]),
+        ),
+    ]
+    .into_iter()
+    .map(|(control, opts)| {
+        let (run, detail) = window_control(h, bands, control, &opts, floors, quiet);
+        (control, run, detail)
+    })
+    .collect()
+}
+
 fn step(h: &Harness, name: &str, r: io::Result<()>) {
     match r {
         Ok(()) => h.log(&format!("case {name}: done")),
@@ -487,7 +661,36 @@ fn step(h: &Harness, name: &str, r: io::Result<()>) {
     }
 }
 
-pub fn structural(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, ControlRun, String)> {
+pub struct Structural {
+    pub controls: Vec<(Control, ControlRun, String)>,
+    pub window: Result<(), String>,
+}
+
+impl Structural {
+    fn skipped() -> Self {
+        Self {
+            controls: Vec::new(),
+            window: Err(
+                "the structural tier, which measures the resident window, did not run".into(),
+            ),
+        }
+    }
+}
+
+fn window_peer(cell: Cell, window: &Result<(), String>) -> Result<(), String> {
+    if WINDOW_CELLS.contains(&cell) {
+        window.clone()
+    } else {
+        Ok(())
+    }
+}
+
+pub fn structural(
+    h: &Harness,
+    bands: &mut Vec<String>,
+    floors: &FloorSet,
+    quiet: &Result<(), String>,
+) -> Structural {
     step(h, "wire", cases::wire(h));
     step(h, "allocations", cases::allocations(h).map(drop));
     step(h, "split", cases::split(h).map(drop));
@@ -554,7 +757,18 @@ pub fn structural(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, Control
         report_control(h, control, run, &detail);
         controls.push((control, run, detail));
     }
-    controls
+    let window = window(h, bands);
+    h.log(&format!(
+        "case window: {}",
+        window
+            .as_ref()
+            .map_or_else(Clone::clone, |()| "done".into())
+    ));
+    for (control, run, detail) in window_controls(h, bands, floors, quiet) {
+        report_control(h, control, run, &detail);
+        controls.push((control, run, detail));
+    }
+    Structural { controls, window }
 }
 
 pub fn timing(h: &Harness, bands: &mut Vec<String>) {
@@ -702,10 +916,11 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
         },
     )?;
     let mut bands = Vec::new();
-    let mut controls = Vec::new();
-    if matches!(tier, Tier::Structural | Tier::All) {
-        controls = structural(h, &mut bands);
-    }
+    let Structural { controls, window } = if matches!(tier, Tier::Structural | Tier::All) {
+        structural(h, &mut bands, &floors, &quiet)
+    } else {
+        Structural::skipped()
+    };
     if matches!(tier, Tier::Timing | Tier::All) {
         timing(h, &mut bands);
     }
@@ -725,7 +940,7 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
             } else {
                 Ok(())
             },
-            peer: Ok(()),
+            peer: window_peer(cell, &window),
             band: band.clone(),
             probes: cases::probes_reach(cell),
             min_samples: min_samples(budget),

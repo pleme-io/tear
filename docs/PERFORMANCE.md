@@ -436,13 +436,15 @@ negative control is a fault injector compiled only for tests (§6).
   and the UI, parse bytes per UI tick, and input → present and byte → present
   histograms on a new `kanshou::metrics` (counter, gauge, log histogram);
   `frame_perf` answers *blind*, not zeros, when no GUI is reachable. The
-  subscribe channel feeding mado's stream-watch relay belongs to tear-client
-  and std's `mpsc` exposes no depth, so for it mado gauges chunks relayed per
-  wake, whose peak bounds that channel's depth from above; the stream-watch
-  queue's depth is exact. A key's input → present sample closes at the end of
-  the first painted frame holding bytes received after the key, the statement
-  before madori's synchronous `present()` (R14 moves the close with the
-  present); byte → present runs from the relay's receipt of a chunk to that
+  subscribe channel feeding mado belongs to tear-client and std's `mpsc`
+  exposes no depth, so for it mado gauges chunks per wake, whose peak bounds
+  that channel's depth from above — chunks relayed per wake through the
+  stream-watch relay at R1, whose own queue's depth was exact, and chunks
+  drained per wake since R10 removed the relay. A key's input → present
+  sample closes at the end of the first painted frame holding bytes received
+  after the key, the statement before madori's synchronous `present()` (R14
+  moves the close with the present); byte → present runs from the receipt of
+  a chunk — the relay's at R1, the producer's ring since R10 — to that
   close. Two facts the pass lacked are measured here first: a parked madori
   window with no tear link (C10's floor), and whether launchd's background
   state on a running process can be cleared from outside it (R2).
@@ -1118,6 +1120,81 @@ R37.*
   `bench-probes` fault that disables the wake are red.
 - **Old behaviour:** `tear.pane_fate: poll`; `tear.fate_backstop_secs` (0
   turns the backstop off).
+- **State (2026-10-08):** landed in madori 0.1.22, engate 0.1.4, tear and
+  mado. madori's loop carries its user events as `LoopEvent{Ring, User}`
+  over one `EventLoopProxy`: `run_with_user_events` hands out a `UserProxy`
+  over it, and every `AppBuilder` owns a `Doorbell` from `new()` whose
+  wakers (`AppBuilder::waker`) share it, so neither adds a run-loop source.
+  The `Doorbell` type is private to madori and `run()` always connects it,
+  so a waker exists only with the loop it rings; `AppBuilder::renderer_mut`
+  lets mado build its window before it attaches. A ring sends only when its
+  flag goes false → true. `Turnstile::redraw` is the redraw turn — the
+  pacer's `redrawing`, then the flag lowered, then the consumer's
+  `RedrawRequested` dispatch, which is where it drains — and the only code
+  that lowers the flag; the loop reaches it through `Drains`, and the pacer
+  tests drive their window through the same function. engate-attach's
+  `Attach<Live>::poll` answers `Polled::{Item, Empty, Closed}`; `poll_one`
+  keeps its answer. tear's two `PaneProducer` constructors take the waker:
+  `tear_types::waking::WakingSender` rings it after each queued chunk and,
+  dropping its sender first, when the stream ends (`PaneClosed`, EOF, a
+  kill), and `InProcess::subscribe_pane_bytes_waking` carries it into the
+  fan-out (`subscribe_pane_bytes` keeps a no-op waker for the daemon).
+  `InProcess` rings only after its locks are released — the fan-out returns
+  its rings (`WakingSender::queue`), and detach, reap, exit and a refused
+  subscribe hand their senders out of the lock scope, as the PTY handles
+  already were — so a waker may take any lock. In mado `pane_stream.rs`
+  replaces `stream_watch.rs`: a per-attach stamp waker notes each chunk's
+  arrival and rings the window; the switchable path drains in
+  `PaneStream::drain` (≤4,096 a drain, and a full drain rings again); the
+  one-shot path (`session_switching: false`) keeps its thread, which rings
+  after it feeds and when the stream ends; and `FateWatch` reads the fate
+  when the stream ends — at once, then once per 500 ms re-attach backoff
+  while it stays ended — and at the backstop. The `wake-off` fault is a
+  tear-types `Fault`: a `bench-probes` mado reads `TEAR_BENCH_FAULTS`
+  through the same `FaultList`, refuses an unknown name alone, hands its
+  attach a no-op waker when armed and reports what it armed in
+  `frame_perf.bench_faults`. Where the code refines the text: a wake is a
+  redraw, not a new `AppEvent` (a variant would break the exhaustive
+  matches of madori's five consumers), so mado's per-event block runs on
+  `RedrawRequested` alone; a wake honours the pacing's ceiling — under
+  `Capped` and `Reactive` a ring draws at once when the last present is a
+  whole interval old, otherwise at that slot, held as a deadline and never a
+  park — so a flood stays paced while an isolated echo draws at once; and
+  with the backstop an idle window still reads its fate once per 30 s, so
+  the gate's 0 holds over an idle window shorter than the backstop (the
+  window cells set it to 3,600 s). mado's switch, injection and
+  config-reload channels still ride the `Capped(60)` tick; R11 must ring the
+  doorbell from them before it parks. Receipts, on the reference Mac at load
+  averages 6–21 (other work building beside it): the madori row — a ring
+  while a `Reactive` window is parked redraws in the ring's own turn
+  (`pacer::tests`, the wake-off control red), a ring that lands inside the
+  drain is answered by the next turn (red when `Turnstile::redraw` drains
+  before it lowers the flag), and on the real winit loop
+  (`examples/ring_while_parked`, a debug build) 20 of 20 rings reached
+  `RedrawRequested`, p50 230 µs, p90 349 µs, against 0 of 20 in 12 s with
+  the wake off; the loom model of the doorbell finds no lost wake over every
+  schedule of two rings racing a drain, and finds one when the flag is
+  lowered after the drain; tear-core's
+  `a_subscriber_s_waker_rings_after_every_lock_is_released`, a waker that
+  reads the subscriber map, never finishes its ring (10 s) when the fan-out
+  rings under the lock, and `kill_session` never returns (5 s) when detach
+  drops the senders there; mado's `idle_window` tests read 0 UI-thread
+  `get_pane` over 240 idle wakes and one at the stream's end, 240 of 240
+  under `pane_fate: poll`. tearbench's window cells (§6), resident windows
+  on isolated bound daemons, a `bench-probes` mado: `case window` read
+  C3/rpcs 0 and C3/present p50 0.44 ms, p90 1.28 ms (24 of 24 echoes);
+  `gate --tier structural` read C3/rpcs `Within` (0), the `pane-fate-poll`
+  control `Reddened` (601 in 10 s), and C3/present p50 1.15 ms against
+  9.47 ms with `wake-off` armed (24 of 24 each), both `Blind` because the
+  uds-one-way sentinel read 0.56× its reference (4.00 µs); against that
+  run's own run-loop wake (6.17 µs) the limit is 1.91 ms, which the clean
+  window meets and the fault exceeds 4.95×. Before the rung: tearbench's
+  `case window` with mado `7731f6f` (origin before this rung, the same
+  isolated harness) read C3/rpcs 600 and C3/present p50 7.55 ms, p90
+  15.9 ms (24 of 24); on 2026-10-07 a scratch mado window at `de5949e`
+  (embedded, switching on; 10 s idle, then a byte every 0.5 s) made 600
+  `get_pane` in the idle 10 s and byte → present p50 10.75 ms, p90 15.9 ms
+  (n=18).
 
 #### R11 · Frames on demand: Parked, Hot, Hidden
 *Destination · after R10.*
@@ -2058,11 +2135,13 @@ host-class table holds the reference Mac's four p50s (F-a 7.38 µs, F-d
 5.79 µs, F-e 7.08 µs, F-d 6.46 µs). The negative controls are declared per
 row and checked statically — each reddens at least one cell that is not
 `NotApplicable`, and every budgeted cell has one — and the structural tier
-switches on every fault whose rung has landed: R1's `audit-every-key`,
-R3's four (§5 R3), and R4's `mute-sink` (the holder leaves a failed sink's
+switches on every control whose rung has landed: R1's `audit-every-key`,
+R3's four (§5 R3), R4's `mute-sink` (the holder leaves a failed sink's
 socket open, as every holder before R4 does) and `store-lease-off` (the
-daemon declares no incarnation and never checks the lease). One
-`control_run` arms a control's faults in the daemon
+daemon declares no incarnation and never checks the lease), R7's
+`old-splitter`, and R10's two in the window cells below, the kept
+configuration `pane-fate-poll` and the `wake-off` fault. One `control_run`
+arms a control's faults in the daemon
 (`TEAR_BENCH_FAULTS`) and, for a client-side fault, in tearbench's own
 process, runs the case, and disarms; its samples land under
 `control:<name>:<bench>` with no cell, so a control never grades a clean
@@ -2107,6 +2186,34 @@ off the operator's socket. Bytes per mado-shaped key count every frame the
 key moves in full, each with its 4 B header — the `PaneSnapshot` request and
 reply, `SendKeys` and its reply — and the sample's detail carries §2's
 convention (the `SendKeys` frame plus the snapshot body) beside it.
+
+**The window cells (R10).** `--mado-bin` hands tearbench a mado, and the
+structural tier opens it as a resident window against an isolated bound
+daemon: its own home, XDG, `TMPDIR` and kanshou directories under the run
+root, `MADO_CONFIG` pointing at a generated `mado.yaml` (`tear.mode: attach`
+on the daemon's socket, `/bin/sh`, cursor blink off, histograms on,
+`tear.fate_backstop_secs: 3600` so no backstop read lands inside the run),
+`TEAR_BENCH_FAULTS` naming its faults, and its pid recorded like every other
+process the harness starts. After 3 s of settling it reads `frame_perf` over
+the window's kanshou socket, waits 10 s with nothing printed, and reads it
+again: the difference in `ui_thread_tear_calls.get_pane` is C3/rpcs, budget
+`Count{max: 0}`. Then it types one byte into the window's pane through the
+daemon every 500 ms, 24 times, and reads `latency_us.byte_to_present` before
+and after: the histogram entries recorded between the two readings, each at
+its bucket's upper bound (within 1/16 of an octave), are C3/present's
+samples, budget `Floor{wake-run-loop, p50, k: 310}` — R10's 2 ms as 310 ×
+the reference Mac's 6.46 µs run-loop wake, graded against the same run's
+sentinel, with at least 20 samples and quiet sentinels like every timing
+cell. Two controls run their own windows: `pane-fate-poll` the idle half
+under `tear.pane_fate: poll`, and `wake-off` the echoes with the fault armed,
+which must read `Over` beyond the noise band (1.42× the limit). `wake-off`
+is a tear-types `Fault`, so `control_of_fault` maps it like every other; a
+`bench-probes` mado reports the faults it armed in `frame_perf.bench_faults`,
+and a window that does not report it (a mado built without `bench-probes`)
+leaves the control `Blind`, never a pass. Without `--mado-bin`, or when the
+window cannot be measured (no display, a mado that exits), the cells and
+their controls read `Blind` with the reason; the windows are scratch GUIs
+that appear on the measuring host's screen for ~15–30 s each.
 
 **The declaration.** One `bench_matrix!` invocation. A row is a case, its
 per-metric budgets as a struct literal — a missing metric is E0063, and
@@ -2335,6 +2442,8 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | Nagle on a tear TCP socket | one connect and accept path sets `TCP_NODELAY` | an rg gate; the Nagle probe | a bypass outside the profile | only-mitigated (C1) |
 | a shell started outside the default band | the daemon's `session-host` class makes every holder it spawns, and so every shell, an `Interactive` launchd descendant; the holder resets its main thread before spawning | the `proc_pidinfo` row through the production `NewSession` RPC, the daemon at `session-host` and at `xpc-adaptive` | panes born before R2: launchd's band is not clearable on a running process (R1); whether `posix_spawn` carries the caller's QoS (§8.3) | only-mitigated (C1) |
 | an allocation per line feed | row recycling | the counting allocator; the allocating-row fault | — | only-mitigated (C1) |
+| output that never wakes a parked window | every tear producer's constructor takes the window's waker, and a chunk and the stream's end ring it, after `InProcess` releases its locks; madori mints wakers only from the `AppBuilder` whose loop connects them, and `Turnstile::redraw`, the only code that lowers the doorbell's flag, lowers it before the consumer's dispatch drains | loom: the flag lowered after the drain loses an item (`lowering_the_flag_after_the_drain_loses_a_wake`); `Turnstile::redraw` mutated to drain first strands the item behind the drain (`a_ring_that_lands_while_the_loop_drains_is_answered_by_the_next_turn`); a no-op waker leaves a parked madori window at 0 redraws, 0 of 20 on the real loop; a fan-out or detach that rings under the subscribers lock wedges `a_subscriber_s_waker_rings_after_every_lock_is_released`; tearbench's `wake-off` control on C3/present (p50 9.47 ms armed against 1.15 ms clean, same run; graded `Blind` that run by a sentinel) | a producer built with `Waker::noop()` — the one-shot path's feeder thread rings after it feeds instead; a `Drains` impl that dispatches outside its drain; mado's switch, injection and config-reload channels still ride the tick until R11 | only-mitigated (C1) |
+| an idle window that polls the authority | the fate is read when the pane's stream ends, then once per re-attach backoff while it stays ended, and at a backstop (`FateWatch`) | `tear.pane_fate: poll`: 240 of 240 idle wakes read `get_pane` (mado's `idle_window` test); tearbench's `pane-fate-poll` control on C3/rpcs, `Reddened` at 601 in 10 s | one fate read per `tear.fate_backstop_secs` (30 s) at idle; a stream that never ends for a pane that did | only-mitigated (C1) |
 
 ### 8.2 Operator decisions (2026-10-07)
 

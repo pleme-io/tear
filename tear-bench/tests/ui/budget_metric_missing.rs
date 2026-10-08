@@ -31,6 +31,7 @@ fn main() {
         idle_ticks: N,
         idle_wakeups: N,
         paints: N,
+        present: N,
         loss: N,
         answers: N,
         replays: N,

@@ -1,16 +1,19 @@
 use std::collections::BTreeSet;
 
 use tear_bench::matrix::{
-    Budget, Case, Cell, Control, ControlKind, Handover, Input, LANDED, Metric, Remote, Rung,
-    Variant, cells, durability_of, durability_row, host_role_row, red_set, row, transport_row,
+    Budget, Case, Cell, Control, ControlKind, Floor, Handover, Input, LANDED, Metric, Remote, Rung,
+    Stat, Variant, WINDOW_CELLS, cells, durability_of, durability_row, host_role_row, red_set, row,
+    transport_row,
 };
 use tear_bench::verdict::{FloorSet, Preconditions, Verdict, derive};
 use tear_client::Transport;
 use tear_config::SessionDurability;
 use tear_types::{Durability, HostRole};
 
-const PENDING_CELLS: usize = 61;
+const PENDING_CELLS: usize = 60;
 const BUDGETED_CELLS: &[(Case, Metric)] = &[
+    (Case::C3, Metric::Rpcs),
+    (Case::C3, Metric::Present),
     (Case::C3, Metric::Loss),
     (Case::C4, Metric::Loss),
     (Case::C6(Remote::Tcp), Metric::Loss),
@@ -39,7 +42,7 @@ fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
 
 #[test]
 fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
-    assert_eq!(LANDED, &[Rung::R1, Rung::R3, Rung::R4, Rung::R7]);
+    assert_eq!(LANDED, &[Rung::R1, Rung::R3, Rung::R4, Rung::R7, Rung::R10]);
     let mut pending = 0;
     let mut budgeted = Vec::new();
     for cell in cells() {
@@ -64,6 +67,11 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
     );
     for (case, metric) in BUDGETED_CELLS {
         let want = match (case, metric) {
+            (Case::C3, Metric::Present) => Budget::Floor {
+                floor: Floor::WakeRunLoop,
+                stat: Stat::P50,
+                k: 310.0,
+            },
             (Case::C4, Metric::Loss) => Budget::Bytes { max: 0 },
             (Case::C7(Handover::Readopt), Metric::Authorities) => Budget::Exactly { n: 1 },
             _ => Budget::Count { max: 0 },
@@ -265,6 +273,62 @@ fn the_pre_r3_wire_reddens_exactly_the_r3_loss_cells() {
             tear_bench::verdict::audit_control(control, &[(cell, over(cell, &[0.0]))]).is_err()
         );
     }
+}
+
+#[test]
+fn an_idle_resident_window_s_get_pane_reddens_c3_rpcs_under_pane_fate_poll_and_nothing_else() {
+    let cell = Cell::new(Case::C3, Metric::Rpcs);
+    assert!(WINDOW_CELLS.contains(&cell));
+    assert_eq!(cell.budget(), Budget::Count { max: 0 });
+    assert_eq!(red_set(Control::PaneFatePoll), vec![cell]);
+    let floors = FloorSet::default();
+    let clean = derive(cell.budget(), &[0.0], &floors, &Preconditions::met(1));
+    assert!(matches!(clean, Verdict::Within { .. }));
+    let polled = derive(cell.budget(), &[600.0], &floors, &Preconditions::met(1));
+    assert!(polled.is_red());
+    assert!(tear_bench::verdict::audit_control(Control::PaneFatePoll, &[(cell, polled)]).is_ok());
+    assert!(tear_bench::verdict::audit_control(Control::PaneFatePoll, &[(cell, clean)]).is_err());
+    let no_mado = Preconditions {
+        peer: Err("no --mado-bin".into()),
+        ..Preconditions::met(1)
+    };
+    assert!(matches!(
+        derive(cell.budget(), &[], &floors, &no_mado),
+        Verdict::Blind { .. }
+    ));
+}
+
+#[test]
+fn a_window_whose_output_rings_nothing_reddens_c3_present_beyond_the_noise_band() {
+    let cell = Cell::new(Case::C3, Metric::Present);
+    assert!(WINDOW_CELLS.contains(&cell));
+    assert_eq!(
+        cell.budget(),
+        Budget::Floor {
+            floor: Floor::WakeRunLoop,
+            stat: Stat::P50,
+            k: 310.0
+        }
+    );
+    assert_eq!(red_set(Control::WakeOff), vec![cell]);
+    assert_eq!(Control::WakeOff.kind(), ControlKind::Fault);
+    let mut floors = FloorSet::default();
+    floors.add(Floor::WakeRunLoop, [6_460.0; 20]);
+    let pre = Preconditions::met(20);
+    let at = |ns: f64| derive(cell.budget(), &[ns; 24], &floors, &pre);
+    let woken = at(540_000.0);
+    assert!(matches!(woken, Verdict::Within { .. }), "{woken:?}");
+    let ticked = at(7_680_000.0);
+    assert!(ticked.is_red());
+    assert!(tear_bench::verdict::audit_control(Control::WakeOff, &[(cell, ticked)]).is_ok());
+    assert!(
+        tear_bench::verdict::audit_control(Control::WakeOff, &[(cell, at(2_500_000.0))]).is_err(),
+        "over the limit but inside the noise band is not a red run"
+    );
+    assert!(matches!(
+        derive(cell.budget(), &[540_000.0; 12], &floors, &pre),
+        Verdict::Blind { .. }
+    ));
 }
 
 #[test]

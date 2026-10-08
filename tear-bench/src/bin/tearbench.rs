@@ -29,6 +29,8 @@ struct Cli {
     #[arg(long, global = true)]
     oldest_tear_bin: Option<PathBuf>,
     #[arg(long, global = true)]
+    mado_bin: Option<PathBuf>,
+    #[arg(long, global = true)]
     forbid: Option<PathBuf>,
     #[arg(long, global = true)]
     path_env: Option<String>,
@@ -178,6 +180,7 @@ fn main() -> ExitCode {
         tear_bin: cli.tear_bin.clone().unwrap_or_else(default_tear_bin),
         prev_tear_bin: cli.prev_tear_bin.clone(),
         oldest_tear_bin: cli.oldest_tear_bin.clone(),
+        mado_bin: cli.mado_bin.clone(),
         forbid,
         path_env,
         faults: cli.faults.clone(),
@@ -364,6 +367,7 @@ const STANDALONE: &[&str] = &[
     "muted-holder",
     "mute-sink",
     "store-lease-off",
+    "window",
 ];
 
 fn control_case(name: &str, (run, detail): (gate::ControlRun, String)) -> std::io::Result<()> {
@@ -395,6 +399,7 @@ fn standalone_case(h: &Harness, v: Variant, name: &str) -> std::io::Result<()> {
         }
         "mute-sink" => control_case(name, gate::mute_sink_control(h, &mut Vec::new())),
         "store-lease-off" => control_case(name, gate::store_lease_off_control(h, &mut Vec::new())),
+        "window" => gate::window(h, &mut Vec::new()).map_err(std::io::Error::other),
         other => Err(std::io::Error::other(format!("unknown case {other}"))),
     }
 }
