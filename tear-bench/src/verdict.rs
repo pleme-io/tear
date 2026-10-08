@@ -129,6 +129,7 @@ pub struct Preconditions {
     pub quiet: Result<(), String>,
     pub peer: Result<(), String>,
     pub band: Result<(), String>,
+    pub probes: Result<(), String>,
     pub min_samples: usize,
 }
 
@@ -139,12 +140,13 @@ impl Preconditions {
             quiet: Ok(()),
             peer: Ok(()),
             band: Ok(()),
+            probes: Ok(()),
             min_samples,
         }
     }
 
     fn blind(&self) -> Option<String> {
-        [&self.quiet, &self.peer, &self.band]
+        [&self.quiet, &self.peer, &self.band, &self.probes]
             .into_iter()
             .filter_map(|r| r.as_ref().err().cloned())
             .reduce(|a, b| format!("{a}; {b}"))

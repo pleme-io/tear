@@ -26,7 +26,9 @@ use tear_types::modes::{
 };
 use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
 use unicode_width::UnicodeWidthChar;
-use vte::{Params, Parser, Perform};
+use vte::{Params, Perform};
+
+use crate::feeder::{Feeder, Parser, Segment};
 
 pub use tear_types::pane_snapshot::{Cell, PaneSnapshot};
 
@@ -52,129 +54,7 @@ pub const DEFAULT_SCROLLBACK_ROWS: usize = usize::MAX;
 pub struct PaneGrid {
     parser: Parser,
     pub(crate) state: GridState,
-    /// APC re-assembly, because vte cannot do it for us.
-    ///
-    /// vte 0.15's `Perform` has `hook`/`put`/`unhook` for DCS but **no APC
-    /// method at all**: on `ESC _` it enters `State::SosPmApcString` and
-    /// consumes every byte to the terminator with no callback. So the
-    /// kitty graphics protocol — which is APC-framed — was invisible to
-    /// this parser, and an image vanished with no error and no flag.
-    ///
-    /// The fix is to lift APC out of the stream BEFORE vte sees it. That
-    /// is what mado does too; this is the same interception, moved to the
-    /// authority.
-    apc: ApcScanner,
-}
-
-/// Splits `ESC _ … ESC \` (or `BEL`) out of a byte stream.
-///
-/// A payload can be megabytes and arrives over many PTY reads, so the scan
-/// is a resumable state machine rather than a search over one buffer — an
-/// APC split across `feed()` calls must reassemble, which is exactly the
-/// chunk-boundary case the espelho conformance rows already pin for
-/// ordinary escapes.
-#[derive(Debug, Default)]
-struct ApcScanner {
-    state: ApcState,
-    buf: Vec<u8>,
-    /// Set the moment `buf` hits the cap, so the fact survives the params
-    /// being stripped later.
-    cut: bool,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum ApcState {
-    /// Not in an APC, and no `ESC` pending.
-    #[default]
-    Idle,
-    /// Saw `ESC`; the next byte decides whether this is an APC.
-    Escape,
-    /// Inside an APC payload.
-    Inside,
-    /// Inside an APC and saw `ESC`; `\` terminates (ST).
-    InsideEscape,
-}
-
-impl ApcScanner {
-    /// Feed `bytes`, returning the stream with APC sequences removed plus
-    /// any payloads that completed, each with whether it was CUT.
-    ///
-    /// The cut flag is CARRIED rather than re-derived downstream. It was
-    /// briefly re-derived by comparing the final payload length against the
-    /// cap, which is wrong for a reason worth keeping: the cap applies to
-    /// the whole APC body, and kitty's params (`Ga=T,f=100;`) are stripped
-    /// before storage — so a truncated payload came back a few bytes UNDER
-    /// the cap and reported itself intact. A fact known at the boundary
-    /// must not be reconstructed from a proxy after the shape changes.
-    ///
-    /// A lone `ESC` at the end of a chunk is HELD, not emitted — emitting
-    /// it would hand vte a truncated escape and the following chunk's
-    /// bytes would be misparsed as its parameters.
-    fn split(&mut self, bytes: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, bool)>) {
-        let mut passthrough = Vec::with_capacity(bytes.len());
-        let mut done = Vec::new();
-        for &b in bytes {
-            match self.state {
-                ApcState::Idle => {
-                    if b == 0x1b {
-                        self.state = ApcState::Escape;
-                    } else {
-                        passthrough.push(b);
-                    }
-                }
-                ApcState::Escape => {
-                    if b == b'_' {
-                        // An APC opens: the ESC we withheld belongs to it.
-                        self.state = ApcState::Inside;
-                        self.buf.clear();
-                        self.cut = false;
-                    } else {
-                        // Not an APC — replay the withheld ESC, then
-                        // re-handle this byte (it may itself be an ESC,
-                        // e.g. `ESC ESC`).
-                        passthrough.push(0x1b);
-                        if b == 0x1b {
-                            self.state = ApcState::Escape;
-                        } else {
-                            passthrough.push(b);
-                            self.state = ApcState::Idle;
-                        }
-                    }
-                }
-                ApcState::Inside => match b {
-                    0x1b => self.state = ApcState::InsideEscape,
-                    // BEL terminates too — xterm accepts it for APC/OSC.
-                    0x07 => {
-                        done.push((std::mem::take(&mut self.buf), self.cut));
-                        self.state = ApcState::Idle;
-                    }
-                    _ => {
-                        if self.buf.len() < GRAPHIC_PAYLOAD_MAX {
-                            self.buf.push(b);
-                        } else {
-                            self.cut = true;
-                        }
-                    }
-                },
-                ApcState::InsideEscape => {
-                    if b == b'\\' {
-                        done.push((std::mem::take(&mut self.buf), self.cut));
-                        self.state = ApcState::Idle;
-                    } else {
-                        // An ESC inside the payload that was not ST.
-                        if self.buf.len() < GRAPHIC_PAYLOAD_MAX {
-                            self.buf.push(0x1b);
-                            self.buf.push(b);
-                        } else {
-                            self.cut = true;
-                        }
-                        self.state = ApcState::Inside;
-                    }
-                }
-            }
-        }
-        (passthrough, done)
-    }
+    feeder: Feeder,
 }
 
 /// Mutable state — separated from the parser so vte's `Perform`
@@ -382,7 +262,9 @@ impl GridState {
         // `cut_upstream` is the boundary's own verdict; the length check is
         // only for producers that hand over an unbounded buffer (the DCS
         // path bounds as it accumulates, so both agree there). Never rely on
-        // the length alone — see `ApcScanner::split`.
+        // the length alone: the feeder's cap applies to the whole APC body and
+        // kitty's params are stripped before storage, so a cut payload arrives
+        // a few bytes UNDER the cap — `Segment::Apc` carries the cut instead.
         let truncated = cut_upstream || data.len() > GRAPHIC_PAYLOAD_MAX;
         if data.len() > GRAPHIC_PAYLOAD_MAX {
             data.truncate(GRAPHIC_PAYLOAD_MAX);
@@ -1561,7 +1443,7 @@ impl PaneGrid {
         Self {
             parser: Parser::new(),
             state: GridState::new(cols, rows, scrollback_cap),
-            apc: ApcScanner::default(),
+            feeder: Feeder::new(),
         }
     }
 
@@ -1571,13 +1453,31 @@ impl PaneGrid {
     /// write verb on a pane's grid, and it is reachable only from inside
     /// `tear-core`, i.e. only through `InProcess`/the daemon.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
-        // Lift APC out first — vte would swallow it silently (see
-        // `ApcScanner`). Everything else reaches the parser untouched.
-        let (passthrough, apcs) = self.apc.split(bytes);
-        self.parser.advance(&mut self.state, &passthrough);
-        for (payload, cut) in apcs {
-            self.state.ingest_apc(&payload, cut);
-        }
+        let Self {
+            parser,
+            state,
+            feeder,
+        } = self;
+        feeder.feed(bytes, |segment| match segment {
+            Segment::Text(chunk) => parser.advance(state, chunk),
+            Segment::Apc { payload, cut } => state.ingest_apc(payload, cut),
+        });
+    }
+
+    #[cfg(any(test, feature = "bench-probes"))]
+    pub(crate) fn feed_legacy(
+        &mut self,
+        splitter: &mut crate::feeder::legacy::Splitter,
+        bytes: &[u8],
+    ) {
+        splitter.feed(
+            &mut self.parser,
+            &mut self.state,
+            bytes,
+            |state, payload, cut| {
+                state.ingest_apc(payload, cut);
+            },
+        );
     }
 
     /// Every terminal mode this pane is in, taken at ONE instant.

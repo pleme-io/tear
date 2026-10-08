@@ -1293,6 +1293,76 @@ pub fn audit(h: &Harness, d: &Daemon, rig: &Rig, keys: usize) -> io::Result<Audi
     Ok(out)
 }
 
+pub const PROBE_BACKED: &[Cell] = &[
+    Cell::new(Case::C9, Metric::Loss),
+    Cell::new(Case::C9, Metric::Allocations),
+];
+
+fn without_probes(cell: Cell) -> String {
+    format!(
+        "{} reaches PaneGrid through tear-core's bench-probes feature; this build has none",
+        cell.name()
+    )
+}
+
+pub fn probes_reach(cell: Cell) -> Result<(), String> {
+    if cfg!(feature = "bench-probes") || !PROBE_BACKED.contains(&cell) {
+        Ok(())
+    } else {
+        Err(without_probes(cell))
+    }
+}
+
+tear_types::closed_vocabulary! {
+    Split { Feeder => "feeder", OldSplitter => "old-splitter" }
+}
+
+#[cfg(feature = "bench-probes")]
+pub fn split_losses(split: Split) -> io::Result<(u64, String)> {
+    use tear_core::probes::{SPLIT_READ, SPLIT_TAILS, Splitter, split_losses};
+    let lost = split_losses(match split {
+        Split::Feeder => Splitter::Feeder,
+        Split::OldSplitter => Splitter::Legacy,
+    });
+    let detail = if lost.is_empty() {
+        format!(
+            "0 of {} corpora lose a character when fed in {SPLIT_READ} B reads",
+            SPLIT_TAILS.len()
+        )
+    } else {
+        lost.iter()
+            .map(|l| format!("{:?}: whole {:?}, read {:?}", l.tail, l.whole, l.read))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    Ok((lost.len() as u64, detail))
+}
+
+#[cfg(not(feature = "bench-probes"))]
+pub fn split_losses(_split: Split) -> io::Result<(u64, String)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        without_probes(Cell::new(Case::C9, Metric::Loss)),
+    ))
+}
+
+pub fn split(h: &Harness) -> io::Result<u64> {
+    let (lost, detail) = split_losses(Split::Feeder)?;
+    h.emit(
+        Sample::new(
+            "split",
+            "tear-core",
+            "corpora-losing-a-character",
+            0,
+            lost as f64,
+            Unit::Count,
+        )
+        .cell(Cell::new(Case::C9, Metric::Loss))
+        .detail(detail),
+    );
+    Ok(lost)
+}
+
 pub const ALLOC_COLS: usize = 163;
 pub const ALLOC_SCROLLBACK: usize = 10_000;
 pub const ALLOC_CHUNK: usize = 1_024;
@@ -1334,7 +1404,7 @@ pub fn allocations(h: &Harness) -> io::Result<u64> {
 pub fn allocations(_h: &Harness) -> io::Result<u64> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "allocations per KiB reach PaneGrid through tear-core's bench-probes feature; this build has none",
+        without_probes(Cell::new(Case::C9, Metric::Allocations)),
     ))
 }
 

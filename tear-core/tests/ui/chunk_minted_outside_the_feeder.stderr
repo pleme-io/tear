@@ -1,0 +1,5 @@
+error[E0451]: field `bytes` of struct `Chunk` is private
+ --> tests/ui/chunk_minted_outside_the_feeder.rs:4:25
+  |
+4 |     let _tail = Chunk { bytes: b"\xc3" };
+  |                         ^^^^^ private field

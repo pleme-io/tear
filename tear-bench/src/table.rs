@@ -558,13 +558,14 @@ crate::bench_matrix! {
             idle_ticks: MADO,
             idle_wakeups: ELSEWHERE,
             paints: MADO,
-            loss: ELSEWHERE,
+            loss: Budget::Count { max: 0 },
             answers: ELSEWHERE,
             replays: ELSEWHERE,
             modes: ELSEWHERE,
         },
         controls: &[
             Red { control: Control::AllocatingRow, metrics: &[Metric::Allocations] },
+            Red { control: Control::OldSplitter, metrics: &[Metric::Loss] },
         ],
     },
     Case::C10 => Row {

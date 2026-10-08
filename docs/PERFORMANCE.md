@@ -885,20 +885,73 @@ declaration lands at R38.*
 
 #### R7 · One split-safe feeder
 *Correctness prerequisite · after R1.*
-- **Changes** (extends mado's `incomplete_utf8_tail_len` and feed, tear's
-  `ApcScanner`, espelho): one feeder for both parsers never hands a parser an
-  incomplete UTF-8 tail or a lone trailing ESC, holds back an incomplete
-  escape up to a bound, and passes everything else through borrowed;
-  `PaneGrid::feed` takes a `Chunk` only the feeder mints; espelho gains
-  `feed(whole) == feed(any split)`.
+- **Changes** (replaces mado's `incomplete_utf8_tail_len`, `PendingEsc` and
+  APC loop and tear's `ApcScanner`; extends espelho's rows):
+  `tear_core::feeder` is one feeder for both parsers. It lifts APC — `ESC _`
+  found with `memmem`, ended by `ESC \`, `BEL` or C1 `ST` (the union of the
+  two scanners), aborted by `ESC` + anything else (mado's DEC anywhere rule,
+  which tear's scanner lacked), a payload past 8 MiB consumed to its end and
+  delivered cut — and hands the parser text only at rest: ground state,
+  outside any UTF-8 character. What follows the last rest point at a read
+  boundary (an incomplete character, a lone `ESC`, an unfinished escape of at
+  most `HOLD_MAX` = 4 KiB) is held and handed over with the bytes that
+  complete it; a longer escape streams, and vte carries its state as before.
+  Ground text that runs past the bound with no rest point — a run of UTF-8
+  lead bytes, each ended invalid by the next — is cut before its last
+  incomplete character, so no chunk ends where the next byte continues a
+  character, the one split vte 0.15 mishandles.
+  The rest points come from vte 0.15's own transitions, mirrored without
+  actions, so the feeder holds exactly where vte would be mid-sequence; every
+  state leaves for `Escape` on `ESC`, so a read's end state is decided by the
+  bytes after its last `ESC` and ground text is never stepped. Text is
+  borrowed from the read; only a held tail's completion is copied. Both
+  parsers hold a `feeder::Parser`, whose only advance takes a `Chunk`, and a
+  `Chunk` has one constructor, inside the feeder. `PaneGrid::feed` keeps
+  taking bytes and owns its `Feeder`, because the carry must live as long as
+  the grid it feeds: a feeder outside the grid would split at the boundary
+  between a journal replay and live output. An APC is transparent to the text
+  around it, as it was in both parsers. espelho gains `feed(whole) ==
+  feed(any split)` over the grid, its modes and its host answers.
 - **Effect:** UTF-8 split loss in 3 of 3 crafted split cases → 0 (G; the cause
   is vte 0.15.0's `advance_partial_utf8`, S); the per-chunk copy, 0.56–0.70 ns
   per byte against vte's own 0.51–1.32 (G), becomes a borrow; offsets land on
-  sequence boundaries, which R20 and R27 need.
-- **Gate:** the espelho split-invariance proptest over arbitrary UTF-8 and the
-  query catalog (red today); a `trybuild` case minting a `Chunk` outside the
-  feeder fails with E0451.
+  sequence boundaries, which R20 and R27 need (`Feeder::at_rest`); an APC is
+  applied where it stands in the stream, where tear applied every APC of a
+  read after all of its text.
+- **Gate:** the espelho split-invariance proptest over arbitrary UTF-8, the
+  query catalog and kitty images, as a relay and as a host (red today); the
+  feeder's own proptests — chunked advance equals one advance over any bytes
+  and any bound, and the feeder rests exactly where vte rests — and C9's
+  `loss` cell, `Count{max: 0}` over G's three corpora, whose negative control
+  is the old splitter kept as a test double (`old-splitter`, compiled only
+  for tests and `bench-probes`); `trybuild` cases: a `Chunk` minted outside
+  the feeder fails with E0451, a parser advanced over raw bytes with E0308.
 - **Old behaviour:** none; the old path survives as the test oracle.
+- **Landed** (tear; mado's half follows tear's release). The proptest read
+  red on d69ce0f, shrunk to a kitty image followed by `ᝀ ⿰`, and green after;
+  the old splitter reproduces G's three tails exactly (`ã ✓` → `ã✓`, `ñoño` →
+  `ñño`, `é.…` → `é…`) and the feeder loses none; the E0451 case compiles once
+  `Chunk`'s field is made public, and the proptest goes red again once the
+  UTF-8 hold is disabled. Verification found the bound's one hole: ground
+  text past `HOLD_MAX` with no rest point, a run of lead bytes after a read
+  boundary, was handed over whole and ended inside a character, so `C3` ×
+  4,097 then `A3 20 E2 82 AC 21` cut after its first byte printed `ã€!`
+  where whole it prints `ã €!`, at bounds 4 and 4 KiB. It is now cut before
+  its last incomplete character; that row and two lead-heavy proptests (no
+  chunk ends where the next byte continues its character; any split reads as
+  one raw vte advance) read red before the cut and green after. The copy
+  became a borrow: over 32 MiB of G's four workloads in 1 KiB reads, six
+  interleaved runs each, the feeder costs 0.043–0.064 ns per byte (median)
+  where the old splitter cost 0.558–0.691 — G's 0.56–0.70 again — and
+  allocates nothing where the old one allocated once a read (a scratch A/B at
+  load averages 11–16, so a ratio, not a gate receipt). In mado,
+  `Terminal::feed` is the same feeder, and two behaviours change: `BEL` now
+  ends an APC there, and a payload past the cap is dropped whole where its
+  remainder used to print as text. mado's split proptest widens to any byte,
+  held to by construction now that no chunk ends inside a character; it was
+  kept at 7-bit input for fear of vte's replacement-character resync (S mado
+  `terminal.rs`), though mado before this rung also passes the widened
+  property's 256 random cases, so it is a guard here, not a red run.
 
 #### R8 · Sockets sized, one write and one read a frame, no Nagle
 *Interim on the path · after R1 · absorbed by R19's framer.*
@@ -1893,8 +1946,9 @@ the queries in `tear-bench/sql/`:
 `duckdb -cmd "set variable data = '<run-dir>/data'" -cmd ".read tear-bench/sql/summary.sql" -c "from latency"`.
 `nix run .#bench` builds tear-bench through substrate's `mkRustWorkspace`
 and wraps it with the flake's own `tear` as `--tear-bin`; that build has no
-`bench-probes`, so probe-backed cells and the screen-parse floor read
-`Blind` there. Where the code refines this section:
+`bench-probes`, so probe-backed cells (`cases::PROBE_BACKED`, through the
+verdict's `probes` precondition) and the screen-parse floor read `Blind`
+there. Where the code refines this section:
 `Variant` splits the band into the daemon's and the client's, because the
 pass's `held-bgd` and `held-bg` differ only there; tear-config's
 `SessionDurability`, `Durability`'s configuration twin, is matched both ways
@@ -2009,13 +2063,14 @@ multiple it could gate.
 today's behaviour exhibits, kept as configuration (each rung's *Old
 behaviour*), or, where today's behaviour is a bad state, a fault injector
 compiled only under `bench-probes` and never a configuration value — R6's
-test-only array encoder, the mute sink (R4), the lease turned off (R42), the
-wake turned off (R10), `ui_io: inline` (R13), `snapshot.history: all` (R9), an
-unbounded subscriber queue (R22), an allocating row path (R24) and a reader
-that clones rows (R30). Every CI run switches each control on and asserts its
-red set: exactly, for count cells; for timing cells, as a minimum effect
-beyond the noise band below. A control that reddens nothing, or the wrong
-cells, fails. The gate proves on every run that it can see its own regression.
+test-only array encoder, R7's old splitter, the mute sink (R4), the lease
+turned off (R42), the wake turned off (R10), `ui_io: inline` (R13),
+`snapshot.history: all` (R9), an unbounded subscriber queue (R22), an
+allocating row path (R24) and a reader that clones rows (R30). Every CI run
+switches each control on and asserts its red set: exactly, for count cells;
+for timing cells, as a minimum effect beyond the noise band below. A control
+that reddens nothing, or the wrong cells, fails. The gate proves on every run
+that it can see its own regression.
 
 **Verdicts are derived, never declared.** A cell is `Within`, `Over`,
 `Pending`, `Blind`, `Errored` or `NotApplicable`, with its sample count. It is
@@ -2146,7 +2201,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | input lost past the frame cap | `SendKeys` above 64 KiB travels as chunks under one lock; a failure is `PartialInput{delivered}`; `send_paste` closes its bracket when bytes may have landed | `unchunked-input`; the 16 MiB paste row | another client's input between two chunks (R23) | only-mitigated (C1) |
 | a connection that skips the handshake | the control connection, every re-dial and every subscription run one handshake: `Authenticate`, `Hello`, the stored `IdentifyClient` | `raw-subscribe`; the tokened-subscription row; a re-dial test against a daemon double | — | only-mitigated (C1) |
 | a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways | `trybuild`: a sink around a borrowed connection, pinned stderr; the mute-sink fault | holders spawned before R4, which the daemon's `Status.end` check only mitigates | truly-unrep (R4 holders) |
-| an incomplete UTF-8 tail reaches a parser | `PaneGrid::feed` takes a `Chunk` only the feeder mints | `trybuild`: a `Chunk` minted outside the feeder, E0451; the old splitter as a test double | — | parse-time-rejected |
+| a UTF-8 character split across two of a parser's chunks | both parsers advance only through `feeder::Parser`, which takes a `Chunk` only the feeder mints, and the feeder cuts text only at rest, or, past the hold bound in ground state, before the last incomplete character, so no chunk ends where the next byte continues one | `trybuild`: a `Chunk` minted outside the feeder, E0451, and raw bytes to the parser, E0308; the old splitter as a test double (`old-splitter`, C9 `loss`); the espelho split proptest; a run of lead bytes past the bound, red at bounds 4 and 4 KiB before the cut with two lead-heavy proptests | where the feeder rests is its own state machine, held to vte's by proptests, not by the type | parse-time-rejected |
 | modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451; the `daemon-rpc` control | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does | truly-unrep (at R38) |
 | a flush on the byte path that nobody chose | `NonZero` intervals; only `write_ahead` flushes before forwarding; rotation and eviction run on the syncer | control `write_ahead{persisted}`; the pump-thread flush counter | a kernel stall of appends behind an in-flight flush (unmeasured; R17's gate) | parse-time-rejected |
 | a crash loses more than the declared window | `group_commit{persisted}`; a directory flush after every tombstone and `session.json` rename | a NixOS VM hard reset mid-flood, with a `page_cache` control | macOS has no crash harness; the drive's honesty about its cache | only-mitigated (C2) |

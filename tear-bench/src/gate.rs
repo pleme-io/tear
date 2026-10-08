@@ -13,7 +13,7 @@ use crate::harness::{Harness, Tag, arm_client, isolated_rig_with, procs};
 use crate::matrix::{
     Band, Budget, Case, Cell, Control, Floor, Input, JournalSync, Metric, Remote, Variant, cells,
 };
-use crate::receipt::{RUNS, Sample};
+use crate::receipt::{RUNS, Sample, Unit};
 use crate::verdict::{
     FloorSet, HostClass, Preconditions, Verdict, blind_streak_is_red, derive, sentinel_gate,
 };
@@ -307,6 +307,47 @@ fn report_control(h: &Harness, control: Control, run: ControlRun, detail: &str) 
     );
 }
 
+pub fn split_control(h: &Harness) -> (ControlRun, String) {
+    let control = Control::OldSplitter;
+    let (lost, detail) = match cases::split_losses(cases::Split::OldSplitter) {
+        Ok(v) => v,
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+            return (ControlRun::Blind, e.to_string());
+        }
+        Err(e) => return (ControlRun::Failed, format!("the control run errored: {e}")),
+    };
+    h.emit(
+        Sample::new(
+            &format!("control:{}", control.name()),
+            "tear-core",
+            "corpora-losing-a-character",
+            0,
+            lost as f64,
+            Unit::Count,
+        )
+        .detail(detail),
+    );
+    let cell = Cell::new(Case::C9, Metric::Loss);
+    let v = derive(
+        cell.budget(),
+        &[lost as f64],
+        &FloorSet::default(),
+        &Preconditions::met(1),
+    );
+    match crate::verdict::audit_control(control, &[(cell, v.clone())]) {
+        Ok(()) => (
+            ControlRun::Reddened,
+            format!(
+                "{} read {} with {} on",
+                cell.name(),
+                v.name(),
+                control.name()
+            ),
+        ),
+        Err(e) => (ControlRun::Failed, e),
+    }
+}
+
 fn step(h: &Harness, name: &str, r: io::Result<()>) {
     match r {
         Ok(()) => h.log(&format!("case {name}: done")),
@@ -322,10 +363,16 @@ fn step(h: &Harness, name: &str, r: io::Result<()>) {
 pub fn structural(h: &Harness, bands: &mut Vec<String>) -> Vec<(Control, ControlRun, String)> {
     step(h, "wire", cases::wire(h));
     step(h, "allocations", cases::allocations(h).map(drop));
+    step(h, "split", cases::split(h).map(drop));
+    let (split_run, split_detail) = split_control(h);
+    report_control(h, Control::OldSplitter, split_run, &split_detail);
     step(h, "audit", audit(h, bands));
     let (run, detail) = audit_control(h, bands);
     report_control(h, Control::AuditEveryKey, run, &detail);
-    let mut controls = vec![(Control::AuditEveryKey, run, detail)];
+    let mut controls = vec![
+        (Control::OldSplitter, split_run, split_detail),
+        (Control::AuditEveryKey, run, detail),
+    ];
     step(
         h,
         "keyloss",
@@ -551,6 +598,7 @@ pub fn run(h: &Harness, tier: Tier, host: Option<HostClass>, scale: u64) -> io::
             },
             peer: Ok(()),
             band: band.clone(),
+            probes: cases::probes_reach(cell),
             min_samples: min_samples(budget),
         };
         let v = derive(budget, &samples_for(&all, cell), &floors, &pre);

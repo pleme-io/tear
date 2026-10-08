@@ -359,6 +359,7 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
             "startup" => cases::startup(h, v, 5),
             "restart" => cases::restart(h, v, 8_388_608, 3),
             "allocations" => cases::allocations(h).map(drop),
+            "split" => cases::split(h).map(drop),
             "audit" => gate::audit(h, &mut Vec::new()),
             _ => continue,
         };
@@ -370,7 +371,7 @@ fn run_cases(h: &Harness, names: &str, variant: &str) -> ExitCode {
         .filter(|n| {
             !matches!(
                 *n,
-                "wire" | "ptyraw" | "startup" | "restart" | "allocations" | "audit"
+                "wire" | "ptyraw" | "startup" | "restart" | "allocations" | "split" | "audit"
             )
         })
         .collect();

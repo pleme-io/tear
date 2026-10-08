@@ -15,7 +15,7 @@ tear_types::closed_vocabulary! {
     }
 }
 
-pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3];
+pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R7];
 
 #[must_use]
 pub const fn landed(rung: Rung) -> bool {
@@ -418,6 +418,7 @@ tear_types::closed_vocabulary! {
         LegacyReplay => "legacy-replay",
         RawSubscribe => "raw-subscribe",
         UnchunkedInput => "unchunked-input",
+        OldSplitter => "old-splitter",
     }
 }
 
@@ -439,7 +440,7 @@ impl Control {
             | Control::PaneFatePoll
             | Control::UdsBufferOsDefault
             | Control::TwoWriteFraming => ControlKind::KeptConfiguration,
-            Control::ArrayEncoder => ControlKind::BenchOnly,
+            Control::ArrayEncoder | Control::OldSplitter => ControlKind::BenchOnly,
             Control::MuteSink
             | Control::LeaseOff
             | Control::SnapshotHistoryAll
@@ -472,6 +473,7 @@ impl Control {
             | Control::LegacyReplay
             | Control::RawSubscribe
             | Control::UnchunkedInput => Rung::R3,
+            Control::OldSplitter => Rung::R7,
         }
     }
 
@@ -518,6 +520,9 @@ impl Control {
             }
             Control::UnchunkedInput => {
                 "SendKeys carries any input in one frame, so input past ~8.1 MiB crosses the 16 MiB cap and is lost (W): today's only behaviour"
+            }
+            Control::OldSplitter => {
+                "the pre-R7 APC scanner hands vte each read's tail, and vte 0.15 drops what follows a completed partial character: 3 of 3 corpora lose one (G)"
             }
         }
     }

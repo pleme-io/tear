@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+ --> tests/ui/parser_advanced_over_raw_bytes.rs:9:31
+  |
+9 |     parser.advance(&mut Grid, b"\xc3");
+  |            -------            ^^^^^^^ expected `Chunk<'_>`, found `&[u8; 1]`
+  |            |
+  |            arguments to this method are incorrect
+  |
+note: method defined here
+ --> src/feeder.rs
+  |
+  |     pub fn advance<P: vte::Perform>(&mut self, performer: &mut P, chunk: Chunk<'_>) {
+  |            ^^^^^^^

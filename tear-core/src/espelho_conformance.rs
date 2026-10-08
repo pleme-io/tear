@@ -47,6 +47,10 @@
 //! 3. **Pass-through integrity** — through a real PTY + the
 //!    `InProcess` fan-out, each query wire reaches the subscriber
 //!    stream verbatim, so the downstream host can answer.
+//! 4. **Split invariance** — `feed(whole) == feed(any split)`: the grid,
+//!    its modes and, as a host, its answers are the same however the
+//!    stream was cut into reads, over arbitrary UTF-8, the query catalog
+//!    and kitty images (PERFORMANCE R7).
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -262,5 +266,85 @@ fn query_wires_pass_through_verbatim_to_subscribers() {
              downstream terminal could never answer it; transcript: {:?}",
             String::from_utf8_lossy(&buf)
         );
+    }
+}
+
+mod split_invariance {
+    use proptest::prelude::*;
+    use tear_types::host_role::HostRole;
+    use tear_types::modes::ModeSet;
+
+    use super::CATALOG;
+    use crate::PaneGrid;
+
+    fn token() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![
+            4 => any::<String>().prop_map(String::into_bytes),
+            3 => prop::sample::select(CATALOG.to_vec()).prop_map(|q| q.wire().to_vec()),
+            1 => "[A-Za-z0-9+/=]{0,12}".prop_map(|p| {
+                [b"\x1b_Ga=T,f=100;".as_slice(), p.as_bytes(), b"\x1b\\"].concat()
+            }),
+            1 => (1u8..=5, 1u8..=20).prop_map(|(r, c)| format!("\x1b[{r};{c}H").into_bytes()),
+            1 => (30u8..38).prop_map(|c| format!("\x1b[{c}m").into_bytes()),
+        ]
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Seen {
+        snapshot: serde_json::Value,
+        modes: ModeSet,
+        answers: Option<Vec<u8>>,
+    }
+
+    fn seen(stream: &[u8], cuts: &[usize], role: HostRole) -> Seen {
+        let mut grid = PaneGrid::with_scrollback(20, 5, 50);
+        grid.set_host_role(role);
+        let mut from = 0;
+        for &cut in cuts {
+            grid.feed(&stream[from..cut]);
+            from = cut;
+        }
+        grid.feed(&stream[from..]);
+        Seen {
+            snapshot: serde_json::to_value(grid.snapshot()).expect("a snapshot serializes"),
+            modes: grid.modes(),
+            answers: grid.take_response(),
+        }
+    }
+
+    #[test]
+    fn the_three_read_boundary_corpora_lose_nothing_where_the_old_splitter_lost_each() {
+        use crate::probes::{Splitter, split_losses};
+        assert_eq!(split_losses(Splitter::Feeder), Vec::new());
+        let old: Vec<(String, String)> = split_losses(Splitter::Legacy)
+            .into_iter()
+            .map(|l| (l.whole, l.read))
+            .collect();
+        assert_eq!(
+            old,
+            [
+                ("aaaaaã ✓ end", "aaaaaaã✓ end"),
+                ("aaaañoño end", "aaaaañño end"),
+                ("aaaaaé.… end", "aaaaaaé… end"),
+            ]
+            .map(|(w, r)| (w.to_owned(), r.to_owned()))
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn feeding_whole_equals_feeding_any_split(
+            tokens in prop::collection::vec(token(), 1..24),
+            cuts in prop::collection::vec(any::<prop::sample::Index>(), 1..8),
+            host in any::<bool>(),
+        ) {
+            let stream = tokens.concat();
+            let mut cuts: Vec<usize> = cuts.iter().map(|c| c.index(stream.len() + 1)).collect();
+            cuts.sort_unstable();
+            let role = if host { HostRole::Host } else { HostRole::Relay };
+            prop_assert_eq!(seen(&stream, &cuts, role), seen(&stream, &[], role));
+        }
     }
 }

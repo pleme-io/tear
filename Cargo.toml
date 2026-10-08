@@ -122,6 +122,7 @@ portable-pty = "0.9"
 
 # ── VT100/xterm parser (same major mado uses; one parser fleet-wide) ─
 vte = "0.15"
+memchr = "2"
 
 # ── Character display width ─────────────────────────────────────────
 # MUST track mado's pin (mado/Cargo.toml declares "0.2", resolves 0.2.2).

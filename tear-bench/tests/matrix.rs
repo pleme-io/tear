@@ -13,6 +13,7 @@ const PENDING_CELLS: usize = 62;
 const BUDGETED_CELLS: &[(Case, Metric)] = &[
     (Case::C3, Metric::Loss),
     (Case::C6(Remote::Tcp), Metric::Loss),
+    (Case::C9, Metric::Loss),
     (Case::C12(Input::Paste), Metric::Loss),
     (Case::C13, Metric::Flushes),
 ];
@@ -36,7 +37,7 @@ fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
 
 #[test]
 fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
-    assert_eq!(LANDED, &[Rung::R1, Rung::R3]);
+    assert_eq!(LANDED, &[Rung::R1, Rung::R3, Rung::R7]);
     let mut pending = 0;
     let mut budgeted = Vec::new();
     for cell in cells() {
@@ -178,6 +179,57 @@ fn an_audit_write_on_the_key_path_reddens_c13_flushes_and_nothing_else() {
     assert_eq!(red_set(Control::AuditEveryKey), vec![cell]);
     assert!(tear_bench::verdict::audit_control(Control::AuditEveryKey, &[(cell, faulted)]).is_ok());
     assert!(tear_bench::verdict::audit_control(Control::AuditEveryKey, &[(cell, clean)]).is_err());
+}
+
+#[test]
+fn a_probe_backed_cell_reads_blind_in_a_build_without_probes_never_errored() {
+    use tear_bench::harness::cases::{PROBE_BACKED, probes_reach};
+    assert!(PROBE_BACKED.contains(&Cell::new(Case::C9, Metric::Loss)));
+    for cell in PROBE_BACKED {
+        let pre = Preconditions {
+            probes: probes_reach(*cell),
+            ..Preconditions::met(1)
+        };
+        let v = derive(Budget::Count { max: 0 }, &[], &FloorSet::default(), &pre);
+        if cfg!(feature = "bench-probes") {
+            assert!(matches!(v, Verdict::Errored { .. }), "{v:?}");
+        } else {
+            assert!(matches!(v, Verdict::Blind { .. }), "{v:?}");
+        }
+    }
+}
+
+#[cfg(feature = "bench-probes")]
+#[test]
+fn the_old_splitter_reddens_c9_loss_and_nothing_else_and_the_feeder_loses_nothing() {
+    use tear_bench::harness::cases::{Split, split_losses};
+    let cell = Cell::new(Case::C9, Metric::Loss);
+    assert_eq!(cell.budget(), Budget::Count { max: 0 });
+    let floors = FloorSet::default();
+    let (kept, _) = split_losses(Split::Feeder).unwrap();
+    let clean = derive(
+        cell.budget(),
+        &[f64::from(
+            u32::try_from(kept).expect("a handful of corpora"),
+        )],
+        &floors,
+        &Preconditions::met(1),
+    );
+    assert!(matches!(clean, Verdict::Within { .. }), "{clean:?}");
+    let (lost, detail) = split_losses(Split::OldSplitter).unwrap();
+    assert_eq!(lost, 3, "{detail}");
+    let faulted = derive(
+        cell.budget(),
+        &[f64::from(
+            u32::try_from(lost).expect("a handful of corpora"),
+        )],
+        &floors,
+        &Preconditions::met(1),
+    );
+    assert!(faulted.is_red());
+    assert_eq!(red_set(Control::OldSplitter), vec![cell]);
+    assert!(tear_bench::verdict::audit_control(Control::OldSplitter, &[(cell, faulted)]).is_ok());
+    assert!(tear_bench::verdict::audit_control(Control::OldSplitter, &[(cell, clean)]).is_err());
 }
 
 #[test]

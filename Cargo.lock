@@ -3052,6 +3052,7 @@ dependencies = [
  "engate-types",
  "espelho",
  "ishou-tokens",
+ "memchr",
  "once_cell",
  "parking_lot",
  "portable-pty",
@@ -3064,6 +3065,7 @@ dependencies = [
  "tear-types",
  "thiserror 2.0.19",
  "tracing",
+ "trybuild",
  "unicode-width",
  "vte",
 ]

@@ -20,9 +20,10 @@
 pub mod blocks;
 #[cfg(feature = "engate")]
 pub mod engate_producer;
+pub mod feeder;
 pub mod inproc;
 pub mod pane_grid;
-#[cfg(feature = "bench-probes")]
+#[cfg(any(test, feature = "bench-probes"))]
 pub mod probes;
 pub mod pty;
 pub mod reap;
