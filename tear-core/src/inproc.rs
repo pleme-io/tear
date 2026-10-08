@@ -1990,6 +1990,10 @@ mod tests {
         );
         // Runtime artifacts must be gone too — a reaped session that
         // strands a PtyHandle/grid/subscriber entry is a slow leak.
+        let detached = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < detached && !inproc.ptys.lock().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert!(
             inproc.ptys.lock().is_empty(),
             "reap left a PtyHandle behind"

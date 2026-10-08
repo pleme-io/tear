@@ -370,8 +370,16 @@ fn two_daemons_on_one_store_leave_each_pane_one_authority_and_the_loser_ends_not
     let (h1, first) = place.start();
     let c1 = Client::connect(place.socket()).unwrap();
     let (sid, pane) = new_session(&c1, "shared");
-    c1.send_keys(pane, b"while :; do echo tick-$$; sleep 0.05; done\r")
-        .unwrap();
+    let stop_ticking = place.root.join("stop-ticking");
+    c1.send_keys(
+        pane,
+        format!(
+            "while [ ! -e '{}' ]; do echo tick-$$; sleep 0.05; done\r",
+            stop_ticking.display()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
     assert!(screen_has(&c1, pane, "tick-"));
 
     std::fs::create_dir_all(place.root.join("b")).unwrap();
@@ -398,22 +406,28 @@ fn two_daemons_on_one_store_leave_each_pane_one_authority_and_the_loser_ends_not
         "the pane takes no input through the displaced daemon"
     );
     c1.kill_session(sid).unwrap();
-    c2.send_keys(pane, b"\x03").unwrap();
+    std::fs::write(&stop_ticking, b"").unwrap();
     c2.send_keys(pane, b"echo after-$((7*6))\r").unwrap();
+    let log = || {
+        std::fs::read_to_string(
+            place
+                .store()
+                .join("sessions")
+                .join(sid.to_string())
+                .join("panes")
+                .join(pane.to_string())
+                .join("holder.log"),
+        )
+        .unwrap_or_default()
+    };
     assert!(
         screen_has(&c2, pane, "after-42"),
-        "the displaced daemon's kill reached neither the shell nor its tombstone"
+        "the displaced daemon's kill reached neither the shell nor its tombstone: {}\n{}",
+        log(),
+        c2.pane_snapshot(pane)
+            .map_or_else(|e| e.to_string(), |s| s.to_text())
     );
-    let log = std::fs::read_to_string(
-        place
-            .store()
-            .join("sessions")
-            .join(sid.to_string())
-            .join("panes")
-            .join(pane.to_string())
-            .join("holder.log"),
-    )
-    .unwrap_or_default();
+    let log = log();
     assert_eq!(
         log.matches("tamotsu: attached from offset").count(),
         2,
