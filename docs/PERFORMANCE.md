@@ -192,7 +192,7 @@ is not a rung's evidence (§6).
 | C9 | short lines (`yes`, 163 columns) | 9.6 MB/s with 2-byte lines and 513 allocations per KiB (G); 13.9 MiB/s with the 3-byte lines a PTY delivers (measured in the daemon code read, §11) | vte with a no-op performer, 1,875–1,961 MB/s (G) | 0 allocations per KiB; throughput `Pending` until R24's first run backs a multiple | R24, R25 |
 | C9 | daemon RSS per 64 MiB flood | 20 MiB → 2.2 GiB, kept after the kill (H-d, n=3) | the text itself | ~1–1.5× the text, released | R26 |
 | C10 idle | GUI loop ticks | 57.83/s (L, n=32,801 over 567 s) | 0 | ≤1/s | R10, R11 |
-| C10 | context switches/s: GUI / daemon / holder | 215 / 77 / 2.8 (L) | GUI: a parked madori window with no tear link, measured from R1; daemon and holder ~0 | GUI ≤1.5× that floor; daemon and holder ≤1 each | R10, R11, R18 |
+| C10 | context switches/s: GUI / daemon / holder | 215 / 77 / 2.8 (L) | GUI: a parked madori window with no tear link under `Reactive` pacing, 0.8–1.9/s (R1, screen locked); daemon and holder ~0 | GUI ≤1.5× that floor; daemon and holder ≤1 each | R10, R11, R18 |
 | C10 | painted frames repeating content | 74.1 %: 13,793 of 18,610 (L) | 0 | ≤5 % | R12 |
 | C10 | WebSocket bridge timer wakeups | 25/s: a 50 ms accept poll and a 200 ms main poll (S) | 0 | 0 | R39 |
 | C11 resize | per drag step | an O(scrollback) mirror rewrap + a blocking RPC + a truncating resize + SIGWINCH (S); timings unmeasured | — | ≤1 resize per 50 ms; 1 reflow and ≤2 SIGWINCH per drag; ≤1 ms of UI per step | R23, R33 |
@@ -340,13 +340,16 @@ renders launchd and systemd scheduling from a closed `workloadClass` keyed on
 who waits on the process; tear declares `session-host`, so its daemon and
 holders run where interactive work runs, and on Linux each holder runs in its
 own scope so the daemon's weights are the daemon's alone. A band is inherited
-at spawn, so panes alive across the change are reclassed on adoption where the
-OS allows it (R2). Inside tear every thread is spawned with a named class
-through one contained seam: gather, parse, input, subscriber and connection
-threads at user-initiated QoS; the syncer, persister and checkpoint writer at
-utility; history backfill at background. Shells start in the default band
-whatever their holder's class: the holder resets its own main thread and
-clears inherited background state on the child before exec (R28). kanshou
+at spawn and comes from the launchd process type, which no call clears on a
+running process (R1, measured), so panes alive across the change keep the
+background band until their shell exits; a holder leaves it at its next
+in-place upgrade (R16), its shell does not. Inside tear every thread is
+spawned with a named class through one contained seam: gather, parse, input,
+subscriber and connection threads at user-initiated QoS; the syncer,
+persister and checkpoint writer at utility; history backfill at background.
+Shells start in the band their holder runs in, which `session-host` makes the
+default band; `posix_spawn`'s QoS attribute can only lower a child (R1), so
+nothing else is relied on (R28). kanshou
 reports the declared class beside the observed priority.
 
 On the language ladder: the hot paths stay Rust — they make syscalls, are
@@ -402,8 +405,9 @@ negative control is a fault injector compiled only for tests (§6).
   `--all-features`; `ci.yml` is re-enabled — disabled at the GitHub level
   since 2026-05-22 after 76 of 76 red runs of the job it replaced, while
   `cargo fmt --check` passes today (S, Actions API); madori, engate, garasu
-  and kanshou get the same push and pull-request test job (their tests run
-  only at release today, S); the capability vocabulary becomes one
+  and kanshou get the same push and pull-request test job (madori's and
+  garasu's tests ran in no workflow, kanshou's and engate's only at release,
+  S); the capability vocabulary becomes one
   `capabilities!` row per variant (variant, wire name, advertised); the rows
   *are* `ALL`, so membership is the row itself — a membership flag would make
   "a variant outside `ALL`" a value someone could write; the stale models of
@@ -501,13 +505,30 @@ negative control is a fault injector compiled only for tests (§6).
   rung's text requires, until the rung that owns its cell gives it a budget;
   and the counts run where `tearbench gate` runs, not yet on every push: no
   CI job runs tearbench until the timing tier's `benchmark-runner` change
-  (§6). The launchd question is half answered: `PRIO_DARWIN_BG` that a
-  process set on itself, as `taskpolicy -b` sets it, is not cleared by
-  another process's `setpriority(PRIO_DARWIN_PROCESS, pid, 0)` — the call
-  succeeds and the priority stays 4, read through `proc_pidinfo` and through
-  `ps` — while the same flag set from outside clears, 4 → 31 (`tearbench
-  band-probe`). Which of the two launchd's `Adaptive` applies is not
-  measured: that needs a launchd-spawned process, which R2's gate reads.
+  (§6). The launchd question is answered, on a scratch launchd agent with
+  `ProcessType` `Adaptive` and `AbandonProcessGroup` (tear's plist), its child
+  and grandchild standing in for holder and shell: **no call clears the band
+  on a running process.** External `setpriority(PRIO_DARWIN_PROCESS, pid, 0)`
+  and `taskpolicy -B -p` return 0 and change nothing (threads 4, `ps -M` 4T,
+  `sleep(1 ms)` 54–58 ms, 100 % of CPU billed to background QoS), external
+  `PRIO_DARWIN_ROLE` is `ENOTSUP`, and the self-clear does nothing either; the
+  band is the task's launchd process type, not the darwin-background request
+  `PRIO_DARWIN_PROCESS` toggles. Children spawned after any clear stay in the
+  band; `posix_spawnattr_set_qos_class_np` accepts only `UTILITY` and
+  `BACKGROUND` (`EINVAL` for `USER_INTERACTIVE` and `DEFAULT`), so it can only
+  lower. What does move a process: the job's own `ProcessType` —
+  `Interactive` runs the job and every descendant at 31T, 1.51 ms, 0 %
+  background, while `Standard` clamps everything to utility, 20T, 4.4–6.5 ms
+  (so `session-host` must render `Interactive`, as it does) — and the private
+  `posix_spawnattr_setprocesstype_np` (`APP_DEFAULT`, `DAEMON_STANDARD` or
+  `DAEMON_INTERACTIVE`), which takes a child of an `Adaptive` job to 31T at
+  spawn, including a holder re-exec'd in place (same pid, 56 → 1.51 ms), whose
+  running shell stays at 4T. The C10 floor: a parked madori window with no
+  tear link under `Reactive` pacing makes 0.8–1.9 context switches/s and
+  0.015–0.115 CPU-ms/s with 0 loop ticks (ordered in, hidden, minimized),
+  while the same window under `Capped(60)` makes 117–217/s at 23–36 ticks/s —
+  already the live 215/s — so C10's floor is the `Reactive` window (screen
+  locked and App-Napped throughout; an unlocked visible run is §8.3's).
 
 ### Phase B — the measured slownesses, smallest change first
 
@@ -537,14 +558,12 @@ negative control is a fault injector compiled only for tests (§6).
   `lib/tests/module-trio-test.nix:405-416`) evaluate as today, and the
   fleet's 32 hand-set sites (21 `Background`, 8 `Interactive`, 2 `Adaptive`,
   1 conditional; re-counted 2026-10-07) migrate later. Bands are inherited at
-  spawn (F), so a pane alive at the rebuild would keep the background band until its
-  shell exits: on adoption the daemon clears inherited background state on
-  each holder, its shell and the shell's live descendants —
-  `setpriority(PRIO_DARWIN_PROCESS, pid, 0)`, the inverse of the call F used
-  to set it, through the seam crate R28 grows, which this rung introduces with
-  its first call — if R1 finds launchd's state clearable from outside;
-  otherwise kanshou reports those panes as declared `session-host`, observed
-  background. On Linux, held panes run with `KillMode=process` inside the
+  spawn (F), and R1 measured that no call clears launchd's band on a running
+  process, so a pane alive at the rebuild keeps the background band until its
+  shell exits: kanshou reports those panes as declared `session-host`,
+  observed background, and their holders leave the band at their next
+  in-place upgrade (R16, through `posix_spawnattr_setprocesstype_np` in R28's
+  seam), their running shells do not. On Linux, held panes run with `KillMode=process` inside the
   daemon's unit (S tear `flake.nix:57-63`), so the unit's weights cannot
   favour the daemon over a build in one of its panes: each holder moves into
   its own transient scope through the user manager, and the class's weights
@@ -1394,23 +1413,29 @@ after R21, R22, R26, and (c) after R28; exact fences use R25's `is_ground()`.*
   `nawabari-xnu`, and the seam crate R2 introduced): the Darwin scheduling
   seam crate — its name to be minted through the naming law, proposed and not
   ratified — holds one `#[allow(unsafe_code)]` module around
-  `pthread_set_qos_class_self_np`, `posix_spawnattr_set_qos_class_np`,
-  `setpriority(PRIO_DARWIN_PROCESS)` and `proc_pidinfo`, a typed `Absent`
-  elsewhere, and exposes `ThreadClass{Interactive, Utility, Background}` and
-  `spawn_classed`; gather, parse, input, subscriber and connection threads are
-  Interactive (user-initiated), the syncer, persister, document writer and
-  checkpoint are Utility, backfill is Background; clippy refuses raw thread
-  spawns in tear crates. The holder resets its main thread to the default
-  class before spawning the shell and clears inherited background state on the
-  child before exec, because a holder spawned from a user-initiated connection
-  thread may inherit that class (unmeasured, §8.3) and a process-wide
-  background clamp overrides any thread class (F, R); kanshou gains
+  `pthread_set_qos_class_self_np`, `posix_spawnattr_setprocesstype_np` (the
+  private call R1 measured to be the only one that moves a child out of a
+  launchd band at spawn; typed `Absent` where the symbol does not resolve)
+  and `proc_pidinfo`, a typed `Absent` elsewhere, and exposes
+  `ThreadClass{Interactive, Utility, Background}` and `spawn_classed`;
+  gather, parse, input, subscriber and connection threads are Interactive
+  (user-initiated), the syncer, persister, document writer and checkpoint are
+  Utility, backfill is Background; clippy refuses raw thread spawns in tear
+  crates. The holder resets its main thread to the default class before
+  spawning the shell, because a holder spawned from a user-initiated
+  connection thread may inherit that class (unmeasured, §8.3); the shell's
+  band is its holder's launchd process type, which `session-host` makes the
+  default one — `posix_spawnattr_set_qos_class_np` can only lower and
+  `setpriority(PRIO_DARWIN_PROCESS)` does not touch a process type (R1), so
+  neither is used; R16's in-place upgrade re-execs a holder with
+  `DAEMON_INTERACTIVE` through `posix_spawnattr_setprocesstype_np`, which R1
+  measured taking it from 4T to 31T at the same pid; kanshou gains
   `process.band {declared, observed}` and a per-pane pipeline leaf.
   tear-bench's floors and mado's link threads (R13) use the same seam.
 - **Effect:** read stages run at user-initiated QoS — Ghostty reports a 15 %
   throughput difference from this change on an M4 Max and says it is not 15 %
-  in total (R: `Exec.zig`); shells run at PRI 31 whatever their daemon's
-  class; a band regression becomes a typed reading instead of a surprise.
+  in total (R: `Exec.zig`); shells spawned under a `session-host` daemon run
+  at PRI 31; a band regression becomes a typed reading instead of a surprise.
 - **Gate:** a `proc_pidinfo` row at XNU's QoS priorities (R): gather, parse
   and input ≥37, the syncer 20, the shell 31, the shell spawned through the
   production `NewSession` RPC with the daemon at `session-host` and at
@@ -2065,7 +2090,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | a holder upgrade that ends a shell | a preflight of the new image's adoption ABI; the journal drained before exec; one canary first | a rollback; an image that panics at startup | an image that passes the preflight and fails after the exec | only-mitigated (C2) |
 | unbounded history in RAM | `max_bytes` wired | the RSS row with `max_bytes` set | the default stays unlimited by operator decision (§8.2), at ~1–1.5× the text | only-mitigated (C1) |
 | Nagle on a tear TCP socket | one connect and accept path sets `TCP_NODELAY` | an rg gate; the Nagle probe | a bypass outside the profile | only-mitigated (C1) |
-| a shell started outside the default band | the holder resets its main thread and clears inherited background state on the child before exec | the `proc_pidinfo` row through the production `NewSession` RPC, the daemon at `session-host` and at `xpc-adaptive` | whether `posix_spawn` carries the caller's QoS (§8.3) | only-mitigated (C1) |
+| a shell started outside the default band | the daemon's `session-host` class makes every holder it spawns, and so every shell, an `Interactive` launchd descendant; the holder resets its main thread before spawning | the `proc_pidinfo` row through the production `NewSession` RPC, the daemon at `session-host` and at `xpc-adaptive` | panes born before R2: launchd's band is not clearable on a running process (R1); whether `posix_spawn` carries the caller's QoS (§8.3) | only-mitigated (C1) |
 | an allocation per line feed | row recycling | the counting allocator; the allocating-row fault | — | only-mitigated (C1) |
 
 ### 8.2 Operator decisions (2026-10-07)
@@ -2092,12 +2117,10 @@ decision, and every rung that depends on it says so.
   band in front were not read.
 - GPU time per frame (no timestamp queries yet), and the Ctrl-S frame since
   `aa031a2` cached overlay shapes (R1 for both).
-- Whether launchd's background state on a running process can be cleared from
-  outside it (R2's gate). R1 measured the mechanism: `PRIO_DARWIN_BG` a
-  process set on itself is not cleared by another process's `setpriority`,
-  while the flag set from outside is (R1's state line); which of the two
-  launchd applies is open. Whether `posix_spawn` carries the caller's thread
-  QoS into the child (R28).
+- Answered since: launchd's band on a running process cannot be cleared from
+  outside it or from inside (R1's state line). Still open: whether
+  `posix_spawn` carries the calling thread's QoS into the child (R28), and the
+  C10 floor on an unlocked, visible screen (R1 measured it locked).
 - Linux: the PTY read quantum, the cost of `fdatasync`, and whether per-pane
   scopes measurably help (R2's Linux gate); whether `latency-server`'s
   `CPUWeight`/`IOWeight` of 200 measurably helps a server under contention;
