@@ -656,8 +656,11 @@ negative control is a fault injector compiled only for tests (§6).
   `MultiplexerControl::send_paste` frames a bracketed paste in one buffer and,
   when bytes may have landed, closes the bracket itself; mado's engine still
   writes a paste as three sink writes (open, body, close), so its close
-  already follows a failed body, and mado moves onto `send_paste` at its next
-  tear bump, since it builds tear from crates.io. mado's PTY, resize,
+  already follows a failed body. mado has since moved to a tear that carries
+  R3 (released in 0.1.35) and still pastes that way, calling no
+  `send_paste`; its paste leaves the three writes at R13, whose input thread
+  writes a paste inside its brackets and closes them itself. mado's PTY,
+  resize,
   switch-resize, query-answer and prewarm writes count each failure in
   `frame_perf`'s `tear_write_failures` and log at most once a second per kind
   of write, naming what that failure costs (an unanswered DSR/DA/OSC query may
