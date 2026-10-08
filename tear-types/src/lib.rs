@@ -40,6 +40,7 @@
 
 pub mod address;
 pub mod block;
+pub mod byte_string;
 pub mod capability;
 pub mod cast;
 pub mod control;

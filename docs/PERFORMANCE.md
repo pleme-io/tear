@@ -906,7 +906,9 @@ negative control is a fault injector compiled only for tests (§6).
   `less` stops pulling a snapshot per step; mouse, paste and focus modes are
   right after attach and switch; one history replay per attach instead of two.
 - **Gate:** the mado-shaped key p50 is ≤1.25× the same run's plain-key echo at
-  0, 1,453 and 3,000 rows; an attach-into-vim row asserts DECCKM, 2004 and
+  0, 1,453 and 3,000 rows; a `ModeSet` that grows changes the `PaneSnapshot`
+  bytes R6's cross-version rows pin, so the same change reruns
+  `tear-bench/compat` (crates.io) and commits the fixture it writes; an attach-into-vim row asserts DECCKM, 2004 and
   1000/1006 restored (red today); replay-twice equals replay-once for every
   `ModeSet` field; attach mid-neovim, quit it, and Ctrl-C reaches the child as
   0x03 under `Prev` and `Head` mado; an attach to a pane holding N scrollback
@@ -974,6 +976,85 @@ declaration lands at R38.*
   434×, F-f); cross-version decode rows against the published tear-types,
   `Graphic.data` included; the test-only array encoder is red.
 - **Old behaviour:** none to keep: the same values in another encoding.
+- **Landed** (tear; mado, mado-web and every other reader take it at their
+  next tear-types bump with nothing to change). One module carries every byte
+  field: `tear_types::byte_string`, serde_bytes both ways and, under
+  `bench-probes`, the `array-encoder` fault, which writes the integer arrays
+  every byte field wrote before this rung from tear-types' own encoder rather
+  than a stand-in type. A 64 KiB `PaneBytes` body is 65,552 B (65,556 B with
+  its frame header) and a 1 KiB one 1,038 B, pinned in tear-types, and
+  `SendKeys.bytes` and a `Graphic` inside a `PaneSnapshot` cost one byte a
+  byte plus a 5 B header at 64 KiB. A scan of tear-types' sources refuses a
+  `Vec<u8>` field of a serde type that does not go through the module, and
+  counts three so that a broken parser cannot read as safe (§8.1,
+  only-mitigated). Where the code refines the rung: the cross-version rows
+  cannot be a dev-dependency on the published crate, because two packages
+  named `tear-types` in one lock make every `-p tear-types` ambiguous — `cargo
+  test -p tear-types` stops with "specification `tear-types` is ambiguous",
+  and the release's per-crate publish selects members the same way. A
+  standalone generator, `tear-bench/compat` (its own workspace; its lock is
+  not committed, because the path tear-types' version moves at every release,
+  and tear-types 0.1.35 and ciborium 0.2.2 are pinned exactly), builds
+  tear-types 0.1.35 from crates.io beside this tree, has each read the other's
+  bytes for `PaneBytes`, `SendKeys.bytes` and `Graphic.data` inside a
+  `PaneSnapshot` over six payloads from empty to the 8 MiB graphic cap, and
+  writes `tear-bench/tests/fixtures/published-tear-types.json` only when all
+  18 decode both ways. `tests/cross_version.rs` replays the 36 rows on every
+  test run: this tree's bytes must be the bytes 0.1.35 read (BLAKE3), and
+  0.1.35's bytes, rebuilt from the fixture around the payload's integer array
+  and checked by BLAKE3, must decode here; a change to any of these shapes
+  reddens the first direction until the generator re-verifies it against
+  0.1.35 — a field added to `PaneSnapshot` or to a type it carries does it too
+  (R5's `ModeSet`, R9), and the generator needs crates.io. The matrix lands R6
+  on C2: `wire-bytes` is `Bytes{max: 1,044}` (≤1.02 a byte, 1,042 B per KiB in
+  today's 1 KiB frame; R21's batches tighten it) and `encodes` is
+  `Floor{serialize-raw, p50, 3}`, a 64 KiB `PaneBytes` encode + decode in
+  tear-types' own encoder against a new floor, the raw lean frame of F-f (a
+  length, a tag, an offset and one copy each way), in the same band. The
+  `array-encoder` control is a `Fault` armed in tearbench's own process and
+  graded against a raw-frame floor measured in its own run; one
+  `grade_control` now grades every control. Against the pre-rung code — this
+  tree with the three attributes removed — the structural tier was red, C2
+  `wire-bytes` 2,042 against 1,044, and in three timing runs the codec case
+  read 846–853 µs p50 against 1.67–1.73 µs floors, 493–506×; five of
+  tear-types' new tests, the fault test and the 18 head-to-published rows were
+  red. Against R6, `wire-bytes` read 1,042 and, before the rebase onto R4 and
+  R10, all seven controls then landed reddened in a run with quiet sentinels,
+  `array-encoder` with 2,042 B per KiB and 789.1 µs, 465× its own run's 1.70
+  µs floor. The rebase folded R10's window grading into `grade_control`, which
+  then read a whole control `Blind` as soon as one of its cells did: three
+  structural runs at 0.55–0.62× the UDS one-way reference read `array-encoder`
+  `Blind` while its samples read 2,042 B per KiB and 441–448× the floor, and a
+  fault that wrote byte strings would have read `Blind` on such a host too.
+  `grade_control` now grades every cell before it decides (§6): in two runs on
+  a loud host (0.51× and 0.53×) `array-encoder` read `Blind` with C2
+  `wire-bytes` reddened, 2,042 against 1,044, and a fault that writes byte
+  strings reads `Failed` (`a_loud_host_still_grades_a_control_s_count_cells`,
+  red against the first grading, which read it `Blind`); every other landed
+  control reddened, and R10's two read `Blind` without a `--mado-bin`. The
+  timing tier graded `encodes` `Within` once, with quiet sentinels: 4.97 µs
+  p50 against a 1.69 µs floor, 2.94×, limit 5.08 µs. An earlier run read 4.96
+  against 1.62 µs, 3.06×, and was `Blind` by its sentinels (UDS one-way 0.70×
+  the reference), as were all three pre-rung timing runs (0.51–0.55×), so by
+  the red-on-today rule (§6) C2 `encodes` is not yet this rung's evidence: it
+  guards against regression until a pre-rung run with quiet sentinels reads it
+  red. Of R6's twelve gate runs on this host, the reference Mac's model, ten
+  read the UDS one-way sentinel at 0.51–0.70× the reference (3.6–5.0 µs
+  against 7.08), faster rather than slower, and the two quiet ones at 0.82×
+  and 0.89×, so the reference value itself may be what keeps them `Blind`. All
+  ran at load averages 7–14, where k = 3 leaves ~2 % of headroom; F-f read
+  2.5× on a quiet reference Mac, and no CI job runs the timing tier yet, so a
+  red there is first a question about the budget, put to the operator, not a
+  licence to widen it. The 64 MiB flood stayed at 45–52 MiB/s bound, as
+  embedded, which has no wire: the parser bounds today's stream (R24, R25),
+  not the codec. One side effect lands on R3: unchunked input now crosses the
+  16 MiB cap at ~16 MiB rather than ~8.1, and R3's 16 MiB paste, 16,777,228 B,
+  still crosses it, so `unchunked-input` still reddens. The §7 pairings, each
+  run against the other side's build: the pre-R6 daemon with R6's client, and
+  R6's daemon with the pre-R6 client, each delivered 20 of 20 keys at 3,000
+  rows with 0 re-dials, a 16 MiB paste whole (0 B missing, the child's
+  checksum equal) and a 64 MiB flood complete in 65,537 frames. No holder is
+  touched: tamotsu frames bytes as raw `TAG_DATA`, not CBOR.
 
 #### R7 · One split-safe feeder
 *Correctness prerequisite · after R1.*
@@ -1088,7 +1169,10 @@ R37.*
   300 columns (H, M); no read on these paths approaches 16 MiB.
 - **Gate:** a codec proptest (lossless, every frame ≤64 KiB) over random grids
   up to 500×200; snapshot bytes flat at 0, 1k, 10k and 100k rows; the
-  `bench-probes` fault `snapshot.history: all` is red at 3,000 rows.
+  `bench-probes` fault `snapshot.history: all` is red at 3,000 rows; a field
+  added to `PaneSnapshot` changes the bytes R6's cross-version rows pin, so
+  the same change reruns `tear-bench/compat` (crates.io) and commits the
+  fixture it writes.
 - **Old behaviour:** the legacy `PaneSnapshot`.
 
 ### Phase C — edges, not ticks
@@ -2138,12 +2222,21 @@ row and checked statically — each reddens at least one cell that is not
 switches on every control whose rung has landed: R1's `audit-every-key`,
 R3's four (§5 R3), R4's `mute-sink` (the holder leaves a failed sink's
 socket open, as every holder before R4 does) and `store-lease-off` (the
-daemon declares no incarnation and never checks the lease), R7's
-`old-splitter`, and R10's two in the window cells below, the kept
-configuration `pane-fate-poll` and the `wake-off` fault. One `control_run`
-arms a control's faults in the daemon
-(`TEAR_BENCH_FAULTS`) and, for a client-side fault, in tearbench's own
-process, runs the case, and disarms; its samples land under
+daemon declares no incarnation and never checks the lease), R6's
+`array-encoder`, R7's `old-splitter`, and R10's two in the window cells
+below, the kept configuration `pane-fate-poll` and the `wake-off` fault. One
+`grade_control` derives every control's red set and audits it, whether the
+control's bad state needs a daemon (`control_run`), a mado window (R10) or
+only tearbench's own process (R6's codec control, R7's split control). A
+timing cell in a control's red set needs quiet sentinels, reads `Blind`
+without them, and grades against a floor measured in the control's own run;
+the sentinels never gate its count cells, so a count cell that does not
+redden fails the control on a loud host too, and a control whose only
+unproven cells are blind timing cells reads `Blind`, naming the count cells
+it did redden. One `control_run` arms
+a control's faults in the daemon (`TEAR_BENCH_FAULTS`) and, for a
+client-side fault, in tearbench's own process, runs the case, and disarms;
+its samples land under
 `control:<name>:<bench>` with no cell, so a control never grades a clean
 cell. A control may arm more than one fault when its bad state needs a
 peer's: `legacy-replay` runs against a daemon with `response-size-unchecked`
@@ -2247,8 +2340,9 @@ authority.
 stat(floor)`, the floor measured in the same run by an independent code path:
 UDS round trips (raw and framed), UDS one-way sends, PTY echo, wakes (hot,
 from idle, through the run loop), PTY output and input ceilings, UDS
-throughput, the flush primitives, serialization and timers, plus four the
-2026-10-07 pass lacked — spawn + `openpty` (C8), screen parse (C7), present
+throughput, the flush primitives, serialization (a CBOR byte string, and
+the raw lean 64 KiB frame R6's codec cell is graded against) and timers,
+plus four the 2026-10-07 pass lacked — spawn + `openpty` (C8), screen parse (C7), present
 (mado), and a parked madori window with no tear link (C10). Their FFI sits
 behind one seam with exactly one `#[allow(unsafe_code)]`, shared with R28. A
 rung's gate may state its acceptance on the reference Mac in absolute units
@@ -2367,8 +2461,9 @@ older daemon with state a newer one wrote; C6 adds skew across hosts.
    the old path would silently misbehave**, with a typed `Unsupported`, the
    precedent tear's `SpawnEnv` rollout set.
 6. **Byte strings need no capability:** ciborium decodes either form in both
-   directions for `PaneBytes` and `SendKeys` (P); `Graphic.data` joins the
-   probe at R6.
+   directions for `PaneBytes`, `SendKeys` and `Graphic.data` inside a
+   `PaneSnapshot`: 36 of 36 rows against the published tear-types 0.1.35,
+   each direction, payloads from empty to the 8 MiB graphic cap (R6).
 7. **A full-document write never resets what its writer could not see.**
    `SetConfig` carries the writer's tear-config schema version (an additive
    field; a writer that sends none speaks the schema before this plan), and
@@ -2412,6 +2507,7 @@ gate can see the bad state; *Not covered* names what the tier does not reach.
 | input lost past the frame cap | `SendKeys` above 64 KiB travels as chunks under one lock; a failure is `PartialInput{delivered}`; `send_paste` closes its bracket when bytes may have landed | `unchunked-input`; the 16 MiB paste row | another client's input between two chunks (R23) | only-mitigated (C1) |
 | a connection that skips the handshake | the control connection, every re-dial and every subscription run one handshake: `Authenticate`, `Hello`, the stored `IdentifyClient` | `raw-subscribe`; the tokened-subscription row; a re-dial test against a daemon double | — | only-mitigated (C1) |
 | a held pane open but mute | a sink owns its connection, and dropping it shuts the connection down both ways; for older holders, a pane snapshot or an unechoed key makes the daemon compare `Status.end` and re-attach | a `Sink::drop` without the shutdown reddens the sink's own test and three tamotsu `never_mute` tests (shut-down, stall, displaced); the mute-sink fault on C4 `loss` (3,660,800 B lost); the shut-down and stall tests, red against v0.1.34's holder; tear's daemon-process test of a muted holder recovered by wire snapshots, red with the edge off the wire read (1 attach, the marker never shown) | holders spawned before R4, which the daemon's `Status.end` check only mitigates, on an edge; a holder that writes through a raw stream again (the `trybuild` case pins `Sink::new`, a definition, not the holder's use); a deliberate `Sink::leave_silent` on the failure path, which is what the fault does | only-mitigated (C1) |
+| a byte payload written as a CBOR integer array | every `Vec<u8>` field of a serde type in tear-types goes through `tear_types::byte_string` (serde_bytes); a scan of tear-types' sources refuses one that does not, and counts three so a broken parser cannot read as safe | the `array-encoder` fault: C2 `wire-bytes` 2,042 against 1,044 and `encodes` 465× its floor in a run with quiet sentinels, and `wire-bytes` alone on a loud host, where `encodes` reads `Blind` (`encodes` has no pre-rung red with quiet sentinels yet); tear-types' `array_encoder` test; `the_scan_sees_a_bare_byte_field`; the 65,552 B pin; the 18 head-to-published cross-version rows, red with the three attributes removed (six with `Graphic.data`'s alone, six with `SendKeys.bytes`') | a byte field of a serde type outside tear-types; a type the scan does not read, one declared inside a macro or an indented module | only-mitigated (C1) |
 | a UTF-8 character split across two of a parser's chunks | both parsers advance only through `feeder::Parser`, which takes a `Chunk` only the feeder mints, and the feeder cuts text only at rest, or, past the hold bound in ground state, before the last incomplete character, so no chunk ends where the next byte continues one | `trybuild`: a `Chunk` minted outside the feeder, E0451, and raw bytes to the parser, E0308; the old splitter as a test double (`old-splitter`, C9 `loss`); the espelho split proptest; a run of lead bytes past the bound, red at bounds 4 and 4 KiB before the cut with two lead-heavy proptests | where the feeder rests is its own state machine, held to vte's by proptests, not by the type | parse-time-rejected |
 | modes read at another instant than the cells | before R38 the mirror (R5); at R38 a sealed `ModeSet`, decoded only inside `OwnedPaneView` | `trybuild`: a `ModeSet` built outside tear-types, E0451; the `daemon-rpc` control | until R38 the mirror trails the authority by the pipeline's latency, as every terminal's parser does | truly-unrep (at R38) |
 | a flush on the byte path that nobody chose | `NonZero` intervals; only `write_ahead` flushes before forwarding; rotation and eviction run on the syncer | control `write_ahead{persisted}`; the pump-thread flush counter | a kernel stall of appends behind an in-flight flush (unmeasured; R17's gate) | parse-time-rejected |
@@ -2555,6 +2651,7 @@ All land with R0 unless named; each corrects the body, not a footnote.
 | mado `gui_tear_attach.rs:681-684` | a dropped VT-query answer kills reedline-based shells | true of upstream reedline; frost builds against pleme-io's fork, whose painter falls back after a failed cursor report (S reedline `painter.rs:204-224`), so there a dropped answer costs 2 s per cursor report (R crossterm) | R0 |
 | tear-types `MAX_FRAME_BYTES` | 16 MiB is far above any real Request or Response | a 163-column snapshot crosses it at ~1,667 rows (H) | R3 |
 | tear-types `wire.rs:10-11` and `:28-32` | CBOR's cost is negligible; appended variants are safe | byte payloads cost 1.98× the bytes and 60–173× the round trip (F-f); appended *responses* pushed unprompted break old clients | R0, R6, R15 |
+| tear-types `wire.rs` `Response` docs and the workspace `Cargo.toml`'s ciborium note | there is no streaming reply at this layer; the wire is single calls, not a streaming hot path | `Subscribe` turns its connection into a `PaneBytes` stream that carries every byte of output (S daemon `serve_subscription`) | R6 |
 | tear-types `engate_wrap.rs` | attach cost is cells × 4 | it omits scrollback, graphics and encoding: 469,816 B + 9,782 B a row (H) | R0 |
 | tear-types `capability.rs:309-311` | a variant missing from `ALL` fails this assertion | it passes (P) | R0 |
 | tear-types `host_role.rs:68-83` and its test | tear has no sixel: `GridState` implements no `hook`/`put`/`unhook` | `PaneGrid` parses sixel since `e7c6ba7` (S `pane_grid.rs:1039-1061`); what DA1 advertises should describe the viewer's renderer | R43 |

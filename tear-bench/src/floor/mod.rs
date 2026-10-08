@@ -166,6 +166,7 @@ pub fn run_suite(suite: Suite, plan: Plan, receipt: &Receipt) -> io::Result<Floo
         }
     }
     keep(ser::byte_strings(plan), "ser")?;
+    keep(ser::raw_frames(plan), "ser-raw")?;
     keep(timer::sleep_1ms(plan), "timer")?;
     keep(spawn::spawn_openpty(plan), "spawn-openpty")?;
     keep(parse::screen(plan), "screen-parse")?;

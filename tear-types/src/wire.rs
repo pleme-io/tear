@@ -10,11 +10,13 @@
 //!
 //! The codec's cost is NOT negligible here, and this wire is not only
 //! single Request/Response calls: `Response::PaneBytes` streams every
-//! byte of pane output, and a `Vec<u8>` without `serde_bytes` encodes
-//! as a CBOR array of integers — 1.98× the bytes on the wire, and 60×
-//! (1 KiB) to 173× (64 KiB) the encode + decode time of the same
-//! payload as a CBOR byte string (PERFORMANCE.md §2 C2, §3 class 8;
-//! R6 moves byte payloads to byte strings).
+//! byte of pane output. Every byte payload — `PaneBytes`,
+//! `SendKeys.bytes`, `Graphic.data` — therefore travels as a CBOR byte
+//! string through [`crate::byte_string`]: a 64 KiB `PaneBytes` body is
+//! 65,552 B. A bare `Vec<u8>` would encode as a CBOR array of integers,
+//! 1.98× the bytes and 60× (1 KiB) to 173× (64 KiB) the encode + decode
+//! time of the byte string, as every byte payload did before PERFORMANCE.md R6. Either form
+//! decodes on either side, so the change needs no capability (§7 rule 6).
 //!
 //! ## Why this lives in `tear-types`
 //!
@@ -181,6 +183,7 @@ pub enum Request {
     },
     SendKeys {
         id: PaneId,
+        #[serde(with = "crate::byte_string")]
         bytes: Vec<u8>,
     },
     // ── Rendering (Phase 2) ──────────────────────────────────────
@@ -358,10 +361,10 @@ pub enum Request {
     },
 }
 
-/// Reply shape for every [`Request`] variant. The daemon always
-/// emits exactly one Response per Request — there is no streaming
-/// or multi-frame reply at this layer (subscription / event streams
-/// will land in a separate `Notification` type in Phase 2).
+/// Reply shape for every [`Request`] variant. The daemon emits exactly
+/// one Response per Request, except after [`Request::Subscribe`]: that
+/// connection becomes a stream of [`Response::PaneBytes`] frames ending
+/// in [`Response::PaneClosed`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Response {
     Sessions(Vec<TearSession>),
@@ -379,7 +382,7 @@ pub enum Response {
     /// frame per PTY chunk. Bytes are exactly what the PTY master
     /// reader delivered; consumers feed them into their own vte
     /// parser (or into a tear-core PaneGrid client-side).
-    PaneBytes(Vec<u8>),
+    PaneBytes(#[serde(with = "crate::byte_string")] Vec<u8>),
     /// Pushed by the daemon when the subscribed pane is destroyed.
     /// Subscribers should disconnect after observing this.
     PaneClosed(PaneId),

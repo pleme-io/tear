@@ -37,6 +37,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
+serde_bytes = { workspace = true }
 # TearTheme derives every color from the fleet prescribed palette
 # (`ishou_tokens::FleetDefaults::prescribed()` → resolved theme), the
 # SAME source mado reads — so tear and mado converge by construction.

@@ -14,6 +14,7 @@ crate::closed_vocabulary! {
         UnchunkedInput => "unchunked-input",
         StoreLeaseOff => "store-lease-off",
         WakeOff => "wake-off",
+        ArrayEncoder => "array-encoder",
     }
 }
 

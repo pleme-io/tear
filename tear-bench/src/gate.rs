@@ -193,40 +193,72 @@ pub fn control_run(
             "the daemon wrote no probe dump: its build has no bench-probes, so the fault was never armed".into(),
         );
     }
-    let verdicts: Vec<(Cell, Verdict)> = crate::matrix::red_set(control)
-        .into_iter()
-        .map(|cell| {
-            let of_cell: Vec<f64> = values
-                .iter()
-                .filter(|(c, _)| *c == cell)
-                .map(|(_, v)| *v)
-                .collect();
-            let v = derive(
-                cell.budget(),
-                &of_cell,
-                &FloorSet::default(),
-                &Preconditions::met(1),
-            );
-            (cell, v)
+    grade_control(control, &values, &FloorSet::default(), &Ok(()))
+}
+
+#[must_use]
+pub fn grade_control(
+    control: Control,
+    values: &[(Cell, f64)],
+    floors: &FloorSet,
+    quiet: &Result<(), String>,
+) -> (ControlRun, String) {
+    let mut graded = Vec::new();
+    let mut unproven = Vec::new();
+    for cell in crate::matrix::red_set(control) {
+        let budget = cell.budget();
+        let pre = Preconditions {
+            quiet: if matches!(budget, Budget::Floor { .. }) {
+                quiet.clone()
+            } else {
+                Ok(())
+            },
+            min_samples: min_samples(budget),
+            ..Preconditions::met(1)
+        };
+        let of_cell: Vec<f64> = values
+            .iter()
+            .filter(|(c, _)| *c == cell)
+            .map(|(_, v)| *v)
+            .collect();
+        match (derive(budget, &of_cell, floors, &pre), budget) {
+            (Verdict::Blind { reason }, Budget::Floor { .. }) => unproven.push(format!(
+                "{} read blind with {} on: {reason}",
+                cell.name(),
+                control.name()
+            )),
+            (v, _) => graded.push((cell, v)),
+        }
+    }
+    let read = graded
+        .iter()
+        .map(|(cell, v)| {
+            format!(
+                "{} read {} with {} on: {v:?}",
+                cell.name(),
+                v.name(),
+                control.name()
+            )
+        })
+        .collect::<Vec<_>>();
+    if unproven.is_empty() {
+        return match crate::verdict::audit_control(control, &graded) {
+            Ok(()) => (ControlRun::Reddened, read.join("; ")),
+            Err(e) => (ControlRun::Failed, e),
+        };
+    }
+    let failed: Vec<String> = graded
+        .iter()
+        .filter_map(|(cell, v)| {
+            crate::verdict::reddened(cell.budget(), v)
+                .err()
+                .map(|e| format!("{} with {} on: {e}", cell.name(), control.name()))
         })
         .collect();
-    match crate::verdict::audit_control(control, &verdicts) {
-        Ok(()) => (
-            ControlRun::Reddened,
-            verdicts
-                .iter()
-                .map(|(cell, v)| {
-                    format!(
-                        "{} read {} with {} on",
-                        cell.name(),
-                        v.name(),
-                        control.name()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; "),
-        ),
-        Err(e) => (ControlRun::Failed, e),
+    if failed.is_empty() {
+        (ControlRun::Blind, [unproven, read].concat().join("; "))
+    } else {
+        (ControlRun::Failed, [failed, unproven].concat().join("; "))
     }
 }
 
@@ -346,24 +378,61 @@ pub fn split_control(h: &Harness) -> (ControlRun, String) {
         )
         .detail(detail),
     );
-    let cell = Cell::new(Case::C9, Metric::Loss);
-    let v = derive(
-        cell.budget(),
-        &[lost as f64],
+    grade_control(
+        control,
+        &[(Cell::new(Case::C9, Metric::Loss), lost as f64)],
         &FloorSet::default(),
-        &Preconditions::met(1),
-    );
-    match crate::verdict::audit_control(control, &[(cell, v.clone())]) {
-        Ok(()) => (
-            ControlRun::Reddened,
-            format!(
-                "{} read {} with {} on",
-                cell.name(),
-                v.name(),
-                control.name()
+        &Ok(()),
+    )
+}
+
+pub fn codec_control(h: &Harness, quiet: &Result<(), String>) -> (ControlRun, String) {
+    let control = Control::ArrayEncoder;
+    if !cfg!(feature = "bench-probes") {
+        return (
+            ControlRun::Blind,
+            "this tearbench has no bench-probes, so it cannot arm the array encoder".into(),
+        );
+    }
+    let plan = Plan {
+        scale: 1,
+        band: Band::Interactive,
+    };
+    let floor = match floor::ser::raw_frames(plan) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                ControlRun::Failed,
+                format!("the raw-frame floor errored: {e}"),
+            );
+        }
+    };
+    let _ = crate::seam::apply_process_band(Band::Default);
+    let tag = Tag::Control(control);
+    for (i, v) in floor.ns.iter().enumerate() {
+        tag.emit(
+            h,
+            Sample::new(
+                &format!("floor:{}", floor.floor.name()),
+                &floor.variant,
+                floor.floor.name(),
+                i,
+                *v,
+                Unit::Ns,
             ),
-        ),
-        Err(e) => (ControlRun::Failed, e),
+        );
+    }
+    let mut floors = FloorSet::default();
+    floors.add(floor.floor, floor.ns.iter().copied());
+    arm_client(&[control]);
+    let values = cases::wire(h, tag).and_then(|mut v| {
+        v.extend(cases::codec(h, tag, cases::CODEC_SAMPLES / 4)?);
+        Ok(v)
+    });
+    arm_client(&[]);
+    match values {
+        Ok(values) => grade_control(control, &values, &floors, quiet),
+        Err(e) => (ControlRun::Failed, format!("the control run errored: {e}")),
     }
 }
 
@@ -575,54 +644,7 @@ fn window_control(
             .map(|s| Sample { cell: None, ..s })
             .collect(),
     );
-    let mut verdicts = Vec::new();
-    for cell in crate::matrix::red_set(control) {
-        let budget = cell.budget();
-        let pre = Preconditions {
-            quiet: if matches!(budget, Budget::Floor { .. }) {
-                quiet.clone()
-            } else {
-                Ok(())
-            },
-            min_samples: min_samples(budget),
-            ..Preconditions::met(1)
-        };
-        let of_cell: Vec<f64> = values
-            .iter()
-            .filter(|(c, _)| *c == cell)
-            .map(|(_, v)| *v)
-            .collect();
-        let v = derive(budget, &of_cell, floors, &pre);
-        if let Verdict::Blind { reason } = &v {
-            return (
-                ControlRun::Blind,
-                format!(
-                    "{} read blind with {} on: {reason}",
-                    cell.name(),
-                    control.name()
-                ),
-            );
-        }
-        verdicts.push((cell, v));
-    }
-    match crate::verdict::audit_control(control, &verdicts) {
-        Ok(()) => (
-            ControlRun::Reddened,
-            verdicts
-                .iter()
-                .map(|(cell, v)| {
-                    format!(
-                        "{} read {} with {} on: {v:?}",
-                        cell.name(),
-                        v.name(),
-                        control.name()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; "),
-        ),
-        Err(e) => (ControlRun::Failed, e),
-    }
+    grade_control(control, &values, floors, quiet)
 }
 
 pub fn window_controls(
@@ -691,7 +713,9 @@ pub fn structural(
     floors: &FloorSet,
     quiet: &Result<(), String>,
 ) -> Structural {
-    step(h, "wire", cases::wire(h));
+    step(h, "wire", cases::wire(h, Tag::Cells).map(drop));
+    let (codec_run, codec_detail) = codec_control(h, quiet);
+    report_control(h, Control::ArrayEncoder, codec_run, &codec_detail);
     step(h, "allocations", cases::allocations(h).map(drop));
     step(h, "split", cases::split(h).map(drop));
     let (split_run, split_detail) = split_control(h);
@@ -700,6 +724,7 @@ pub fn structural(
     let (run, detail) = audit_control(h, bands);
     report_control(h, Control::AuditEveryKey, run, &detail);
     let mut controls = vec![
+        (Control::ArrayEncoder, codec_run, codec_detail),
         (Control::OldSplitter, split_run, split_detail),
         (Control::AuditEveryKey, run, detail),
     ];
@@ -772,6 +797,11 @@ pub fn structural(
 }
 
 pub fn timing(h: &Harness, bands: &mut Vec<String>) {
+    step(
+        h,
+        "codec",
+        cases::codec(h, Tag::Cells, cases::CODEC_SAMPLES).map(drop),
+    );
     let embedded = Rig::embedded("embedded");
     step(h, "echo-embedded", cases::echo(h, &embedded));
     step(h, "flood-embedded", cases::flood(h, &embedded, 3).map(drop));

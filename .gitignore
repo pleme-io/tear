@@ -5,3 +5,5 @@
 .envrc.local
 Cargo.lock.bak
 Cargo.build-spec.json
+/tear-bench/compat/target
+/tear-bench/compat/Cargo.lock

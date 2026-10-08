@@ -136,11 +136,14 @@ unicode-width = "0.2"
 # ── RPC wire format (tear-daemon ↔ tear-client) ─────────────────────
 # ciborium (CBOR / RFC 8949) — self-describing binary serde format
 # that handles internally-tagged enums (LayoutNode uses
-# `#[serde(tag = "kind")]` so bincode is off the table). Fast enough
-# for IPC (the wire is single Request/Response per call, not a
-# streaming hot path) and the on-wire bytes stay debug-inspectable
-# via `cbor-diag` / `pycbor`.
+# `#[serde(tag = "kind")]` so bincode is off the table), and the on-wire
+# bytes stay debug-inspectable via `cbor-diag` / `pycbor`. The wire is
+# not only single calls: `PaneBytes` streams every byte of pane output,
+# so byte payloads travel as CBOR byte strings through serde_bytes
+# (`tear_types::byte_string`), one header a frame rather than one integer
+# a byte (PERFORMANCE.md R6).
 ciborium = "0.2"
+serde_bytes = "0.11"
 
 # ── unit conversions for layout / dimensions ────────────────────────
 # `socket` is for the peer-credential read that gives shutai its attested

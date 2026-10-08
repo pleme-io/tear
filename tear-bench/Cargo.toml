@@ -39,7 +39,7 @@ clap = { workspace = true }
 portable-pty = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_bytes = "0.11"
+serde_bytes = { workspace = true }
 ciborium = { workspace = true }
 nix = { workspace = true, features = ["fs", "process", "signal", "term", "socket", "time"] }
 libc = "0.2"
@@ -47,3 +47,4 @@ libc = "0.2"
 [dev-dependencies]
 trybuild = "1"
 tamotsu = { workspace = true }
+blake3 = { workspace = true }

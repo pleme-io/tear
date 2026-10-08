@@ -356,6 +356,7 @@ fn note(h: &Harness, name: &str, r: std::io::Result<()>) -> bool {
 
 const STANDALONE: &[&str] = &[
     "wire",
+    "codec",
     "ptyraw",
     "startup",
     "restart",
@@ -384,7 +385,8 @@ fn control_case(name: &str, (run, detail): (gate::ControlRun, String)) -> std::i
 
 fn standalone_case(h: &Harness, v: Variant, name: &str) -> std::io::Result<()> {
     match name {
-        "wire" => cases::wire(h),
+        "wire" => cases::wire(h, Tag::Cells).map(drop),
+        "codec" => cases::codec(h, Tag::Cells, cases::CODEC_SAMPLES).map(drop),
         "ptyraw" => cases::ptyraw(h, 3),
         "startup" => cases::startup(h, v, 5),
         "restart" => cases::restart(h, v, 8_388_608, 3),

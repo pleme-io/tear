@@ -59,6 +59,7 @@ pub struct Graphic {
     pub params: String,
     /// The payload exactly as transmitted. **Never decoded here** — see
     /// the module docs.
+    #[serde(with = "crate::byte_string")]
     pub data: Vec<u8>,
     /// Cursor row when the sequence completed, so a renderer can place it
     /// without re-deriving where the program thought it was.

@@ -2992,6 +2992,7 @@ checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
 name = "tear-bench"
 version = "0.1.39"
 dependencies = [
+ "blake3",
  "ciborium",
  "clap",
  "kotae",
@@ -3142,6 +3143,7 @@ dependencies = [
  "kukaku",
  "okiba",
  "serde",
+ "serde_bytes",
  "serde_json",
  "thiserror 2.0.19",
  "trybuild",

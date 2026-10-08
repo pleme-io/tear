@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "cbaecd8fffd96910c014b9ea2d86c5a9b9dae6b3bccfe863d687d936fa2b5519",
+  "cargo_lock_sha256": "61ec114d7c603a52695a3ce50797d561f756bcc588a3071982370f5871fd66ba",
   "manifest_sha256": {
-    "Cargo.toml": "f2cdf9203339393b8b2f60692435ea9f3768db11e986eee6c37b911c620dd0ec",
+    "Cargo.toml": "9ae2dc4214e280b6d4cbe48136c58706495a89544359f48a4586c8d2aa17ef14",
     "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
     "makimono/Cargo.toml": "79d7fd484a7567980cbf9206d15cd5a11b75b24484651dc32e22056cca225f4d",
     "praca/Cargo.toml": "8a65097e5c25ead6f7c9e53f1fac5aeccccb24bb6d0d967e258b3246b33855f4",
     "tamotsu/Cargo.toml": "0d17c9fcfbb7fa777f1e67e8b7d2027506c68345cdabc46ea4be944958a4540c",
-    "tear-bench/Cargo.toml": "d742342f17c44bd4b1ee9192e902984a64e80234a96878056838857c148d3ab5",
+    "tear-bench/Cargo.toml": "db9b436df78108269b4892641718b9654d9648d3c1f9c44c710f7e224d971d7f",
     "tear-client/Cargo.toml": "8526719e00619c03278ec86b2f8ae00d892292dea5e8662c4655615268c3aed5",
     "tear-config/Cargo.toml": "36b5d7b438eba05504078bbd3267d7258dc93ccd954f9e931b142e97b3cd5a22",
     "tear-core/Cargo.toml": "7ff90004235276c2c2b69a008108107cec42e60d2bd763cde95c07dd279af16e",
     "tear-daemon/Cargo.toml": "61b011a40a6acafb2521a5919f2191800bcd8a01dbd3a569d43f4835e95f929c",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
-    "tear-types/Cargo.toml": "b3f9fbb61dc1f4ae398dec88a0df29d9eb233999394560361f800c78fc73a84a",
+    "tear-types/Cargo.toml": "4f100a287034893811eb1e7f022abc314aa97b6abc5591f787c47abdd28d2f45",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
     "tear/Cargo.toml": "dbfc2439a63e13bddc20511f258a8e963366c80fb1954838aed48fc4c4c2e823"
   },
@@ -9493,6 +9493,16 @@
             "features": [
               "derive"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_bytes",
+            "package_key": "serde_bytes-0.11.19",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,

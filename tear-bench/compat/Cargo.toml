@@ -1,0 +1,16 @@
+[package]
+name = "tear-bench-compat"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Writes tear-bench's cross-version fixture: every byte field encoded by the published tear-types and by this tree, each read back by the other."
+
+[workspace]
+
+[dependencies]
+tear-types = { path = "../../tear-types" }
+tear-types-published = { package = "tear-types", version = "=0.1.35" }
+blake3 = "1"
+ciborium = "=0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

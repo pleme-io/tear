@@ -10,8 +10,10 @@ use tear_client::Transport;
 use tear_config::SessionDurability;
 use tear_types::{Durability, HostRole};
 
-const PENDING_CELLS: usize = 60;
+const PENDING_CELLS: usize = 59;
 const BUDGETED_CELLS: &[(Case, Metric)] = &[
+    (Case::C2, Metric::WireBytes),
+    (Case::C2, Metric::Encodes),
     (Case::C3, Metric::Rpcs),
     (Case::C3, Metric::Present),
     (Case::C3, Metric::Loss),
@@ -42,7 +44,10 @@ fn the_matrix_declares_all_thirteen_cases_with_their_sub_variants() {
 
 #[test]
 fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
-    assert_eq!(LANDED, &[Rung::R1, Rung::R3, Rung::R4, Rung::R7, Rung::R10]);
+    assert_eq!(
+        LANDED,
+        &[Rung::R1, Rung::R3, Rung::R4, Rung::R6, Rung::R7, Rung::R10]
+    );
     let mut pending = 0;
     let mut budgeted = Vec::new();
     for cell in cells() {
@@ -67,6 +72,12 @@ fn every_cell_is_pending_or_not_applicable_until_its_rung_lands() {
     );
     for (case, metric) in BUDGETED_CELLS {
         let want = match (case, metric) {
+            (Case::C2, Metric::WireBytes) => Budget::Bytes { max: 1_044 },
+            (Case::C2, Metric::Encodes) => Budget::Floor {
+                floor: Floor::SerializeRaw,
+                stat: Stat::P50,
+                k: 3.0,
+            },
             (Case::C3, Metric::Present) => Budget::Floor {
                 floor: Floor::WakeRunLoop,
                 stat: Stat::P50,
@@ -415,4 +426,69 @@ fn r4_s_controls_redden_exactly_its_two_cells() {
         orphaned.is_red(),
         "a pane no daemon takes input through is red, not within: {orphaned:?}"
     );
+}
+
+#[test]
+fn integer_arrays_redden_exactly_c2_wire_bytes_and_encodes() {
+    let pre = Preconditions::met(1);
+    let mut floors = FloorSet::default();
+    floors.add(Floor::SerializeRaw, [1_666.7; 20]);
+    let bytes = Cell::new(Case::C2, Metric::WireBytes);
+    let codec = Cell::new(Case::C2, Metric::Encodes);
+    assert_eq!(red_set(Control::ArrayEncoder), vec![bytes, codec]);
+    assert_eq!(Control::ArrayEncoder.rung(), Rung::R6);
+    assert_eq!(Control::ArrayEncoder.kind(), ControlKind::Fault);
+    let read = |cell: Cell, v: &[f64]| derive(cell.budget(), v, &floors, &pre);
+    let byte_strings = [
+        (bytes, read(bytes, &[1_042.0])),
+        (codec, read(codec, &[4_175.0; 20])),
+    ];
+    assert!(
+        byte_strings
+            .iter()
+            .all(|(_, v)| matches!(v, Verdict::Within { .. }))
+    );
+    let arrays = [
+        (bytes, read(bytes, &[2_042.0])),
+        (codec, read(codec, &[724_729.2; 20])),
+    ];
+    assert!(arrays.iter().all(|(_, v)| v.is_red()), "{arrays:?}");
+    assert!(tear_bench::verdict::audit_control(Control::ArrayEncoder, &arrays).is_ok());
+    assert!(tear_bench::verdict::audit_control(Control::ArrayEncoder, &byte_strings).is_err());
+    let slower_but_inside_the_noise = [arrays[0].clone(), (codec, read(codec, &[6_500.0; 20]))];
+    assert!(slower_but_inside_the_noise[1].1.is_red());
+    assert!(
+        tear_bench::verdict::audit_control(Control::ArrayEncoder, &slower_but_inside_the_noise)
+            .is_err(),
+        "a timing control must clear the noise band, not merely read over"
+    );
+    let no_floor = derive(codec.budget(), &[4_175.0; 20], &FloorSet::default(), &pre);
+    assert!(matches!(no_floor, Verdict::Blind { .. }));
+}
+
+#[test]
+fn a_loud_host_still_grades_a_control_s_count_cells() {
+    use tear_bench::gate::{ControlRun, grade_control};
+    let mut floors = FloorSet::default();
+    floors.add(Floor::SerializeRaw, [1_666.7; 20]);
+    let bytes = Cell::new(Case::C2, Metric::WireBytes);
+    let codec = Cell::new(Case::C2, Metric::Encodes);
+    let run = |wire: f64, ns: f64, quiet: Result<(), String>| {
+        let mut values = vec![(bytes, wire)];
+        values.extend([(codec, ns); 20]);
+        grade_control(Control::ArrayEncoder, &values, &floors, &quiet)
+    };
+    let loud = || Err("uds-one-way 0.55x the reference".to_string());
+    let (broken, why) = run(1_042.0, 724_729.2, loud());
+    assert_eq!(broken, ControlRun::Failed, "{why}");
+    assert!(why.contains("C2/wire-bytes"), "{why}");
+    let (working, detail) = run(2_042.0, 724_729.2, loud());
+    assert_eq!(working, ControlRun::Blind, "{detail}");
+    assert!(
+        detail.contains("C2/wire-bytes read over") && detail.contains("C2/encodes read blind"),
+        "{detail}"
+    );
+    assert_eq!(run(2_042.0, 724_729.2, Ok(())).0, ControlRun::Reddened);
+    assert_eq!(run(1_042.0, 724_729.2, Ok(())).0, ControlRun::Failed);
+    assert_eq!(run(2_042.0, 4_175.0, Ok(())).0, ControlRun::Failed);
 }

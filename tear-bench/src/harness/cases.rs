@@ -1894,20 +1894,23 @@ pub fn ptyraw(h: &Harness, reps: usize) -> io::Result<()> {
     Ok(())
 }
 
-pub fn wire(h: &Harness) -> io::Result<()> {
+pub fn wire(h: &Harness, tag: Tag) -> io::Result<Vec<(Cell, f64)>> {
     let file = h.files().join("hist_1048576.txt");
     files::log_file(&file, 1_048_576)?;
     let text = std::fs::read(&file)?;
+    let cell = Cell::new(Case::C2, Metric::WireBytes);
+    let mut out = Vec::new();
     for chunk in [1usize, 16, 1_024, 4_096, 65_536] {
         let payload = text[..chunk.min(text.len())].to_vec();
         let mut enc = Vec::new();
         write_msg(&mut enc, &Response::PaneBytes(payload.clone()))?;
+        let per_kib = enc.len() as f64 * 1024.0 / payload.len() as f64;
         let mut s = Sample::new(
             "wire",
             "cbor",
             &format!("pane-bytes-{chunk}"),
             0,
-            enc.len() as f64 * 1024.0 / payload.len() as f64,
+            per_kib,
             Unit::Ratio,
         )
         .detail(format!(
@@ -1916,11 +1919,48 @@ pub fn wire(h: &Harness) -> io::Result<()> {
             payload.len()
         ));
         if chunk == 1_024 {
-            s = s.cell(Cell::new(Case::C2, Metric::WireBytes));
+            s = s.cell(cell);
+            out.push((cell, per_kib));
         }
-        h.emit(s);
+        tag.emit(h, s);
     }
-    Ok(())
+    Ok(out)
+}
+
+pub const CODEC_SAMPLES: usize = 400;
+
+pub fn codec(h: &Harness, tag: Tag, n: usize) -> io::Result<Vec<(Cell, f64)>> {
+    use crate::floor::ser::{FRAME_BYTES, payload, timed};
+    crate::seam::apply_process_band(crate::matrix::Band::Interactive)?;
+    let msg = Response::PaneBytes(payload(FRAME_BYTES));
+    let body = tear_types::wire::encode(&msg)?.len();
+    let measured = timed(FRAME_BYTES, n, || {
+        let e = tear_types::wire::encode(std::hint::black_box(&msg))?;
+        let back: Response = ciborium::de::from_reader(e.as_slice())
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        std::hint::black_box(back);
+        Ok(())
+    });
+    crate::seam::apply_process_band(crate::matrix::Band::Default)?;
+    let cell = Cell::new(Case::C2, Metric::Encodes);
+    let mut out = Vec::with_capacity(n);
+    for (i, v) in measured?.into_iter().enumerate() {
+        tag.emit(
+            h,
+            Sample::new(
+                "codec",
+                "tear-types",
+                "pane-bytes-64KiB-round-trip",
+                i,
+                v,
+                Unit::Ns,
+            )
+            .cell(cell)
+            .detail(format!("{body} B body for {FRAME_BYTES} B of output")),
+        );
+        out.push((cell, v));
+    }
+    Ok(out)
 }
 
 pub fn replay_file(h: &Harness, path: &Path) -> io::Result<()> {

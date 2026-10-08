@@ -50,7 +50,7 @@ crate::bench_matrix! {
         controls: &[],
     },
     Case::C2 => Row {
-        receipt: "§2 C2: H-a (n=3,000), H-b, H-d, F-a, F-f",
+        receipt: "§2 C2: H-a (n=3,000), H-b, H-d, F-a, F-f; wire-bytes: wire bytes per KiB of output in a 1 KiB PaneBytes frame of the harness's log text with its 4 B header, 2,042 as integer arrays (2,050 for F-f's payload) and 1,042 as a byte string (R6); encodes: a 64 KiB PaneBytes encode + decode in tear-types' own encoder, 724.7 µs as arrays against the raw lean frame's 1.67 µs, 434×, and 2.5× as a byte string (F-f)",
         budgets: Budgets {
             echo_warm: pending(Rung::R2, "23.3 µs p50 at PRI 31; 58.1 µs with the daemon at PRI 4", "H-b; floor ~19 µs = 2 warm hops + PTY echo (F-e, F-b); target ≤2×"),
             echo_gap: na("report-only: 156.0 µs p50 (H-b); run-to-run spread 2.39× (§6)"),
@@ -71,11 +71,11 @@ crate::bench_matrix! {
             memory: ELSEWHERE,
             keyframe: ELSEWHERE,
             rpcs: ELSEWHERE,
-            wire_bytes: pending(Rung::R21, "1.98 wire bytes per output byte under a 64 MiB flood", "H, F-f; floor 1.00; target ≤1.02 after R6 (1,038 B per 1 KiB frame, F-f), ≤1.001 after R21"),
+            wire_bytes: Budget::Bytes { max: 1_044 },
             frames: ELSEWHERE,
             flushes: NO_JOURNAL,
             parses: ELSEWHERE,
-            encodes: ELSEWHERE,
+            encodes: Budget::Floor { floor: Floor::SerializeRaw, stat: Stat::P50, k: 3.0 },
             allocations: ELSEWHERE,
             idle_ticks: MADO,
             idle_wakeups: ELSEWHERE,
@@ -89,7 +89,7 @@ crate::bench_matrix! {
         },
         controls: &[
             Red { control: Control::BandBackground, metrics: &[Metric::Throughput, Metric::EchoWarm] },
-            Red { control: Control::ArrayEncoder, metrics: &[Metric::WireBytes] },
+            Red { control: Control::ArrayEncoder, metrics: &[Metric::WireBytes, Metric::Encodes] },
         ],
     },
     Case::C3 => Row {

@@ -15,7 +15,7 @@ tear_types::closed_vocabulary! {
     }
 }
 
-pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R4, Rung::R7, Rung::R10];
+pub const LANDED: &[Rung] = &[Rung::R1, Rung::R3, Rung::R4, Rung::R6, Rung::R7, Rung::R10];
 
 #[must_use]
 pub const fn landed(rung: Rung) -> bool {
@@ -190,6 +190,7 @@ tear_types::closed_vocabulary! {
         FlushOrdered => "flush-ordered",
         FlushHandedToDevice => "flush-handed-to-device",
         SerializeBytes => "serialize-bytes",
+        SerializeRaw => "serialize-raw",
         Timer => "timer",
         SpawnOpenpty => "spawn-openpty",
         ScreenParse => "screen-parse",
@@ -395,7 +396,7 @@ metrics! {
     frames => Frames, "frames", "frames per MiB under a saturating flood";
     flushes => Flushes, "flushes", "flushes or audit writes on the byte or key path";
     parses => Parses, "parses", "VT parses per output byte";
-    encodes => Encodes, "encodes", "encodes per chunk, or daemon CPU per extra subscriber";
+    encodes => Encodes, "encodes", "encodes per chunk, a 64 KiB PaneBytes encode + decode (p50), or daemon CPU per extra subscriber";
     allocations => Allocations, "allocations", "allocations per KiB parsed";
     idle_ticks => IdleTicks, "idle-ticks", "GUI loop ticks per idle second";
     idle_wakeups => IdleWakeups, "idle-wakeups", "context switches or timer wakeups per idle second";
@@ -451,8 +452,9 @@ impl Control {
             | Control::PaneFatePoll
             | Control::UdsBufferOsDefault
             | Control::TwoWriteFraming => ControlKind::KeptConfiguration,
-            Control::ArrayEncoder | Control::OldSplitter => ControlKind::BenchOnly,
-            Control::MuteSink
+            Control::OldSplitter => ControlKind::BenchOnly,
+            Control::ArrayEncoder
+            | Control::MuteSink
             | Control::LeaseOff
             | Control::SnapshotHistoryAll
             | Control::UnboundedSubscriberQueue
@@ -505,7 +507,9 @@ impl Control {
             Control::PaneFatePoll => {
                 "mado's tear.pane_fate: poll, one get_pane per idle tick as before R10 (S mado gui_tear_attach.rs:1372 at ec50bfb)"
             }
-            Control::ArrayEncoder => "byte payloads as CBOR integer arrays (S tear-types wire.rs)",
+            Control::ArrayEncoder => {
+                "byte payloads as CBOR integer arrays, 2,042 B per 1 KiB frame of the harness's log text (2,050 for F-f's payload) and 724.7 µs per 64 KiB round trip (F-f): the only behaviour before R6; the fault restores it in tear-types' own encoder"
+            }
             Control::UdsBufferOsDefault => "8 KiB AF_UNIX buffers (net.local.stream.sendspace)",
             Control::TwoWriteFraming => "a length write, then a body write (S wire.rs:523-533)",
             Control::MuteSink => {
@@ -534,7 +538,7 @@ impl Control {
                 "a subscription dials a bare connection, so a daemon that requires a token refuses it (S tear-client lib.rs:525-528): today's only behaviour"
             }
             Control::UnchunkedInput => {
-                "SendKeys carries any input in one frame, so input past ~8.1 MiB crosses the 16 MiB cap and is lost (W): today's only behaviour"
+                "SendKeys carries any input in one frame, so input that encodes past the 16 MiB cap is lost: past ~8.1 MiB while bytes were integer arrays (W), past ~16 MiB since R6; today's only behaviour"
             }
             Control::OldSplitter => {
                 "the pre-R7 APC scanner hands vte each read's tail, and vte 0.15 drops what follows a completed partial character: 3 of 3 corpora lose one (G)"
@@ -957,5 +961,6 @@ product_rows! {
         tear_types::probes::Fault::UnchunkedInput => Control::UnchunkedInput,
         tear_types::probes::Fault::StoreLeaseOff => Control::StoreLeaseOff,
         tear_types::probes::Fault::WakeOff => Control::WakeOff,
+        tear_types::probes::Fault::ArrayEncoder => Control::ArrayEncoder,
     }
 }
