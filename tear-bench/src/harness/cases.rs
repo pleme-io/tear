@@ -1652,8 +1652,8 @@ pub fn stall(
             }
         })?;
     thread::sleep(Duration::from_secs(1));
-    let j0 = d.journal_bytes();
     let r0 = received.load(Ordering::SeqCst);
+    let j0 = d.journal_bytes();
     kill(Pid::from_raw(d.pid), Signal::SIGSTOP).map_err(io::Error::from)?;
     thread::sleep(stall_for);
     kill(Pid::from_raw(d.pid), Signal::SIGCONT).map_err(io::Error::from)?;

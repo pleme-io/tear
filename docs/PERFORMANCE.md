@@ -818,7 +818,13 @@ negative control is a fault injector compiled only for tests (§6).
   disk was full); its sink path and holder protocol differ from v0.1.34's
   only in formatting and probe hooks (S, `git diff -w v0.1.28`), and its
   cell reads `Blind` until a run names a build. Load averages were high
-  throughout, and none of these is a timing.
+  throughout, and none of these is a timing. The stall case now reads its
+  delivery baseline before its journal baseline: read the other way round, as
+  it landed here, a chunk journaled and delivered between the two reads
+  counted as lost — 1,024 B (4,133,888 delivered while the journal grew
+  4,134,912) in one of R6's structural runs at load 11, the run's only red
+  cell. In this order a loss is under-counted by what was in flight at the
+  baseline and never invented.
 
 #### R17 · Forward first, flush beside
 *Destination for where the flush runs · after R1 · the default primitive,
