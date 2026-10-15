@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,6 +16,7 @@ use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
 use crate::args::HoldArgs;
+use crate::note::note;
 use crate::proto::{FromHolder, HolderStatus, PROTO, ToHolder, read_to_holder, write_from_holder};
 use crate::sink::Sink;
 
@@ -76,8 +78,8 @@ impl State {
         }
         #[cfg(feature = "bench-probes")]
         tear_types::probes::bump(tear_types::probes::Counter::HolderSinksShut, 1);
-        eprintln!(
-            "tamotsu: a write to {} failed; its connection is shut down both ways, so the daemon re-attaches by offset",
+        note!(
+            "a write to {} failed; its connection is shut down both ways, so the daemon re-attaches by offset",
             who(failed.incarnation)
         );
         drop(failed);
@@ -91,12 +93,12 @@ fn retire_displaced(previous: Attached, by: Option<u64>) {
             let _ = sink.send(&FromHolder::Displaced { by });
             #[cfg(feature = "bench-probes")]
             tear_types::probes::bump(tear_types::probes::Counter::HolderDisplaced, 1);
-            eprintln!("tamotsu: incarnation {was} Displaced by incarnation {by}");
+            note!("incarnation {was} Displaced by incarnation {by}");
         }
         (Some(_), _) => drop(previous),
         (None, _) => {
-            eprintln!(
-                "tamotsu: a daemon that declares no incarnation was replaced by {}; it is left attached and silent, as a second attach always left it",
+            note!(
+                "a daemon that declares no incarnation was replaced by {}; it is left attached and silent, as a second attach always left it",
                 who(by)
             );
             previous.sink.leave_silent();
@@ -132,6 +134,7 @@ struct Holder {
     child_pid: Option<u32>,
     human_end: AtomicBool,
     pump_eof: AtomicBool,
+    journal_failing: AtomicBool,
     finalized: AtomicBool,
     next_conn: AtomicU64,
 }
@@ -180,6 +183,7 @@ pub fn run(args: HoldArgs) -> anyhow::Result<()> {
         child_pid: child.process_id(),
         human_end: AtomicBool::new(false),
         pump_eof: AtomicBool::new(false),
+        journal_failing: AtomicBool::new(false),
         finalized: AtomicBool::new(false),
         next_conn: AtomicU64::new(1),
     });
@@ -239,7 +243,12 @@ impl Holder {
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => self.ingest(&buf[..n]),
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    if panic::catch_unwind(AssertUnwindSafe(|| self.ingest(chunk))).is_err() {
+                        note!("ingesting {n} bytes panicked; the pump keeps draining the pty");
+                    }
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => break,
             }
@@ -250,9 +259,18 @@ impl Holder {
     fn ingest(&self, bytes: &[u8]) {
         let mut st = self.state.lock();
         let at = st.journal.end();
-        if let Err(e) = st.journal.append(bytes) {
-            eprintln!("tamotsu: journal append failed ({e}); bytes stay live but are not durable");
-            st.journal.note_lost(bytes.len() as u64);
+        match st.journal.append(bytes) {
+            Ok(()) => {
+                if self.journal_failing.swap(false, Ordering::AcqRel) {
+                    note!("journal appends recovered; bytes are durable again");
+                }
+            }
+            Err(e) => {
+                if !self.journal_failing.swap(true, Ordering::AcqRel) {
+                    note!("journal append failed ({e}); bytes stay live but are not durable");
+                }
+                st.journal.note_lost(bytes.len() as u64);
+            }
         }
         let failed = st.attached.as_mut().is_some_and(|a| {
             a.sink
@@ -377,15 +395,15 @@ impl Holder {
                 let _ = sink.send(&FromHolder::Displaced { by });
                 #[cfg(feature = "bench-probes")]
                 tear_types::probes::bump(tear_types::probes::Counter::HolderDisplaced, 1);
-                eprintln!(
-                    "tamotsu: refused {}: Displaced by incarnation {by}",
+                note!(
+                    "refused {}: Displaced by incarnation {by}",
                     who(incarnation)
                 );
                 return Writer::Silent;
             }
             Admission::LeaveSilent { holding } => {
-                eprintln!(
-                    "tamotsu: {} attached while incarnation {holding} holds the pane; it is left attached and silent",
+                note!(
+                    "{} attached while incarnation {holding} holds the pane; it is left attached and silent",
                     who(incarnation)
                 );
                 sink.leave_silent();
@@ -395,8 +413,8 @@ impl Holder {
         }
         let _ = st.journal.sync();
         if let Err(e) = replay(&st.journal, &mut sink, from) {
-            eprintln!(
-                "tamotsu: the replay to {} failed ({e}); its connection is shut down both ways",
+            note!(
+                "the replay to {} failed ({e}); its connection is shut down both ways",
                 who(incarnation)
             );
             return Writer::Silent;
@@ -411,10 +429,7 @@ impl Holder {
         });
         #[cfg(feature = "bench-probes")]
         tear_types::probes::bump(tear_types::probes::Counter::HolderAttaches, 1);
-        eprintln!(
-            "tamotsu: attached from offset {from} for {}",
-            who(incarnation)
-        );
+        note!("attached from offset {from} for {}", who(incarnation));
         if let Some(previous) = previous {
             retire_displaced(previous, incarnation);
         }
