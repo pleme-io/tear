@@ -1526,7 +1526,28 @@ impl MultiplexerControl for InProcess {
         if let Some(grid) = self.grids.lock().get(&id).cloned() {
             grid.lock().resize(cols as usize, rows as usize);
         }
+        self.record_absolute_size(id, cols, rows);
         Ok(())
+    }
+}
+
+impl InProcess {
+    fn record_absolute_size(&self, id: PaneId, cols: u16, rows: u16) {
+        let mut r = self.registry.write();
+        let Some((sid, wid)) = r.locate_pane(id) else {
+            return;
+        };
+        let Some(s) = r.sessions.get_mut(&sid) else {
+            return;
+        };
+        if let Some(p) = s.panes.get_mut(&id) {
+            p.size_cells = (cols.max(1), rows.max(1));
+        }
+        if let Some(w) = s.windows.get_mut(&wid)
+            && w.layout.panes().len() == 1
+        {
+            w.size_cells = (cols.max(1), rows.max(1));
+        }
     }
 }
 
@@ -3008,6 +3029,56 @@ mod tests {
         assert_eq!(w.active_pane, origin);
         assert!(!s.panes.contains_key(&new));
         w.layout.validate().unwrap();
+    }
+
+    fn grid_dims(inproc: &InProcess, pane: PaneId) -> (usize, usize) {
+        let snap = inproc.pane_snapshot(pane).unwrap();
+        (snap.cols, snap.rows)
+    }
+
+    #[test]
+    fn an_absolute_resize_is_recorded_on_the_pane_and_its_window() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("sized", "/bin/sh").unwrap();
+        let pane = active_pane(&inproc, sid);
+        inproc.pane_resize_absolute(pane, 120, 40).unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        assert_eq!(s.panes[&pane].size_cells, (120, 40));
+        assert_eq!(s.windows[&s.active_window].size_cells, (120, 40));
+        assert_eq!(grid_dims(&inproc, pane), (120, 40));
+    }
+
+    #[test]
+    fn a_layout_event_after_an_absolute_resize_keeps_the_resized_geometry() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("sticky", "/bin/sh").unwrap();
+        let origin = active_pane(&inproc, sid);
+        inproc.pane_resize_absolute(origin, 120, 40).unwrap();
+        let other = inproc
+            .split_pane(origin, Direction::Below, "/bin/sh", &[])
+            .unwrap();
+        inproc.kill_pane(other).unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        assert_eq!(s.panes[&origin].size_cells, (120, 40));
+        assert_eq!(grid_dims(&inproc, origin), (120, 40));
+    }
+
+    #[test]
+    fn a_pane_resized_inside_a_split_window_leaves_the_window_size_alone() {
+        let inproc = InProcess::new();
+        let sid = inproc.new_session("split", "/bin/sh").unwrap();
+        let origin = active_pane(&inproc, sid);
+        let other = inproc
+            .split_pane(origin, Direction::Right, "/bin/sh", &[])
+            .unwrap();
+        let before = {
+            let s = inproc.get_session(sid).unwrap();
+            s.windows[&s.active_window].size_cells
+        };
+        inproc.pane_resize_absolute(other, 30, 10).unwrap();
+        let s = inproc.get_session(sid).unwrap();
+        assert_eq!(s.windows[&s.active_window].size_cells, before);
+        assert_eq!(s.panes[&other].size_cells, (30, 10));
     }
 
     #[test]
