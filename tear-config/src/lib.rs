@@ -174,6 +174,10 @@ pub struct TearConfig {
 
     #[serde(default)]
     pub sessions: SessionsConfig,
+
+    /// Keyboard-protocol policy for the panes. See [`KeyboardConfig`].
+    #[serde(default)]
+    pub keyboard: KeyboardConfig,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +300,31 @@ pub struct ScrollbackConfig {
     /// to true).
     #[serde(default = "default_reflow_on_resize")]
     pub reflow_on_resize: bool,
+}
+
+/// Kitty keyboard protocol policy for the panes. The protocol itself stays
+/// available to every program in a pane; this decides what happens to the
+/// flags a program pushed when its command ends.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyboardConfig {
+    /// Drop a pane's pushed kitty flags when its shell reports a command end
+    /// (OSC 133 `D`). A program that exits without popping its flags would
+    /// otherwise leave the shell prompt receiving `CSI 13 u` for Enter.
+    /// Default true.
+    #[serde(default = "default_kitty_reset_on_command_end")]
+    pub kitty_reset_on_command_end: bool,
+}
+
+fn default_kitty_reset_on_command_end() -> bool {
+    true
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        Self {
+            kitty_reset_on_command_end: default_kitty_reset_on_command_end(),
+        }
+    }
 }
 
 /// Which of `scrollback`'s knobs are set to a non-default value AND read by
@@ -428,6 +457,7 @@ impl Default for TearConfig {
             auth_token_env: None,
             scrollback: ScrollbackConfig::default(),
             sessions: SessionsConfig::default(),
+            keyboard: KeyboardConfig::default(),
         }
     }
 }
@@ -875,6 +905,7 @@ impl shikumi::TieredConfig for TearConfig {
             auth_token_env: None,
             scrollback: <ScrollbackConfig as shikumi::TieredConfig>::bare(),
             sessions: SessionsConfig::default(),
+            keyboard: KeyboardConfig::default(),
         }
     }
 
@@ -1067,6 +1098,16 @@ mod sessions_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_kitty_reset_on_command_end_defaults_on_and_reads_from_yaml() {
+        assert!(TearConfig::default().keyboard.kitty_reset_on_command_end);
+        let c: TearConfig =
+            serde_yaml_ng::from_str("keyboard:\n  kitty_reset_on_command_end: false\n").unwrap();
+        assert!(!c.keyboard.kitty_reset_on_command_end);
+        let d: TearConfig = serde_yaml_ng::from_str("prefix: ctrl+a\n").unwrap();
+        assert!(d.keyboard.kitty_reset_on_command_end);
+    }
+
     /// ★ A SETTING NOTHING READS MUST NOT ANSWER `Ok`.
     ///
     /// Every `scrollback` knob is parsed, stored, hot-reloaded and round-tripped

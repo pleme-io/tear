@@ -133,6 +133,9 @@ pub(crate) struct GridState {
     /// a no-op). Once the shell's PS1 emits A, the extractor
     /// fills as the byte stream advances.
     pub(crate) blocks: crate::blocks::BlockExtractor,
+    /// Drop the main screen's pushed kitty flags on OSC 133 `D`
+    /// (`keyboard.kitty_reset_on_command_end`; default true).
+    kitty_reset_on_command_end: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -180,6 +183,7 @@ impl GridState {
             pending_response: Vec::new(),
             title: None,
             blocks: crate::blocks::BlockExtractor::default(),
+            kitty_reset_on_command_end: true,
         }
     }
 
@@ -1264,6 +1268,9 @@ impl Perform for GridState {
                 .collect::<Vec<_>>()
                 .join(";");
             self.blocks.on_osc_133(&marker);
+            if self.kitty_reset_on_command_end && marker.split(';').next() == Some("D") {
+                self.modes.kitty_keyboard.main.clear();
+            }
         }
     }
 
@@ -1487,6 +1494,10 @@ impl PaneGrid {
     }
 
     #[must_use]
+    pub(crate) fn set_kitty_reset_on_command_end(&mut self, on: bool) {
+        self.state.kitty_reset_on_command_end = on;
+    }
+
     pub(crate) fn with_scrollback(cols: usize, rows: usize, scrollback_cap: usize) -> Self {
         Self {
             stream: Stream::new(),
@@ -2256,6 +2267,23 @@ mod key_encoder_modes {
         assert_eq!(m.mouse, MouseTracking::Click);
         g.feed(b"\x1b[?1006h\x1b[>4;2m\x1b[?1049h\x1b[>2u\x1bc");
         assert_eq!(g.modes(), ModeSet::default());
+    }
+
+    #[test]
+    fn a_command_end_drops_the_kitty_flags_the_program_left_pushed() {
+        let mut g = PaneGrid::new(80, 24);
+        g.feed(b"\x1b]133;C\x07\x1b[>1u");
+        assert!(!g.modes().kitty_keyboard.main.is_empty());
+        g.feed(b"\x1b]133;D;0\x07");
+        assert!(g.modes().kitty_keyboard.main.is_empty());
+    }
+
+    #[test]
+    fn the_command_end_reset_can_be_configured_off() {
+        let mut g = PaneGrid::new(80, 24);
+        g.set_kitty_reset_on_command_end(false);
+        g.feed(b"\x1b]133;C\x07\x1b[>1u\x1b]133;D;0\x07");
+        assert!(!g.modes().kitty_keyboard.main.is_empty());
     }
 }
 

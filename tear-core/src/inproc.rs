@@ -116,6 +116,7 @@ pub struct InProcess {
     /// were built with — a live change applies to the next pane, which is the
     /// honest contract for a per-grid allocation.
     scrollback_rows: Arc<RwLock<usize>>,
+    kitty_reset_on_command_end: Arc<std::sync::atomic::AtomicBool>,
     durable: Arc<RwLock<Option<Durable>>>,
     persister_started: Arc<std::sync::atomic::AtomicBool>,
     restored: Arc<std::sync::atomic::AtomicBool>,
@@ -139,6 +140,7 @@ impl InProcess {
             socket_path: Arc::new(RwLock::new(None)),
             spawn_env: Arc::new(RwLock::new(tear_types::SpawnEnv::none())),
             scrollback_rows: Arc::new(RwLock::new(crate::pane_grid::DEFAULT_SCROLLBACK_ROWS)),
+            kitty_reset_on_command_end: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             durable: Arc::new(RwLock::new(None)),
             persister_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             restored: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -153,6 +155,18 @@ impl InProcess {
     /// [`Self::set_spawn_env`].
     pub fn set_scrollback_rows(&self, rows: usize) {
         *self.scrollback_rows.write() = rows;
+    }
+
+    /// Whether a pane drops its pushed kitty keyboard flags when its shell
+    /// reports a command end (`keyboard.kitty_reset_on_command_end`). Applied
+    /// to the panes that already exist and to every later one; the daemon
+    /// calls it on start, on `ReloadConfig` and on `SetConfig`.
+    pub fn set_kitty_reset_on_command_end(&self, on: bool) {
+        self.kitty_reset_on_command_end
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+        for grid in self.grids.lock().values() {
+            grid.lock().set_kitty_reset_on_command_end(on);
+        }
     }
 
     /// Set the embedder's typed env + cwd override, applied to every
@@ -530,6 +544,10 @@ impl InProcess {
         // window in which a fast-printing shell mints `Unknown`
         // blocks for a pane whose provenance we already knew.
         grid.lock().stamp_yurai(yurai);
+        grid.lock().set_kitty_reset_on_command_end(
+            self.kitty_reset_on_command_end
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         self.grids.lock().insert(pane_id, grid.clone());
 
         let io = self.open_pane_io(

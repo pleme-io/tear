@@ -431,6 +431,7 @@ pub fn start_with_config(
     // `DEFAULT_SCROLLBACK_ROWS`. Applied here, on `ReloadConfig`, and on
     // `SetConfig` — the three places the live config can change.
     inproc.set_scrollback_rows(live_config.load().scrollback.rows);
+    inproc.set_kitty_reset_on_command_end(live_config.load().keyboard.kitty_reset_on_command_end);
 
     // ── Socket sovereignty ──────────────────────────────────────
     //
@@ -1327,6 +1328,9 @@ pub fn dispatch_with_shutai(
         Request::ReloadConfig => match config.reload() {
             Ok(()) => {
                 inproc.set_scrollback_rows(config.load().scrollback.rows);
+                inproc.set_kitty_reset_on_command_end(
+                    config.load().keyboard.kitty_reset_on_command_end,
+                );
                 Response::Ok
             }
             Err(e) => Response::Err(WireError::Internal(format!("config reload failed: {e}"))),
@@ -1350,6 +1354,7 @@ pub fn dispatch_with_shutai(
                     }
                     let hash = hash_str(&yaml);
                     inproc.set_scrollback_rows(cfg.scrollback.rows);
+                    inproc.set_kitty_reset_on_command_end(cfg.keyboard.kitty_reset_on_command_end);
                     config.replace(cfg);
                     if let Some(a) = audit {
                         a.emit(&AuditEvent::SetConfig {
