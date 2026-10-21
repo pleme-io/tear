@@ -3110,6 +3110,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tear-picker"
+version = "0.1.46"
+dependencies = [
+ "ishou-tokens",
+ "praca",
+ "schemars 1.2.2",
+ "serde",
+ "tear-core",
+ "tear-types",
+ "tracing",
+]
+
+[[package]]
 name = "tear-tamotsu"
 version = "0.1.46"
 dependencies = [

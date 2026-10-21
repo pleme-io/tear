@@ -1,0 +1,28 @@
+[package]
+name = "tear-picker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The renderer-agnostic session-picker substrate shared by mado's Ctrl-S overlay and the tear terminal client: generic fuzzy picker model, key-to-action vocabulary, live/latent row union, badge rules and preset model."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+schema = ["dep:schemars"]
+testing = []
+
+[dependencies]
+tear-types = { workspace = true }
+praca = { workspace = true }
+ishou-tokens = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+schemars = { version = "1.2", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tear-core = { workspace = true }
