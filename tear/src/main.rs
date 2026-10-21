@@ -32,6 +32,7 @@ use tear_types::MultiplexerControl;
 use tracing::info;
 
 mod ai;
+mod attach_tty;
 mod mcp;
 mod top;
 
@@ -359,15 +360,20 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = Backend::Tmux)]
         backend: Backend,
     },
-    /// Connect to a running tear-daemon and print its session list.
-    /// (Stub interactive attach is a Phase-4 mado-side concern; today
-    /// this proves the daemon ↔ client RPC path end-to-end.)
+    /// Attach to a tear session from a terminal. With no target, opens a
+    /// full-screen session picker (type to filter, Enter attaches, n new,
+    /// x kill, Esc/q quits). With a target (session name or id prefix),
+    /// attaches directly. Detach with the prefix then d (ctrl+b d by
+    /// default); the session keeps running. Keys: `attach:` in tear.yaml.
     Attach {
         target: Option<String>,
-        /// Daemon UDS path. Defaults to `$XDG_RUNTIME_DIR/tear.sock`
-        /// (or `~/.local/share/tear/tear.sock`).
+        /// Daemon UDS path, or `tcp://host:port`. Defaults to
+        /// `$XDG_RUNTIME_DIR/tear.sock` (or `~/.local/share/tear/tear.sock`).
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+        /// Daemon TCP address `host:port` (same as `--socket tcp://host:port`).
+        #[arg(long, conflicts_with = "socket")]
+        tcp: Option<String>,
     },
     /// Run as MCP server (stdio transport) — exposes daemon /
     /// session / pane perf introspection over JSON-RPC for
@@ -560,7 +566,11 @@ fn main() -> Result<()> {
             .run::<TearConfig>(FleetStateVar::TearTier.name())
             .map_err(|e| anyhow::anyhow!("config-show failed: {e}")),
         Cmd::Render { backend } => cmd_render(backend),
-        Cmd::Attach { target, socket } => cmd_attach(target, socket),
+        Cmd::Attach {
+            target,
+            socket,
+            tcp,
+        } => cmd_attach(target, socket, tcp),
         Cmd::Daemon { socket, tcp } => cmd_daemon(socket, tcp),
         Cmd::Snapshot { pane, socket } => cmd_snapshot(&pane, socket),
     }
@@ -1832,31 +1842,58 @@ fn cmd_render(backend: Backend) -> Result<()> {
     Ok(())
 }
 
-fn cmd_attach(target: Option<String>, socket: Option<std::path::PathBuf>) -> Result<()> {
-    let _ = target; // future: dial-target selection (named session, last, etc.)
-    let socket_path = socket.unwrap_or_else(tear_types::wire::default_socket_path);
-    let client = tear_client::Client::connect(&socket_path).map_err(|e| {
-        anyhow::anyhow!(
-            "tear-daemon not reachable at {}: {}\nStart it with: tear daemon",
-            socket_path.display(),
-            e
-        )
-    })?;
-    let sessions = client.list_sessions()?;
-    if sessions.is_empty() {
-        println!("(no sessions on {})", socket_path.display());
-    } else {
-        println!("connected to tear-daemon at {}", socket_path.display());
-        for s in sessions {
-            println!(
-                "  {} {}  windows={} panes={}  state={:?}",
-                s.id,
-                s.name,
-                s.windows.len(),
-                s.panes.len(),
-                s.state
-            );
+fn cmd_attach(
+    target: Option<String>,
+    socket: Option<std::path::PathBuf>,
+    tcp: Option<String>,
+) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::mpsc::channel;
+
+    let socket = match tcp {
+        Some(addr) => Some(std::path::PathBuf::from(format!("tcp://{addr}"))),
+        None => socket,
+    };
+    let cfg = tear_config::load_or_default();
+    if !cfg.attach.enabled {
+        return Err(tear_attach::AttachError::Disabled.into());
+    }
+    let bindings = tear_attach::Bindings::from_config(&cfg)?;
+    let (client, _) = connect_to_daemon(socket)?;
+    let client = Arc::new(client);
+    let raw = attach_tty::RawTerminal::enter()?;
+    let attach = tear_attach::Attach {
+        control: client.clone(),
+        io: client,
+        bindings,
+        sizing: cfg.attach.sizing,
+        shortcuts: cfg.attach.picker_shortcuts,
+        shell: cfg.default_shell.clone(),
+        tick: attach_tty::SETTLE,
+        clock: Box::new(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+        }),
+    };
+    let (tx, rx) = channel();
+    attach_tty::spawn_input(tx.clone());
+    attach_tty::spawn_winch(tx.clone())?;
+    let start = match target {
+        Some(t) => tear_attach::Start::Target(t),
+        None => tear_attach::Start::Picker,
+    };
+    let mut out = std::io::stdout().lock();
+    let result = attach.run(start, attach_tty::terminal_size(), &rx, &tx, &mut out);
+    drop(out);
+    drop(raw);
+    match result? {
+        tear_attach::Exit::Detached => eprintln!("[detached: the session keeps running]"),
+        tear_attach::Exit::InputClosed => {
+            eprintln!("[input closed: detached, the session keeps running]")
         }
+        tear_attach::Exit::PaneEnded => eprintln!("[the session ended]"),
+        tear_attach::Exit::Quit => {}
     }
     Ok(())
 }

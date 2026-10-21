@@ -8,6 +8,7 @@ members = [
     "tear-daemon",
     "tear-client",
     "tear-picker",
+    "tear-attach",
     "tear-tmux-backend",
     "tear-ws-bridge",
     "tear",
@@ -38,6 +39,7 @@ tear-core = { path = "tear-core", version = "0.1.46" }
 tear-daemon = { path = "tear-daemon", version = "0.1.46" }
 tear-client = { path = "tear-client", version = "0.1.46" }
 tear-picker = { path = "tear-picker", version = "0.1.46" }
+tear-attach = { path = "tear-attach", version = "0.1.46" }
 tear-tmux-backend = { path = "tear-tmux-backend", version = "0.1.46" }
 tear-ws-bridge = { path = "tear-ws-bridge", version = "0.1.46" }
 tear = { path = "tear", version = "0.1.46" }

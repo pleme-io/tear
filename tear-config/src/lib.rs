@@ -178,6 +178,9 @@ pub struct TearConfig {
     /// Keyboard-protocol policy for the panes. See [`KeyboardConfig`].
     #[serde(default)]
     pub keyboard: KeyboardConfig,
+
+    #[serde(default)]
+    pub attach: AttachConfig,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +303,71 @@ pub struct ScrollbackConfig {
     /// to true).
     #[serde(default = "default_reflow_on_resize")]
     pub reflow_on_resize: bool,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachSizing {
+    #[default]
+    BeforeReplay,
+    AfterReplay,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachConfig {
+    #[serde(default = "default_attach_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_attach_enabled")]
+    pub picker_enabled: bool,
+    #[serde(default = "default_attach_picker_key")]
+    pub picker_key: String,
+    #[serde(default)]
+    pub detach_prefix: Option<String>,
+    #[serde(default = "default_attach_detach_key")]
+    pub detach_key: String,
+    #[serde(default = "default_attach_refuse")]
+    pub refuse: Vec<String>,
+    #[serde(default)]
+    pub sizing: AttachSizing,
+    #[serde(default = "default_attach_enabled")]
+    pub picker_shortcuts: bool,
+}
+
+fn default_attach_enabled() -> bool {
+    true
+}
+
+fn default_attach_picker_key() -> String {
+    "ctrl+s".into()
+}
+
+fn default_attach_detach_key() -> String {
+    "d".into()
+}
+
+fn default_attach_refuse() -> Vec<String> {
+    [
+        "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l", "ctrl+r", "ctrl+[", "ctrl+m", "ctrl+j", "ctrl+i",
+        "ctrl+h",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+impl Default for AttachConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_attach_enabled(),
+            picker_enabled: default_attach_enabled(),
+            picker_key: default_attach_picker_key(),
+            detach_prefix: None,
+            detach_key: default_attach_detach_key(),
+            refuse: default_attach_refuse(),
+            sizing: AttachSizing::default(),
+            picker_shortcuts: default_attach_enabled(),
+        }
+    }
 }
 
 /// Kitty keyboard protocol policy for the panes. The protocol itself stays
@@ -458,6 +526,7 @@ impl Default for TearConfig {
             scrollback: ScrollbackConfig::default(),
             sessions: SessionsConfig::default(),
             keyboard: KeyboardConfig::default(),
+            attach: AttachConfig::default(),
         }
     }
 }
@@ -906,6 +975,7 @@ impl shikumi::TieredConfig for TearConfig {
             scrollback: <ScrollbackConfig as shikumi::TieredConfig>::bare(),
             sessions: SessionsConfig::default(),
             keyboard: KeyboardConfig::default(),
+            attach: AttachConfig::default(),
         }
     }
 
