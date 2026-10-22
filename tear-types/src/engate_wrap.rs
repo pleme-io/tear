@@ -5,9 +5,19 @@
 //! the SAME `Snap` type. Consumers (mado, ayatsuri, namimado-debug)
 //! impl Consumer once and ride either backend.
 
-use engate_types::Snapshot;
+use engate_types::{AttachError, Snapshot};
 
+use crate::control::ControlError;
 use crate::pane_snapshot::{Cell, PaneSnapshot};
+
+#[must_use]
+pub fn attach_error(error: &ControlError, otherwise: fn(String) -> AttachError) -> AttachError {
+    if error.is_response_too_large() {
+        AttachError::StateExceedsFrame(error.to_string())
+    } else {
+        otherwise(error.to_string())
+    }
+}
 
 /// Newtype wrapper carrying a `PaneSnapshot` through engate's typed
 /// attach lifecycle. `to_ansi()` is the canonical serialization

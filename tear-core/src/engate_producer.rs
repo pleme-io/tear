@@ -27,7 +27,7 @@ use std::sync::mpsc;
 use engate_attach::{Consumer, Producer};
 use engate_types::AttachError;
 use tear_types::PaneId;
-use tear_types::engate_wrap::PaneSnapshotWrap;
+use tear_types::engate_wrap::{PaneSnapshotWrap, attach_error};
 
 use crate::inproc::InProcess;
 
@@ -64,13 +64,13 @@ impl Producer for PaneProducer {
         self.inproc
             .pane_snapshot(self.pane)
             .map(PaneSnapshotWrap)
-            .map_err(|e| AttachError::SnapshotFailed(e.to_string()))
+            .map_err(|e| attach_error(&e, AttachError::SnapshotFailed))
     }
 
     fn subscribe(&self) -> Result<mpsc::Receiver<Self::Item>, AttachError> {
         self.inproc
             .subscribe_pane_bytes_waking(self.pane, self.waker.clone())
-            .map_err(|e| AttachError::SubscribeFailed(e.to_string()))
+            .map_err(|e| attach_error(&e, AttachError::SubscribeFailed))
     }
 }
 

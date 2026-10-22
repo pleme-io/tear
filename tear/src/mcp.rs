@@ -3,7 +3,7 @@
 //! Spawns as `tear mcp` (stdio transport). Claude Code wires it
 //! into the agent's MCP server list so the agent can:
 //!
-//!   * `daemon_status` — uptime, RSS, CPU%, socket path, total
+//!   * `daemon_status` — daemon process uptime, RSS, CPU%, socket path, total
 //!     bytes consumed across all panes
 //!   * `system_resources` — overall host CPU/mem so the agent
 //!     can spot "tear's hot vs the whole machine's hot"
@@ -40,13 +40,108 @@ use sysinfo::System;
 use tear_client::Client;
 use tear_types::MultiplexerControl;
 
-/// Per-process boot timestamp. Lets `daemon_status` and friends
-/// report uptime without exposing it from tear-daemon (which
-/// would need a wider API surface).
 static MCP_BOOT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 fn mcp_boot() -> Instant {
     *MCP_BOOT.get_or_init(Instant::now)
+}
+
+#[derive(Serialize)]
+struct DaemonStatus {
+    socket: String,
+    uptime_s: Option<u64>,
+    mcp_uptime_s: u64,
+    session_count: u32,
+    total_panes: u32,
+    total_subscribers: u32,
+    total_bytes_consumed: u64,
+    daemon_pid: Option<u32>,
+    daemon_rss_bytes: Option<u64>,
+    daemon_cpu_pct: Option<f32>,
+}
+
+fn scan_for_daemon_pid(sys: &System) -> Option<u32> {
+    sys.processes().iter().find_map(|(pid, p)| {
+        // ★ SKIP THREADS. On Linux `sys.processes()` also yields TASKS,
+        // and a thread INHERITS its process's argv — so the cmdline match
+        // below cannot tell one from the other, and `find_map` returns
+        // whichever the map iterates first.
+        //
+        // Measured on plo 2026-09-02: `daemon_status` reported
+        // `daemon_pid: 774217` while the daemon was 774204.
+        // `ps -p 774217` says no such process; `/proc/774204/task` lists
+        // 774204 774214 774215 774216 774217 — the reported number was
+        // this crate's own kanshou sidecar thread. An operator who checks
+        // the pid we hand them concludes the daemon is DEAD while it is
+        // serving normally, which is the worst direction for a field
+        // named `daemon_pid` to be wrong in.
+        //
+        // `thread_kind()` is `None` exactly for real processes, and is
+        // always `None` on macOS, so this is a no-op there rather than a
+        // platform fork.
+        if p.thread_kind().is_some() {
+            return None;
+        }
+        let cmd: Vec<String> = p
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+        if cmd.iter().any(|s| s == "daemon")
+            && cmd.iter().any(|s| s.ends_with("/tear") || s == "tear")
+        {
+            Some(pid.as_u32())
+        } else {
+            None
+        }
+    })
+}
+
+fn daemon_status_at(socket_path: &std::path::Path) -> DaemonStatus {
+    let client = Client::connect(socket_path).ok();
+    let mut sys = System::new();
+    sys.refresh_all();
+    let daemon_pid = client
+        .as_ref()
+        .and_then(|c| c.daemon().pid())
+        .or_else(|| scan_for_daemon_pid(&sys));
+    let daemon = daemon_pid.and_then(|pid| sys.process(sysinfo::Pid::from_u32(pid)));
+
+    let mut total_panes = 0u32;
+    let mut total_subscribers = 0u32;
+    let mut total_bytes = 0u64;
+    let mut session_count = 0u32;
+    if let Some(c) = &client {
+        if let Ok(sessions) = c.list_sessions() {
+            session_count = sessions.len() as u32;
+            for s in &sessions {
+                for pid in s.panes.keys() {
+                    total_panes += 1;
+                    if let Ok(n) = c.pane_subscriber_count(*pid) {
+                        total_subscribers += n;
+                    }
+                    // Bytes-consumed needs a daemon-side RPC
+                    // we haven't added yet; placeholder 0
+                    // until a `pane_bytes_consumed` lands.
+                    let _ = pid;
+                    total_bytes += 0;
+                }
+            }
+        }
+    }
+
+    DaemonStatus {
+        socket: socket_path.to_string_lossy().into_owned(),
+        uptime_s: daemon.map(sysinfo::Process::run_time),
+        mcp_uptime_s: mcp_boot().elapsed().as_secs(),
+        session_count,
+        total_panes,
+        total_subscribers,
+        total_bytes_consumed: total_bytes,
+        daemon_pid,
+        daemon_rss_bytes: daemon.map(sysinfo::Process::memory),
+        daemon_cpu_pct: daemon.map(sysinfo::Process::cpu_usage),
+    }
 }
 
 #[derive(Clone)]
@@ -72,101 +167,10 @@ impl TearMcp {
 #[tool_router]
 impl TearMcp {
     #[tool(
-        description = "Daemon status: uptime_s, rss_bytes, cpu_pct (over the last sample window), socket path, total_panes, total_subscribers, total_bytes_consumed (sum across all panes from start). Reports the daemon's resource footprint at a glance so the agent can spot 'is tear leaking RSS over a long session?' or 'is the daemon spinning a CPU?' without leaving the conversation."
+        description = "Daemon status: uptime_s (seconds since the daemon process started; null when its pid cannot be resolved), mcp_uptime_s (seconds since this MCP server started), rss_bytes, cpu_pct (over the last sample window), socket path, total_panes, total_subscribers, total_bytes_consumed (sum across all panes from start). Reports the daemon's resource footprint at a glance so the agent can spot 'is tear leaking RSS over a long session?' or 'is the daemon spinning a CPU?' without leaving the conversation."
     )]
     async fn daemon_status(&self) -> String {
-        // Open client to resolve daemon pid via socket peer
-        // metadata. portable_pty/UnixStream doesn't expose peer
-        // pid in stable Rust, so we use sysinfo to find the
-        // process serving the socket path: scan processes whose
-        // cmdline contains the literal `tear daemon` and whose
-        // open fds include the socket. Cheaper approximation:
-        // find one process named "tear" with arg "daemon" and
-        // use its stats.
-        let mut sys = System::new();
-        sys.refresh_all();
-        let daemon_pid = sys.processes().iter().find_map(|(pid, p)| {
-            // ★ SKIP THREADS. On Linux `sys.processes()` also yields TASKS,
-            // and a thread INHERITS its process's argv — so the cmdline match
-            // below cannot tell one from the other, and `find_map` returns
-            // whichever the map iterates first.
-            //
-            // Measured on plo 2026-09-02: `daemon_status` reported
-            // `daemon_pid: 774217` while the daemon was 774204.
-            // `ps -p 774217` says no such process; `/proc/774204/task` lists
-            // 774204 774214 774215 774216 774217 — the reported number was
-            // this crate's own kanshou sidecar thread. An operator who checks
-            // the pid we hand them concludes the daemon is DEAD while it is
-            // serving normally, which is the worst direction for a field
-            // named `daemon_pid` to be wrong in.
-            //
-            // `thread_kind()` is `None` exactly for real processes, and is
-            // always `None` on macOS, so this is a no-op there rather than a
-            // platform fork.
-            if p.thread_kind().is_some() {
-                return None;
-            }
-            let cmd: Vec<String> = p
-                .cmd()
-                .iter()
-                .map(|s| s.to_string_lossy().to_string())
-                .collect();
-            if cmd.iter().any(|s| s == "daemon")
-                && cmd.iter().any(|s| s.ends_with("/tear") || s == "tear")
-            {
-                Some((pid.as_u32(), p.memory(), p.cpu_usage()))
-            } else {
-                None
-            }
-        });
-
-        let mut total_panes = 0u32;
-        let mut total_subscribers = 0u32;
-        let mut total_bytes = 0u64;
-        let mut session_count = 0u32;
-        if let Ok(c) = self.client() {
-            if let Ok(sessions) = c.list_sessions() {
-                session_count = sessions.len() as u32;
-                for s in &sessions {
-                    for pid in s.panes.keys() {
-                        total_panes += 1;
-                        if let Ok(n) = c.pane_subscriber_count(*pid) {
-                            total_subscribers += n;
-                        }
-                        // Bytes-consumed needs a daemon-side RPC
-                        // we haven't added yet; placeholder 0
-                        // until a `pane_bytes_consumed` lands.
-                        let _ = pid;
-                        total_bytes += 0;
-                    }
-                }
-            }
-        }
-
-        #[derive(Serialize)]
-        struct Status<'a> {
-            socket: &'a str,
-            uptime_s: u64,
-            session_count: u32,
-            total_panes: u32,
-            total_subscribers: u32,
-            total_bytes_consumed: u64,
-            daemon_pid: Option<u32>,
-            daemon_rss_bytes: Option<u64>,
-            daemon_cpu_pct: Option<f32>,
-        }
-        let st = Status {
-            socket: &self.socket_path.to_string_lossy(),
-            uptime_s: mcp_boot().elapsed().as_secs(),
-            session_count,
-            total_panes,
-            total_subscribers,
-            total_bytes_consumed: total_bytes,
-            daemon_pid: daemon_pid.map(|(p, _, _)| p),
-            daemon_rss_bytes: daemon_pid.map(|(_, m, _)| m),
-            daemon_cpu_pct: daemon_pid.map(|(_, _, c)| c),
-        };
-        kotae::Answer::found(&st).render()
+        kotae::Answer::found(&daemon_status_at(&self.socket_path)).render()
     }
 
     #[tool(
@@ -590,5 +594,46 @@ mod answer_shape_tests {
         assert_eq!(blind.outcome(), "blind");
         assert!(!refused.is_about_the_world());
         assert!(!blind.is_about_the_world());
+    }
+}
+
+#[cfg(test)]
+mod daemon_status_tests {
+    use std::time::Duration;
+
+    use tear_daemon::testing::DaemonHarness;
+
+    use super::daemon_status_at;
+
+    fn ps_age_s(pid: u32) -> u64 {
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-o", "etime=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps runs");
+        let text = String::from_utf8(out.stdout).expect("ps prints utf-8");
+        let text = text.trim();
+        let (days, clock) = text
+            .split_once('-')
+            .map_or((0, text), |(d, c)| (d.parse::<u64>().expect("days"), c));
+        let clock_s = clock.split(':').fold(0, |acc, part| {
+            acc * 60 + part.parse::<u64>().expect("clock field")
+        });
+        days * 86_400 + clock_s
+    }
+
+    #[test]
+    fn uptime_is_the_daemon_process_age_not_the_status_readers() {
+        let harness = DaemonHarness::new("mcp-uptime");
+        std::thread::sleep(Duration::from_millis(2_100));
+        let status = daemon_status_at(harness.socket());
+        let daemon = std::process::id();
+        let age = ps_age_s(daemon);
+        assert!(age >= 2, "ps age {age}");
+        assert!(
+            status.uptime_s.is_some_and(|u| u.abs_diff(age) <= 1),
+            "uptime_s {:?} vs ps age {age} of daemon pid {daemon}",
+            status.uptime_s
+        );
+        assert_eq!(status.daemon_pid, Some(daemon));
     }
 }

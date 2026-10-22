@@ -217,6 +217,10 @@ pub struct DaemonHello {
     pub daemon_version: String,
     /// Wire names of every capability this daemon implements.
     pub capabilities: Vec<String>,
+    /// The answering process's own pid. `None` from a daemon that
+    /// predates the field.
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 impl DaemonHello {
@@ -232,6 +236,7 @@ impl DaemonHello {
                 .filter(|c| !unadvertised_by_fault(*c))
                 .map(|c| c.wire_name().to_owned())
                 .collect(),
+            pid: Some(std::process::id()),
         }
     }
 }
@@ -263,6 +268,7 @@ pub struct DaemonIdentity {
     /// can show an operator a capability their CLI is too old to
     /// name.
     capabilities: BTreeSet<String>,
+    pid: Option<u32>,
 }
 
 impl DaemonIdentity {
@@ -273,6 +279,7 @@ impl DaemonIdentity {
         Self {
             version: None,
             capabilities: BTreeSet::new(),
+            pid: None,
         }
     }
 
@@ -282,6 +289,7 @@ impl DaemonIdentity {
         Self {
             version: Some(hello.daemon_version),
             capabilities: hello.capabilities.into_iter().collect(),
+            pid: hello.pid,
         }
     }
 
@@ -298,6 +306,12 @@ impl DaemonIdentity {
     #[must_use]
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
+    }
+
+    /// The daemon process's pid, as the daemon itself reported it.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     /// True when the daemon could not answer the probe at all.
@@ -383,6 +397,20 @@ mod tests {
     }
 
     #[test]
+    fn a_hello_names_the_answering_process_and_an_older_one_decodes_without_it() {
+        let hello = DaemonHello::for_this_build("9.9.9");
+        assert_eq!(hello.pid, Some(std::process::id()));
+        assert_eq!(
+            DaemonIdentity::from_hello(hello).pid(),
+            Some(std::process::id())
+        );
+        let older: DaemonHello =
+            serde_json::from_str(r#"{"daemon_version":"0.1.47","capabilities":[]}"#).unwrap();
+        assert_eq!(older.pid, None);
+        assert_eq!(DaemonIdentity::pre_capability().pid(), None);
+    }
+
+    #[test]
     fn this_builds_hello_advertises_every_implemented_capability() {
         let hello = DaemonHello::for_this_build("9.9.9");
         assert_eq!(hello.daemon_version, "9.9.9");
@@ -445,6 +473,7 @@ mod tests {
         let id = DaemonIdentity::from_hello(DaemonHello {
             daemon_version: "3.0.0".into(),
             capabilities: vec!["spawn-args".into(), "spawn-cwd".into()],
+            pid: None,
         });
         assert_eq!(id.capability_names(), vec!["spawn-args", "spawn-cwd"]);
         assert!(id.has(Capability::SpawnArgs));
@@ -459,6 +488,7 @@ mod tests {
         let id = DaemonIdentity::from_hello(DaemonHello {
             daemon_version: "0.1.9".into(),
             capabilities: vec![],
+            pid: None,
         });
         assert!(!id.is_pre_capability());
         assert_eq!(id.version(), Some("0.1.9"));

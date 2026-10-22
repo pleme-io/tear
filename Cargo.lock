@@ -750,9 +750,9 @@ dependencies = [
 
 [[package]]
 name = "engate-types"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5590399e692a7ca4cc21735485111152d949badac73d204bef0e29222fb875c3"
+checksum = "ecc757e68f7b5ae2ef0ea3dda442c585088badb1ac8d836673bcaa69404cf363"
 dependencies = [
  "serde",
  "thiserror 2.0.19",

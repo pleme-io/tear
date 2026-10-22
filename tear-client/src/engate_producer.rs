@@ -25,7 +25,7 @@ use std::sync::mpsc;
 
 use engate_attach::{Producer, ReplaySource};
 use engate_types::AttachError;
-use tear_types::engate_wrap::PaneSnapshotWrap;
+use tear_types::engate_wrap::{PaneSnapshotWrap, attach_error};
 use tear_types::{Capability, DaemonIdentity, MultiplexerControl, PaneId};
 
 use crate::Client;
@@ -66,7 +66,7 @@ impl Producer for PaneProducer {
         self.client
             .pane_snapshot(self.pane)
             .map(PaneSnapshotWrap)
-            .map_err(|e| AttachError::SnapshotFailed(e.to_string()))
+            .map_err(|e| attach_error(&e, AttachError::SnapshotFailed))
     }
 
     fn subscribe(&self) -> Result<mpsc::Receiver<Self::Item>, AttachError> {
@@ -76,7 +76,7 @@ impl Producer for PaneProducer {
             .subscribe_pane_bytes(self.pane, move |bytes| {
                 let _ = tx.send(bytes.to_vec());
             })
-            .map_err(|e| AttachError::SubscribeFailed(e.to_string()))?;
+            .map_err(|e| attach_error(&e, AttachError::SubscribeFailed))?;
         // Keep the handle alive — dropping it closes the subscribe
         // connection.
         *self.handle.lock().unwrap() = Some(h);
@@ -184,10 +184,12 @@ mod tests {
         let new = DaemonIdentity::from_hello(tear_types::DaemonHello {
             daemon_version: "0.1.41".into(),
             capabilities: vec!["replay-modes".into()],
+            pid: None,
         });
         let old = DaemonIdentity::from_hello(tear_types::DaemonHello {
             daemon_version: "0.1.37".into(),
             capabilities: vec!["spawn-env".into()],
+            pid: None,
         });
         assert!(keys_read_the_mirror(ReplaySource::Stream, &new));
         assert!(keys_read_the_mirror(ReplaySource::Stream, &old));
@@ -333,5 +335,65 @@ mod tests {
         drop(live);
         client.kill_session(sid).expect("kill");
         daemon.stop();
+    }
+
+    fn a_daemon_that_refuses_every_pane_as_too_large(label: &str) -> std::path::PathBuf {
+        use tear_types::wire::{
+            FrameSize, MAX_FRAME_BYTES, Request, Response, read_msg, response_too_large, write_msg,
+        };
+        let socket =
+            std::env::temp_dir().join(format!("tear-client-{label}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                std::thread::spawn(move || {
+                    while let Ok(req) = read_msg::<_, Request>(&mut stream) {
+                        let resp = match req {
+                            Request::Hello { .. } => {
+                                Response::Hello(tear_types::DaemonHello::for_this_build("fake"))
+                            }
+                            Request::PaneSnapshot(_) | Request::Subscribe(_) => {
+                                Response::Err(response_too_large(
+                                    "PaneSnapshot",
+                                    FrameSize::AtLeast(MAX_FRAME_BYTES + 1),
+                                ))
+                            }
+                            _ => Response::Ok,
+                        };
+                        if write_msg(&mut stream, &resp).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        socket
+    }
+
+    #[test]
+    fn a_pane_too_large_for_one_frame_is_refused_as_state_exceeds_frame_on_both_paths() {
+        let socket = a_daemon_that_refuses_every_pane_as_too_large("too-large");
+        let client = Arc::new(Client::connect(&socket).expect("connect"));
+        let producer = PaneProducer::new(
+            client,
+            PaneId::from_seed("big"),
+            std::task::Waker::noop().clone(),
+        );
+        let snapshot = producer.snapshot().map(|_| ()).unwrap_err();
+        assert!(
+            matches!(snapshot, AttachError::StateExceedsFrame(_)),
+            "{snapshot:?}"
+        );
+        let subscribe = producer.subscribe().map(|_| ()).unwrap_err();
+        assert!(
+            matches!(subscribe, AttachError::StateExceedsFrame(_)),
+            "{subscribe:?}"
+        );
+        assert!(
+            subscribe.to_string().contains("response-too-large"),
+            "{subscribe}"
+        );
     }
 }

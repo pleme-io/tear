@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "4b2459d5471d11a1e6a0f6798b454149e12122f3d811b8d3b00039689728fad3",
+  "cargo_lock_sha256": "5f046bc0b7d07ccbe89d0065e01ed9774e54167183371603c4b51bfad1cbac8a",
   "manifest_sha256": {
     "Cargo.toml": "53c4435c4a37483df47466a0348b4e8faf1d329379bd5e3dfcb24eec642d75c4",
     "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
@@ -9,13 +9,13 @@
     "tamotsu/Cargo.toml": "0d17c9fcfbb7fa777f1e67e8b7d2027506c68345cdabc46ea4be944958a4540c",
     "tear-attach/Cargo.toml": "841d1401ffe14a5c6a61a998cbf34f73c3cf199d6578390eb709966d179880ce",
     "tear-bench/Cargo.toml": "fce7a7569f1cab633995a707c66bf26dc46916c11d49784c6ba80760f54e9c76",
-    "tear-client/Cargo.toml": "2d252a97346e2979a47851d00e085374202d2e948c293f4630ce3d1e163622b1",
+    "tear-client/Cargo.toml": "32b6e5630ae72eb7f5cb7a00c0db5b6fd34cf6287802fc092480b4e2bc0ada3f",
     "tear-config/Cargo.toml": "36b5d7b438eba05504078bbd3267d7258dc93ccd954f9e931b142e97b3cd5a22",
-    "tear-core/Cargo.toml": "7ff90004235276c2c2b69a008108107cec42e60d2bd763cde95c07dd279af16e",
+    "tear-core/Cargo.toml": "2a3ecd5fa7c6443378e6230151a5e4f7f4b0a109234ca19cdf0f691a15f35001",
     "tear-daemon/Cargo.toml": "61b011a40a6acafb2521a5919f2191800bcd8a01dbd3a569d43f4835e95f929c",
     "tear-picker/Cargo.toml": "b6fd2948daef3df1a706f079fe9a88805b0e705f235bf5f9a072a65e6256023e",
     "tear-tmux-backend/Cargo.toml": "e6f8bd2a4b24dbd19b7d907f5b21fa762ed084c7583184c5f89c10c9a9cc9025",
-    "tear-types/Cargo.toml": "2c2e931c450153a92f28bdcb8a74c0272c7c3f9156aaf892ff002f5c83272dc1",
+    "tear-types/Cargo.toml": "ffdb858d36a4b8a50dcf96e084b8a870772619b769e5053fc7cb9440aa8c7748",
     "tear-ws-bridge/Cargo.toml": "0e66b20bbc058b93a7591f6933da27cdf9f305de450a7609ace5c7de14f135a0",
     "tear/Cargo.toml": "eb3a7d64c876fa9543041da6be525aa5d961b3cb083717a91ac28a60029d9437"
   },
@@ -1765,7 +1765,7 @@
           },
           {
             "name": "engate_types",
-            "package_key": "engate-types-0.1.5",
+            "package_key": "engate-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1821,7 +1821,7 @@
           "default"
         ]
       },
-      "engate-types-0.1.5": {
+      "engate-types-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -8769,7 +8769,7 @@
           },
           {
             "name": "engate_types",
-            "package_key": "engate-types-0.1.5",
+            "package_key": "engate-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8930,7 +8930,7 @@
           },
           {
             "name": "engate_types",
-            "package_key": "engate-types-0.1.5",
+            "package_key": "engate-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -9773,7 +9773,7 @@
           },
           {
             "name": "engate_types",
-            "package_key": "engate-types-0.1.5",
+            "package_key": "engate-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -16942,7 +16942,7 @@
     "engate-attach-0.1.5": {
       "edition": "2024"
     },
-    "engate-types-0.1.5": {
+    "engate-types-0.1.6": {
       "edition": "2024"
     },
     "equivalent-1.0.2": {

@@ -41,7 +41,7 @@ blake3 = { workspace = true }
 vte = { workspace = true }
 memchr = { workspace = true }
 unicode-width = { workspace = true }
-engate-types = { version = "0.1", optional = true }
+engate-types = { version = "0.1.6", optional = true }
 engate-attach = { version = "0.1", optional = true }
 
 [dev-dependencies]
