@@ -436,14 +436,10 @@ impl InProcess {
         max_bytes: usize,
     ) -> ControlResult<tear_types::PaneSnapshot> {
         self.read_pane(pane_id, |grid| {
-            let floor = grid.snapshot_wire_floor();
-            if floor > max_bytes {
-                return Err(ControlError::Rejected(tear_types::wire::too_large(
-                    "PaneSnapshot",
-                    tear_types::wire::FrameSize::AtLeast(floor),
-                )));
-            }
-            Ok(grid.snapshot())
+            grid.snapshot_within(max_bytes)
+                .map_err(|crate::pane_grid::ScreenOverCap(size)| {
+                    ControlError::Rejected(tear_types::wire::too_large("PaneSnapshot screen", size))
+                })
         })
     }
 

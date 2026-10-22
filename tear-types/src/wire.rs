@@ -654,6 +654,31 @@ pub fn encode<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
     Ok(body)
 }
 
+#[derive(Serialize)]
+enum ResponseRef<'a> {
+    PaneSnapshot(&'a PaneSnapshot),
+}
+
+struct Counted(usize);
+
+impl Write for Counted {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub fn snapshot_response_len(snap: &PaneSnapshot) -> io::Result<usize> {
+    let mut counted = Counted(0);
+    ciborium::ser::into_writer(&ResponseRef::PaneSnapshot(snap), &mut counted)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    Ok(counted.0)
+}
+
 pub fn write_frame<W: Write>(w: &mut W, body: &[u8]) -> io::Result<()> {
     if body.len() > MAX_FRAME_BYTES {
         return Err(FrameTooLarge::error(body.len()));
@@ -774,6 +799,24 @@ mod tests {
         assert_eq!(full.len(), MAX_FRAME_BYTES);
         let over = encode(&Response::PaneBytes(vec![b'x'; MAX_PANE_BYTES + 1])).unwrap_err();
         assert_eq!(FrameTooLarge::of(&over), Some(MAX_FRAME_BYTES + 1));
+    }
+
+    #[test]
+    fn the_measured_snapshot_response_is_the_encoded_one_byte_for_byte() {
+        let mut snap = PaneSnapshot::blank(7, 33);
+        snap.title = Some("deep".into());
+        snap.scrollback = vec![vec![crate::pane_snapshot::Cell::BLANK; 33]; 50];
+        snap.scrollback_elided = 9;
+        let encoded = encode(&Response::PaneSnapshot(snap.clone())).unwrap();
+        assert_eq!(snapshot_response_len(&snap).unwrap(), encoded.len());
+        match decode_response(&encoded) {
+            Response::PaneSnapshot(back) => assert_eq!(back.scrollback_elided, 9),
+            other => panic!("decoded {}", other.kind()),
+        }
+    }
+
+    fn decode_response(bytes: &[u8]) -> Response {
+        ciborium::de::from_reader(bytes).unwrap()
     }
 
     #[test]

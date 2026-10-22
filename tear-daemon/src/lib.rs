@@ -1759,7 +1759,8 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_past_the_cap_is_refused_before_it_is_cloned_and_the_connection_keeps_serving() {
+    fn a_snapshot_whose_history_is_past_the_cap_arrives_with_its_oldest_history_elided_and_the_connection_keeps_serving()
+     {
         let inproc = Arc::new(InProcess::new());
         let sid = inproc
             .new_session_with_source_and_size(
@@ -1775,9 +1776,14 @@ mod tests {
             .unwrap();
         let pane = inproc.with_registry(|r| *r.sessions[&sid].panes.keys().next().unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while inproc
-            .pane_snapshot_within(pane, tear_types::wire::MAX_FRAME_BYTES)
-            .is_ok()
+        while !inproc
+            .pane_snapshot(pane)
+            .unwrap()
+            .to_text()
+            .contains("DONE")
+            || tear_types::wire::snapshot_response_len(&inproc.pane_snapshot(pane).unwrap())
+                .unwrap()
+                <= tear_types::wire::MAX_FRAME_BYTES
         {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1792,17 +1798,23 @@ mod tests {
             thread::spawn(move || serve_connection(server, inproc_for_server, live, None));
         write_msg(&mut client, &Request::PaneSnapshot(pane)).unwrap();
         match read_msg::<_, Response>(&mut client).unwrap() {
-            Response::Err(WireError::Rejected(msg)) => {
+            Response::PaneSnapshot(snap) => {
+                assert!(snap.scrollback_elided > 0, "nothing was elided");
                 assert!(
-                    msg.starts_with(tear_types::wire::RESPONSE_TOO_LARGE),
-                    "{msg}"
+                    tear_types::wire::snapshot_response_len(&snap).unwrap()
+                        <= tear_types::wire::MAX_FRAME_BYTES
                 );
+                assert!(snap.to_text().contains("DONE"), "the screen arrives whole");
                 assert!(
-                    msg.contains("PaneSnapshot") && msg.contains("at least"),
-                    "{msg}"
+                    snap.scrollback.last().is_some_and(|row| row
+                        .iter()
+                        .map(|c| c.ch)
+                        .collect::<String>()
+                        .contains("line 11")),
+                    "the newest history is the history kept"
                 );
             }
-            other => panic!("expected a typed refusal, got {}", other.kind()),
+            other => panic!("expected a fitted snapshot, got {}", other.kind()),
         }
         write_msg(&mut client, &Request::ListSessions).unwrap();
         assert!(matches!(

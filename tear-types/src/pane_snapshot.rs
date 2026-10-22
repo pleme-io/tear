@@ -325,6 +325,8 @@ pub struct PaneSnapshot {
     /// with the renderer and the daemon needs no image crate.
     #[serde(default)]
     pub graphics: Vec<crate::graphics::Graphic>,
+    #[serde(default)]
+    pub scrollback_elided: usize,
 }
 
 fn default_true() -> bool {
@@ -357,6 +359,7 @@ impl PaneSnapshot {
             combining: Vec::new(),
             modes: crate::modes::ModeSet::default(),
             graphics: Vec::new(),
+            scrollback_elided: 0,
         }
     }
 

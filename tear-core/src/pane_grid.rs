@@ -33,6 +33,9 @@ use crate::feeder::Stream;
 
 pub use tear_types::pane_snapshot::{Cell, PaneSnapshot};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ScreenOverCap(pub tear_types::wire::FrameSize);
+
 /// Maximum scrollback rows kept off-screen.
 ///
 /// **Default: `usize::MAX` — unlimited.** The operator-facing
@@ -1642,6 +1645,50 @@ impl PaneGrid {
             combining: self.state.combining.clone(),
             modes: self.modes(),
             graphics: self.state.graphics.clone(),
+            scrollback_elided: 0,
+        }
+    }
+
+    pub fn snapshot_within(&self, max_bytes: usize) -> Result<PaneSnapshot, ScreenOverCap> {
+        let screen: usize = self.state.active_rows().map(Vec::len).sum();
+        let graphics: usize = self.state.graphics.iter().map(|g| g.data.len()).sum();
+        let screen_floor = PaneSnapshot::wire_floor(screen, graphics);
+        if screen_floor > max_bytes {
+            return Err(ScreenOverCap(tear_types::wire::FrameSize::AtLeast(
+                screen_floor,
+            )));
+        }
+        let history = if self.state.alt_active {
+            0
+        } else {
+            self.state.scrollback.len()
+        };
+        let mut room = max_bytes - screen_floor;
+        let mut kept = self
+            .state
+            .scrollback
+            .iter()
+            .rev()
+            .take(history)
+            .take_while(|row| {
+                let cost = PaneSnapshot::wire_floor(row.len(), 0);
+                let fits = cost <= room;
+                room = room.saturating_sub(cost);
+                fits
+            })
+            .count();
+        loop {
+            let mut snap = self.snapshot_keeping(kept);
+            snap.scrollback_elided = history - kept;
+            let len = tear_types::wire::snapshot_response_len(&snap)
+                .map_err(|_| ScreenOverCap(tear_types::wire::FrameSize::AtLeast(screen_floor)))?;
+            if len <= max_bytes {
+                return Ok(snap);
+            }
+            if kept == 0 {
+                return Err(ScreenOverCap(tear_types::wire::FrameSize::Encoded(len)));
+            }
+            kept /= 2;
         }
     }
 
@@ -2650,6 +2697,85 @@ mod tests {
         assert_eq!(left_out, 0);
         assert!(alt.scrollback.is_empty());
         assert_eq!(alt.to_ansi(), g.snapshot().to_ansi());
+    }
+
+    fn screen_only_len(g: &PaneGrid) -> usize {
+        let mut s = g.snapshot_keeping(0);
+        s.scrollback_elided = g.state.scrollback.len();
+        tear_types::wire::snapshot_response_len(&s).unwrap()
+    }
+
+    fn deep_grid() -> PaneGrid {
+        let mut g = PaneGrid::with_scrollback(40, 6, 10_000);
+        for i in 0..400 {
+            g.feed(format!("\x1b[3{}mrow {i}\x1b[0m\r\n", i % 7).as_bytes());
+        }
+        g
+    }
+
+    #[test]
+    fn a_snapshot_that_fits_whole_is_the_full_snapshot_with_nothing_elided() {
+        let g = deep_grid();
+        let full = g.snapshot();
+        let len = tear_types::wire::snapshot_response_len(&full).unwrap();
+        let fit = g.snapshot_within(len).unwrap();
+        assert_eq!(fit.scrollback_elided, 0);
+        assert_eq!(fit.scrollback, full.scrollback);
+        assert_eq!(fit.cells, full.cells);
+    }
+
+    #[test]
+    fn history_past_the_budget_is_elided_oldest_first_and_the_answer_always_fits() {
+        let g = deep_grid();
+        let full = g.snapshot();
+        let whole = tear_types::wire::snapshot_response_len(&full).unwrap();
+        let screen_only = screen_only_len(&g);
+        for max in [
+            whole - 1,
+            whole / 2,
+            whole / 3,
+            screen_only + 1,
+            screen_only,
+        ] {
+            let fit = g.snapshot_within(max).unwrap();
+            assert!(
+                tear_types::wire::snapshot_response_len(&fit).unwrap() <= max,
+                "at {max}"
+            );
+            assert!(fit.scrollback_elided > 0, "at {max}");
+            assert_eq!(
+                fit.scrollback_elided + fit.scrollback.len(),
+                full.scrollback.len(),
+                "every history row is either sent or counted"
+            );
+            assert_eq!(
+                fit.scrollback[..],
+                full.scrollback[fit.scrollback_elided..],
+                "the newest rows, in order"
+            );
+            assert_eq!(fit.to_text(), full.to_text(), "the screen is never cut");
+        }
+    }
+
+    #[test]
+    fn only_a_screen_that_cannot_fit_on_its_own_is_refused() {
+        let g = deep_grid();
+        let screen_only = screen_only_len(&g);
+        assert!(g.snapshot_within(screen_only).is_ok());
+        assert!(matches!(
+            g.snapshot_within(screen_only - 1),
+            Err(ScreenOverCap(_))
+        ));
+        assert!(matches!(g.snapshot_within(0), Err(ScreenOverCap(_))));
+    }
+
+    #[test]
+    fn the_alternate_screen_carries_no_history_and_elides_none() {
+        let mut g = deep_grid();
+        g.feed(b"\x1b[?1049h");
+        let fit = g.snapshot_within(usize::MAX).unwrap();
+        assert!(fit.scrollback.is_empty());
+        assert_eq!(fit.scrollback_elided, 0);
     }
 
     #[test]
