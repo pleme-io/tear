@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "f340ec8ee39597012ad5dd1d35677bb57375e3638f66b72e324b21bc4a96d3a3",
+  "cargo_lock_sha256": "99b67c17fe37217ab50c8944f0665d6f3750cca1ef2409e2dd7f7c80ca01f6bf",
   "manifest_sha256": {
     "Cargo.toml": "dbd14ee7b80365b5f27e4f80c5a21c6356d0a71c8f44a35026b681c39a60098a",
     "kukaku/Cargo.toml": "3384e1a045cfa50e18c502f0d95e403b66f7561a61c5e80f82ea4aed98369c5e",
@@ -2476,7 +2476,7 @@
           "std"
         ]
       },
-      "gen-macros-0.1.34": {
+      "gen-macros-0.1.52": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -2515,11 +2515,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-platform-0.1.34": {
+      "gen-platform-0.1.52": {
         "runtime_dependencies": [
           {
             "name": "gen_macros",
-            "package_key": "gen-macros-0.1.34",
+            "package_key": "gen-macros-0.1.52",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2529,7 +2529,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.34",
+            "package_key": "gen-types-0.1.52",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2583,7 +2583,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-types-0.1.34": {
+      "gen-types-0.1.52": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -5308,7 +5308,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.496",
+            "package_key": "shikumi-0.1.1083",
             "kind": "normal",
             "features": [
               "cli"
@@ -8025,7 +8025,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.496",
+            "package_key": "shikumi-0.1.1083",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8072,7 +8072,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shikumi-0.1.496": {
+      "shikumi-0.1.1083": {
         "runtime_dependencies": [
           {
             "name": "arc_swap",
@@ -8122,7 +8122,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.34",
+            "package_key": "gen-platform-0.1.52",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8132,7 +8132,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.34",
+            "package_key": "gen-types-0.1.52",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8160,6 +8160,16 @@
             "uses_default_features": false,
             "optional": false,
             "target": "cfg(target_os = \"macos\")",
+            "tree": "target"
+          },
+          {
+            "name": "schemars",
+            "package_key": "schemars-1.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
             "tree": "target"
           },
           {
@@ -9073,7 +9083,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.496",
+            "package_key": "shikumi-0.1.1083",
             "kind": "normal",
             "features": [
               "cli"
@@ -17023,14 +17033,14 @@
     "futures-util-0.3.33": {
       "edition": "2018"
     },
-    "gen-macros-0.1.34": {
+    "gen-macros-0.1.52": {
       "edition": "2024",
       "proc_macro": true
     },
-    "gen-platform-0.1.34": {
+    "gen-platform-0.1.52": {
       "edition": "2024"
     },
-    "gen-types-0.1.34": {
+    "gen-types-0.1.52": {
       "edition": "2024"
     },
     "generic-array-0.14.7": {
@@ -17616,7 +17626,7 @@
     "shidou-0.1.10": {
       "edition": "2024"
     },
-    "shikumi-0.1.496": {
+    "shikumi-0.1.1083": {
       "edition": "2024"
     },
     "shlex-2.0.1": {
