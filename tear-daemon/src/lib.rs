@@ -418,6 +418,15 @@ pub fn start_with_config(
     live_config: Arc<LiveConfig>,
 ) -> io::Result<DaemonHandle> {
     if socket_path.exists() {
+        if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "a tear daemon already answers on {}; refusing to take its socket",
+                    socket_path.display()
+                ),
+            ));
+        }
         let _ = std::fs::remove_file(&socket_path);
     }
     if let Some(parent) = socket_path.parent() {
