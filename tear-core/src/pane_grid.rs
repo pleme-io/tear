@@ -25,7 +25,7 @@ use tear_types::modes::{
     FocusReporting, KeypadApplication, KittySet, ModeSet, ModifyOtherKeys, MouseTracking,
     ReverseVideo, SyncOutput,
 };
-use tear_types::pane_snapshot::{CellAttrs, Color, ansi_256_color, default_ansi_palette};
+use tear_types::pane_snapshot::{CellAttrs, Color, Slot, ansi_256_color, default_ansi_palette};
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
@@ -83,6 +83,8 @@ pub(crate) struct GridState {
     /// Pen state — what colors / attrs new cells inherit.
     pen_fg: Color,
     pen_bg: Color,
+    pen_fg_slot: Slot,
+    pen_bg_slot: Slot,
     pen_attrs: CellAttrs,
     /// Saved cursor + pen for DECSC / DECRC. Lazily allocated.
     saved: Option<SavedCursor>,
@@ -147,6 +149,8 @@ struct SavedCursor {
     col: usize,
     fg: Color,
     bg: Color,
+    fg_slot: Slot,
+    bg_slot: Slot,
     attrs: CellAttrs,
 }
 
@@ -170,6 +174,8 @@ impl GridState {
             cursor_col: 0,
             pen_fg: Color::WHITE,
             pen_bg: Color::BLACK,
+            pen_fg_slot: Slot::NONE,
+            pen_bg_slot: Slot::NONE,
             pen_attrs: CellAttrs::NONE,
             saved: None,
             wrap_pending: false,
@@ -307,6 +313,8 @@ impl GridState {
             attrs: CellAttrs::NONE,
             width: 1,
             combining: 0,
+            fg_slot: self.pen_fg_slot,
+            bg_slot: self.pen_bg_slot,
         }
     }
 
@@ -322,6 +330,8 @@ impl GridState {
             // A freshly printed glyph carries no marks; a following
             // zero-width codepoint attaches them.
             combining: 0,
+            fg_slot: self.pen_fg_slot,
+            bg_slot: self.pen_bg_slot,
         }
     }
 
@@ -338,6 +348,8 @@ impl GridState {
             attrs: self.pen_attrs,
             width: 0,
             combining: 0,
+            fg_slot: self.pen_fg_slot,
+            bg_slot: self.pen_bg_slot,
         }
     }
 
@@ -665,6 +677,8 @@ impl GridState {
             col: self.cursor_col,
             fg: self.pen_fg,
             bg: self.pen_bg,
+            fg_slot: self.pen_fg_slot,
+            bg_slot: self.pen_bg_slot,
             attrs: self.pen_attrs,
         });
     }
@@ -675,6 +689,8 @@ impl GridState {
             self.cursor_col = s.col.min(self.cols.saturating_sub(1));
             self.pen_fg = s.fg;
             self.pen_bg = s.bg;
+            self.pen_fg_slot = s.fg_slot;
+            self.pen_bg_slot = s.bg_slot;
             self.pen_attrs = s.attrs;
         }
     }
@@ -761,8 +777,8 @@ impl GridState {
             if matches!(code, 38 | 48 | 58) {
                 let (colour, consumed) = self.parse_extended_color_params(&items[idx..]);
                 match (code, colour) {
-                    (38, Some(c)) => self.pen_fg = c,
-                    (48, Some(c)) => self.pen_bg = c,
+                    (38, Some((c, slot))) => self.set_fg(c, slot),
+                    (48, Some((c, slot))) => self.set_bg(c, slot),
                     _ => {}
                 }
                 idx += consumed;
@@ -790,22 +806,26 @@ impl GridState {
             }
             code @ (38 | 48 | 58) => {
                 let colour = match param[1] {
-                    5 => param.get(2).map(|&n| ansi_256_color(n, &self.palette)),
+                    5 => param.get(2).map(|&n| self.indexed(n)),
                     // `38:2:cs:r:g:b` has SIX slots — skip the colour-space
                     // id. `38:2:r:g:b` (five) omits it. Choosing by length
                     // is what keeps the channels aligned.
                     2 => match param.len() {
-                        n if n >= 6 => {
-                            Some(Color::new(param[3] as u8, param[4] as u8, param[5] as u8))
-                        }
-                        5 => Some(Color::new(param[2] as u8, param[3] as u8, param[4] as u8)),
+                        n if n >= 6 => Some((
+                            Color::new(param[3] as u8, param[4] as u8, param[5] as u8),
+                            Slot::NONE,
+                        )),
+                        5 => Some((
+                            Color::new(param[2] as u8, param[3] as u8, param[4] as u8),
+                            Slot::NONE,
+                        )),
                         _ => None,
                     },
                     _ => None,
                 };
                 match (code, colour) {
-                    (38, Some(c)) => self.pen_fg = c,
-                    (48, Some(c)) => self.pen_bg = c,
+                    (38, Some((c, slot))) => self.set_fg(c, slot),
+                    (48, Some((c, slot))) => self.set_bg(c, slot),
                     // 58 = underline colour: parsed so it cannot leak,
                     // then dropped because there is nowhere to put it.
                     _ => {}
@@ -819,18 +839,20 @@ impl GridState {
     /// directive. Returns the colour (None for 58 or malformed input) and
     /// how many PARAMETERS were consumed — always at least 1, so the
     /// caller can never fail to advance.
-    fn parse_extended_color_params(&self, rest: &[&[u16]]) -> (Option<Color>, usize) {
+    fn parse_extended_color_params(&self, rest: &[&[u16]]) -> (Option<(Color, Slot)>, usize) {
         let first = |i: usize| rest.get(i).and_then(|p| p.first().copied());
         match first(1) {
             Some(5) => match first(2) {
                 // `self.palette`, not the default one: a pane whose
                 // palette has been re-set by OSC 4 must resolve indexed
                 // colours against ITS palette.
-                Some(n) => (Some(ansi_256_color(n, &self.palette)), 3),
+                Some(n) => (Some(self.indexed(n)), 3),
                 None => (None, 2),
             },
             Some(2) => match (first(2), first(3), first(4)) {
-                (Some(r), Some(g), Some(b)) => (Some(Color::new(r as u8, g as u8, b as u8)), 5),
+                (Some(r), Some(g), Some(b)) => {
+                    (Some((Color::new(r as u8, g as u8, b as u8), Slot::NONE)), 5)
+                }
                 _ => (None, rest.len().min(5)),
             },
             _ => (None, 1),
@@ -860,21 +882,44 @@ impl GridState {
                 27 => self.pen_attrs.remove(CellAttrs::INVERSE),
                 28 => self.pen_attrs.remove(CellAttrs::HIDDEN),
                 29 => self.pen_attrs.remove(CellAttrs::STRIKETHROUGH),
-                30..=37 => self.pen_fg = self.palette[(p - 30) as usize],
-                39 => self.pen_fg = Color::WHITE,
-                40..=47 => self.pen_bg = self.palette[(p - 40) as usize],
-                49 => self.pen_bg = Color::BLACK,
-                90..=97 => self.pen_fg = self.palette[8 + (p - 90) as usize],
-                100..=107 => self.pen_bg = self.palette[8 + (p - 100) as usize],
+                30..=37 => self.set_fg_slot((p - 30) as u8),
+                39 => self.set_fg(Color::WHITE, Slot::NONE),
+                40..=47 => self.set_bg_slot((p - 40) as u8),
+                49 => self.set_bg(Color::BLACK, Slot::NONE),
+                90..=97 => self.set_fg_slot(8 + (p - 90) as u8),
+                100..=107 => self.set_bg_slot(8 + (p - 100) as u8),
                 _ => {} // unknown — drop
             }
         }
     }
 
     fn sgr_reset(&mut self) {
-        self.pen_fg = Color::WHITE;
-        self.pen_bg = Color::BLACK;
+        self.set_fg(Color::WHITE, Slot::NONE);
+        self.set_bg(Color::BLACK, Slot::NONE);
         self.pen_attrs = CellAttrs::NONE;
+    }
+
+    fn indexed(&self, n: u16) -> (Color, Slot) {
+        let slot = u8::try_from(n).map_or(Slot::NONE, Slot::index);
+        (ansi_256_color(n, &self.palette), slot)
+    }
+
+    fn set_fg(&mut self, c: Color, slot: Slot) {
+        self.pen_fg = c;
+        self.pen_fg_slot = slot;
+    }
+
+    fn set_bg(&mut self, c: Color, slot: Slot) {
+        self.pen_bg = c;
+        self.pen_bg_slot = slot;
+    }
+
+    fn set_fg_slot(&mut self, n: u8) {
+        self.set_fg(self.palette[usize::from(n)], Slot::index(n));
+    }
+
+    fn set_bg_slot(&mut self, n: u8) {
+        self.set_bg(self.palette[usize::from(n)], Slot::index(n));
     }
 }
 
@@ -3060,6 +3105,77 @@ mod tests {
             row.starts_with("keep"),
             "private CSI ?J/?K must not erase; row was {row:?}"
         );
+    }
+
+    fn marker_slots(seq: &[u8]) -> (Slot, Slot) {
+        let mut g = PaneGrid::new(20, 1);
+        let mut buf = seq.to_vec();
+        buf.push(b'X');
+        g.feed(&buf);
+        let cell = *g.snapshot().cells[0]
+            .iter()
+            .rev()
+            .find(|c| c.ch == 'X')
+            .expect("marker X present");
+        (cell.fg_slot, cell.bg_slot)
+    }
+
+    #[test]
+    fn every_palette_spelling_records_its_slot() {
+        assert_eq!(marker_slots(b"\x1b[32m"), (Slot::index(2), Slot::NONE));
+        assert_eq!(
+            marker_slots(b"\x1b[95;44m"),
+            (Slot::index(13), Slot::index(4))
+        );
+        assert_eq!(marker_slots(b"\x1b[101m"), (Slot::NONE, Slot::index(9)));
+        assert_eq!(
+            marker_slots(b"\x1b[38;5;200m"),
+            (Slot::index(200), Slot::NONE)
+        );
+        assert_eq!(
+            marker_slots(b"\x1b[48:5:17m"),
+            (Slot::NONE, Slot::index(17))
+        );
+    }
+
+    #[test]
+    fn truecolor_default_and_reset_clear_the_slot() {
+        assert_eq!(
+            marker_slots(b"\x1b[32m\x1b[38;2;1;2;3m"),
+            (Slot::NONE, Slot::NONE)
+        );
+        assert_eq!(
+            marker_slots(b"\x1b[32m\x1b[38:2::1:2:3m"),
+            (Slot::NONE, Slot::NONE)
+        );
+        assert_eq!(
+            marker_slots(b"\x1b[32;44m\x1b[39;49m"),
+            (Slot::NONE, Slot::NONE)
+        );
+        assert_eq!(
+            marker_slots(b"\x1b[32;44m\x1b[0m"),
+            (Slot::NONE, Slot::NONE)
+        );
+        assert_eq!(marker_slots(b"\x1b[38;5;300m"), (Slot::NONE, Slot::NONE));
+    }
+
+    #[test]
+    fn a_saved_pen_restores_its_slot() {
+        assert_eq!(
+            marker_slots(b"\x1b[33m\x1b7\x1b[0m\x1b8"),
+            (Slot::index(3), Slot::NONE)
+        );
+    }
+
+    #[test]
+    fn a_replayed_palette_colour_reaches_the_consumer_as_its_slot() {
+        let mut g = PaneGrid::new(20, 2);
+        g.feed(b"\x1b[32mgreen\x1b[0m plain");
+        let bytes = g.snapshot().to_ansi();
+        assert!(bytes.windows(10).any(|w| w == b"\x1b[32mgreen"));
+        let mut c = PaneGrid::new(20, 2);
+        c.feed(&bytes);
+        assert_eq!(c.snapshot().cells[0][0].fg_slot, Slot::index(2));
     }
 
     fn marker_fg(seq: &[u8]) -> Color {

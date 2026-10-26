@@ -331,6 +331,11 @@ pub struct AttachConfig {
     pub sizing: AttachSizing,
     #[serde(default = "default_attach_enabled")]
     pub picker_shortcuts: bool,
+    /// How an attach replays cell colours: `indexed` writes palette
+    /// colours as their slot so the attaching terminal paints them with
+    /// its own theme; `resolved` writes the pane's RGB.
+    #[serde(default)]
+    pub replay_colors: tear_types::pane_snapshot::ReplayColors,
 }
 
 fn default_attach_enabled() -> bool {
@@ -366,6 +371,7 @@ impl Default for AttachConfig {
             refuse: default_attach_refuse(),
             sizing: AttachSizing::default(),
             picker_shortcuts: default_attach_enabled(),
+            replay_colors: tear_types::pane_snapshot::ReplayColors::default(),
         }
     }
 }
@@ -1133,6 +1139,16 @@ mod tiered_tests {
 #[cfg(test)]
 mod sessions_tests {
     use super::*;
+
+    #[test]
+    fn attach_replays_indexed_colours_unless_told_otherwise() {
+        use tear_types::pane_snapshot::ReplayColors;
+        let cfg: TearConfig = serde_yaml_ng::from_str("prefix: ctrl+a\n").unwrap();
+        assert_eq!(cfg.attach.replay_colors, ReplayColors::Indexed);
+        let cfg: TearConfig =
+            serde_yaml_ng::from_str("attach:\n  replay_colors: resolved\n").unwrap();
+        assert_eq!(cfg.attach.replay_colors, ReplayColors::Resolved);
+    }
 
     #[test]
     fn durability_defaults_to_process_bound_and_a_bare_config_parses() {

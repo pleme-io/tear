@@ -933,7 +933,7 @@ pub fn serve_connection_shutai<S: io::Read + io::Write>(
         }
         // Subscribe promotes the connection to push mode.
         if let Request::Subscribe(pane) = req {
-            return serve_subscription(stream, inproc, pane);
+            return serve_subscription(stream, inproc, pane, config.load().attach.replay_colors);
         }
         // SubscribeConfigChange is the same shape — promote to
         // push mode and stream Response::ConfigChanged frames.
@@ -1012,6 +1012,7 @@ fn serve_subscription<S: io::Read + io::Write>(
     mut stream: S,
     inproc: Arc<InProcess>,
     pane: tear_types::PaneId,
+    colors: tear_types::pane_snapshot::ReplayColors,
 ) -> io::Result<()> {
     // Register the subscriber. On NoSuchPane we still respond with
     // Err so the client knows immediately + closes the connection.
@@ -1040,7 +1041,7 @@ fn serve_subscription<S: io::Read + io::Write>(
     write_msg(&mut stream, &Response::Ok).inspect_err(|_| {
         tear_types::probe_gauge!(lower SubscriberBacklog, rx.try_iter().count());
     })?;
-    let replay = snap.to_ansi_within(max);
+    let replay = snap.to_ansi_within_with(max, colors);
     let dropped = left_out + replay.history_dropped;
     if dropped > 0 {
         tracing::warn!(

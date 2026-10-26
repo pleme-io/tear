@@ -42,6 +42,64 @@ impl Default for Color {
     }
 }
 
+/// The palette slot a cell colour came from: `None` for a truecolor or
+/// default colour, `Some(n)` for SGR 30-37 / 90-97 / 38;5;n (and the
+/// background forms). The cell keeps its resolved RGB beside it, so a
+/// consumer that ignores slots sees exactly what it saw before.
+///
+/// On the wire it is a `u16`: `0` is no slot, `n + 1` is slot `n`. A
+/// value past 256 decodes as no slot, so one bad cell falls back to its
+/// RGB instead of failing the whole snapshot.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "u16", into = "u16")]
+pub struct Slot(u16);
+
+impl Slot {
+    pub const NONE: Self = Self(0);
+
+    #[must_use]
+    pub const fn index(n: u8) -> Self {
+        Self(n as u16 + 1)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> Option<u8> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some((self.0 - 1) as u8)
+        }
+    }
+
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl From<u16> for Slot {
+    fn from(v: u16) -> Self {
+        if v <= 256 { Self(v) } else { Self::NONE }
+    }
+}
+
+impl From<Slot> for u16 {
+    fn from(s: Slot) -> Self {
+        s.0
+    }
+}
+
+/// How a replay writes cell colours. `Indexed` writes a palette colour as
+/// its slot (SGR 3x / 9x / 38;5;n), so the consumer paints it with its
+/// own theme; `Resolved` writes every colour as the producer's RGB.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReplayColors {
+    #[default]
+    Indexed,
+    Resolved,
+}
+
 /// Standard 8-color ANSI palette (normal intensity). Ported from
 /// mado's `terminal::ANSI_COLORS` — the canonical fleet palette
 /// (the same one mado renders with).
@@ -184,6 +242,12 @@ pub struct Cell {
     /// still under mado's 24-byte budget).
     #[serde(default)]
     pub combining: u16,
+    /// The palette slot `fg` came from; see [`Slot`].
+    #[serde(default, skip_serializing_if = "Slot::is_none")]
+    pub fg_slot: Slot,
+    /// The palette slot `bg` came from; see [`Slot`].
+    #[serde(default, skip_serializing_if = "Slot::is_none")]
+    pub bg_slot: Slot,
 }
 
 /// serde default for [`Cell::width`] — see the field's doc for why this is
@@ -200,6 +264,8 @@ impl Cell {
         attrs: CellAttrs::NONE,
         width: 1,
         combining: 0,
+        fg_slot: Slot::NONE,
+        bg_slot: Slot::NONE,
     };
 
     /// True when this cell is the second half of a double-width glyph and
@@ -403,13 +469,23 @@ impl PaneSnapshot {
     /// live stream.
     #[must_use]
     pub fn to_ansi(&self) -> Vec<u8> {
-        self.write_ansi(&mut Vec::new())
+        self.to_ansi_with(ReplayColors::default())
+    }
+
+    #[must_use]
+    pub fn to_ansi_with(&self, colors: ReplayColors) -> Vec<u8> {
+        self.write_ansi(&mut Vec::new(), colors)
     }
 
     #[must_use]
     pub fn to_ansi_within(&self, max_bytes: usize) -> Replay {
+        self.to_ansi_within_with(max_bytes, ReplayColors::default())
+    }
+
+    #[must_use]
+    pub fn to_ansi_within_with(&self, max_bytes: usize, colors: ReplayColors) -> Replay {
         let mut rows_at = Vec::with_capacity(self.scrollback.len() + 3);
-        let mut bytes = self.write_ansi(&mut rows_at);
+        let mut bytes = self.write_ansi(&mut rows_at, colors);
         if bytes.len() <= max_bytes {
             return Replay {
                 bytes,
@@ -440,7 +516,7 @@ impl PaneSnapshot {
         }
     }
 
-    fn write_ansi(&self, rows_at: &mut Vec<usize>) -> Vec<u8> {
+    fn write_ansi(&self, rows_at: &mut Vec<usize>, colors: ReplayColors) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::with_capacity(self.rows * self.cols * 4 + 64);
         let modes = replays_modes();
         let kitty = &self.modes.kitty_keyboard;
@@ -473,7 +549,7 @@ impl PaneSnapshot {
             buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
             rows_at.push(buf.len());
             for row in &self.scrollback {
-                write_scrollback_row(&mut buf, row, &self.combining);
+                write_scrollback_row(&mut buf, row, &self.combining, colors);
                 buf.extend_from_slice(SCROLLBACK_ROW_END);
                 rows_at.push(buf.len());
             }
@@ -485,8 +561,8 @@ impl PaneSnapshot {
         // Reset SGR, clear screen, home cursor.
         buf.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
         // Track current SGR state so we only emit deltas.
-        let mut cur_fg = Color::WHITE;
-        let mut cur_bg = Color::BLACK;
+        let mut cur_fg = Ink::FG;
+        let mut cur_bg = Ink::BG;
         let mut cur_attrs = CellAttrs::NONE;
         for (r, row) in self.cells.iter().enumerate() {
             // Move to start of this row (1-based CSI).
@@ -513,19 +589,12 @@ impl PaneSnapshot {
                     // Attrs only get cleared by full SGR reset — emit
                     // reset + re-establish colors + new attrs.
                     buf.extend_from_slice(b"\x1b[0m");
-                    cur_fg = Color::WHITE;
-                    cur_bg = Color::BLACK;
+                    cur_fg = Ink::FG;
+                    cur_bg = Ink::BG;
                     write_sgr_attrs(&mut buf, cell.attrs);
                     cur_attrs = cell.attrs;
                 }
-                if cell.fg != cur_fg {
-                    let _ = write!(buf, "\x1b[38;2;{};{};{}m", cell.fg.r, cell.fg.g, cell.fg.b);
-                    cur_fg = cell.fg;
-                }
-                if cell.bg != cur_bg {
-                    let _ = write!(buf, "\x1b[48;2;{};{};{}m", cell.bg.r, cell.bg.g, cell.bg.b);
-                    cur_bg = cell.bg;
-                }
+                write_ink_delta(&mut buf, cell, colors, &mut cur_fg, &mut cur_bg);
                 let mut tmp = [0u8; 4];
                 buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
                 // Combining marks follow their base glyph and add no
@@ -700,6 +769,91 @@ mod to_ansi_tests {
         }
     }
 
+    fn slotted(ch: char, fg: Slot, bg: Slot) -> Cell {
+        Cell {
+            ch,
+            fg: Color::new(1, 2, 3),
+            bg: Color::new(4, 5, 6),
+            fg_slot: fg,
+            bg_slot: bg,
+            ..Cell::BLANK
+        }
+    }
+
+    fn one_row(cells: Vec<Cell>) -> PaneSnapshot {
+        let cols = cells.len();
+        PaneSnapshot {
+            cells: vec![cells],
+            ..PaneSnapshot::blank(1, cols)
+        }
+    }
+
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn indexed_replay_writes_each_palette_form() {
+        let snap = one_row(vec![
+            slotted('a', Slot::index(2), Slot::NONE),
+            slotted('b', Slot::index(9), Slot::index(4)),
+            slotted('c', Slot::index(200), Slot::index(12)),
+        ]);
+        let bytes = snap.to_ansi_with(ReplayColors::Indexed);
+        assert!(contains(&bytes, b"\x1b[32m\x1b[48;2;4;5;6ma"));
+        assert!(contains(&bytes, b"\x1b[91m\x1b[44mb"));
+        assert!(contains(&bytes, b"\x1b[38;5;200m\x1b[104mc"));
+        assert!(!contains(&bytes, b"38;2;1;2;3"));
+    }
+
+    #[test]
+    fn resolved_replay_keeps_the_producer_rgb() {
+        let snap = one_row(vec![slotted('a', Slot::index(2), Slot::index(4))]);
+        let bytes = snap.to_ansi_with(ReplayColors::Resolved);
+        assert!(contains(&bytes, b"\x1b[38;2;1;2;3m\x1b[48;2;4;5;6ma"));
+        assert!(!contains(&bytes, b"\x1b[32m"));
+    }
+
+    #[test]
+    fn a_slotless_cell_replays_as_truecolor_in_either_mode() {
+        let snap = one_row(vec![slotted('a', Slot::NONE, Slot::NONE)]);
+        for mode in [ReplayColors::Indexed, ReplayColors::Resolved] {
+            assert!(contains(&snap.to_ansi_with(mode), b"\x1b[38;2;1;2;3m"));
+        }
+    }
+
+    #[test]
+    fn the_default_replay_is_indexed() {
+        let snap = one_row(vec![slotted('a', Slot::index(1), Slot::NONE)]);
+        assert_eq!(snap.to_ansi(), snap.to_ansi_with(ReplayColors::Indexed));
+        assert_eq!(
+            snap.to_ansi_within(usize::MAX).bytes,
+            snap.to_ansi_with(ReplayColors::Indexed)
+        );
+    }
+
+    #[test]
+    fn slots_survive_the_wire_and_an_old_cell_decodes_slotless() {
+        let cell = slotted('a', Slot::index(0), Slot::index(255));
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&cell, &mut bytes).unwrap();
+        let back: Cell = ciborium::de::from_reader(&bytes[..]).unwrap();
+        assert_eq!(back, cell);
+        let mut old = Vec::new();
+        ciborium::ser::into_writer(&Cell::BLANK, &mut old).unwrap();
+        assert!(!contains(&old, b"fg_slot"));
+        let back: Cell = ciborium::de::from_reader(&old[..]).unwrap();
+        assert_eq!((back.fg_slot, back.bg_slot), (Slot::NONE, Slot::NONE));
+    }
+
+    #[test]
+    fn a_slot_past_the_palette_decodes_as_none() {
+        assert_eq!(Slot::from(257), Slot::NONE);
+        assert_eq!(Slot::from(256).get(), Some(255));
+        assert_eq!(Slot::from(1).get(), Some(0));
+        assert_eq!(Slot::NONE.get(), None);
+    }
+
     #[test]
     fn the_smallest_cell_encodes_to_the_wire_floor() {
         let smallest = Cell {
@@ -709,6 +863,8 @@ mod to_ansi_tests {
             attrs: CellAttrs::NONE,
             width: 1,
             combining: 0,
+            fg_slot: Slot::NONE,
+            bg_slot: Slot::NONE,
         };
         assert_eq!(
             crate::wire::encode(&smallest).unwrap().len(),
@@ -721,6 +877,8 @@ mod to_ansi_tests {
             attrs: CellAttrs(0xff),
             width: 2,
             combining: u16::MAX,
+            fg_slot: Slot::index(255),
+            bg_slot: Slot::index(255),
         };
         assert!(
             crate::wire::encode(&largest).unwrap().len() > PaneSnapshot::WIRE_BYTES_PER_CELL_MIN
@@ -1046,10 +1204,75 @@ mod to_ansi_tests {
 /// blank cells (a space in the default colours) are trimmed so a
 /// full-width row can't auto-wrap into a spurious extra blank line and
 /// so mostly-empty history rows stay compact.
-fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell], combining: &[Vec<char>]) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Ink {
+    rgb: Color,
+    slot: Slot,
+}
+
+impl Ink {
+    const FG: Self = Self {
+        rgb: Color::WHITE,
+        slot: Slot::NONE,
+    };
+    const BG: Self = Self {
+        rgb: Color::BLACK,
+        slot: Slot::NONE,
+    };
+
+    fn of(rgb: Color, slot: Slot, colors: ReplayColors) -> Self {
+        let slot = match colors {
+            ReplayColors::Indexed => slot,
+            ReplayColors::Resolved => Slot::NONE,
+        };
+        Self { rgb, slot }
+    }
+
+    fn write(self, buf: &mut Vec<u8>, base: u8) {
+        let _ = match self.slot.get() {
+            Some(n @ 0..=7) => write!(buf, "\x1b[{}m", base + n),
+            Some(n @ 8..=15) => write!(buf, "\x1b[{}m", base + 60 + n - 8),
+            Some(n) => write!(buf, "\x1b[{};5;{}m", base + 8, n),
+            None => write!(
+                buf,
+                "\x1b[{};2;{};{};{}m",
+                base + 8,
+                self.rgb.r,
+                self.rgb.g,
+                self.rgb.b
+            ),
+        };
+    }
+}
+
+fn write_ink_delta(
+    buf: &mut Vec<u8>,
+    cell: &Cell,
+    colors: ReplayColors,
+    cur_fg: &mut Ink,
+    cur_bg: &mut Ink,
+) {
+    let fg = Ink::of(cell.fg, cell.fg_slot, colors);
+    if fg != *cur_fg {
+        fg.write(buf, 30);
+        *cur_fg = fg;
+    }
+    let bg = Ink::of(cell.bg, cell.bg_slot, colors);
+    if bg != *cur_bg {
+        bg.write(buf, 40);
+        *cur_bg = bg;
+    }
+}
+
+fn write_scrollback_row(
+    buf: &mut Vec<u8>,
+    row: &[Cell],
+    combining: &[Vec<char>],
+    colors: ReplayColors,
+) {
     let last = replayed_width(row);
-    let mut cur_fg = Color::WHITE;
-    let mut cur_bg = Color::BLACK;
+    let mut cur_fg = Ink::FG;
+    let mut cur_bg = Ink::BG;
     let mut cur_attrs = CellAttrs::NONE;
     for cell in &row[..last] {
         // Skip the second half of a double-width glyph — same reasoning as
@@ -1066,19 +1289,12 @@ fn write_scrollback_row(buf: &mut Vec<u8>, row: &[Cell], combining: &[Vec<char>]
         }
         if cell.attrs != cur_attrs {
             buf.extend_from_slice(b"\x1b[0m");
-            cur_fg = Color::WHITE;
-            cur_bg = Color::BLACK;
+            cur_fg = Ink::FG;
+            cur_bg = Ink::BG;
             write_sgr_attrs(buf, cell.attrs);
             cur_attrs = cell.attrs;
         }
-        if cell.fg != cur_fg {
-            let _ = write!(buf, "\x1b[38;2;{};{};{}m", cell.fg.r, cell.fg.g, cell.fg.b);
-            cur_fg = cell.fg;
-        }
-        if cell.bg != cur_bg {
-            let _ = write!(buf, "\x1b[48;2;{};{};{}m", cell.bg.r, cell.bg.g, cell.bg.b);
-            cur_bg = cell.bg;
-        }
+        write_ink_delta(buf, cell, colors, &mut cur_fg, &mut cur_bg);
         let mut tmp = [0u8; 4];
         buf.extend_from_slice(cell.ch.encode_utf8(&mut tmp).as_bytes());
         for m in cell.marks(combining) {
