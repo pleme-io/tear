@@ -110,7 +110,7 @@ fn an_attach_leaves_exactly_the_pane_s_history_and_writes_no_answer() {
     assert_eq!(got.modes, authority.modes);
 }
 
-const OVER_THE_CAP: &str = "stty raw -echo; r=''; j=0; while [ $j -lt 40 ]; do r=\"$r\\033[31mX\\033[32mY\"; j=$((j+1)); done; i=0; while [ $i -lt 14000 ]; do printf \"$r\\r\\n\"; i=$((i+1)); done; printf '\\033[0m\\033[?1h\\033[?2004hREADY'; exec cat";
+const OVER_THE_CAP: &str = "stty raw -echo; r=''; j=0; while [ $j -lt 40 ]; do r=\"$r\\033[38;2;191;97;106mX\\033[38;2;163;190;140mY\"; j=$((j+1)); done; i=0; while [ $i -lt 14000 ]; do printf \"$r\\r\\n\"; i=$((i+1)); done; printf '\\033[0m\\033[?1h\\033[?2004hREADY'; exec cat";
 
 #[test]
 fn a_replay_over_the_frame_cap_leaves_out_the_oldest_history_and_the_stream_stays_live() {
