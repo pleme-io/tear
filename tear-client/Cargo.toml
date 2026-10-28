@@ -21,7 +21,7 @@ bench-probes = ["tear-types/bench-probes"]
 tear-types = { workspace = true }
 tear-config = { workspace = true }
 parking_lot = { workspace = true }
-serde_yaml_ng = { workspace = true }
+serde_norway = { workspace = true }
 engate-types = { version = "0.1.6", optional = true }
 engate-attach = { version = "0.1.5", optional = true }
 

@@ -1096,7 +1096,7 @@ fn serve_config_subscription<S: io::Read + io::Write>(
     loop {
         match rx.recv() {
             Ok(new_cfg) => {
-                let yaml = match serde_yaml_ng::to_string(&*new_cfg) {
+                let yaml = match serde_norway::to_string(&*new_cfg) {
                     Ok(y) => y,
                     Err(_) => continue, // skip un-serialisable frames
                 };
@@ -1328,7 +1328,7 @@ pub fn dispatch_with_shutai(
         }
         Request::GetConfig => {
             let cfg = config.load();
-            match serde_yaml_ng::to_string(&*cfg) {
+            match serde_norway::to_string(&*cfg) {
                 Ok(yaml) => Response::ConfigYaml(yaml),
                 Err(e) => Response::Err(WireError::Internal(format!(
                     "failed to serialise TearConfig as YAML: {e}"
@@ -1346,7 +1346,7 @@ pub fn dispatch_with_shutai(
             Err(e) => Response::Err(WireError::Internal(format!("config reload failed: {e}"))),
         },
         Request::SetConfig(yaml) => {
-            match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
+            match serde_norway::from_str::<tear_config::TearConfig>(&yaml) {
                 Ok(cfg) => {
                     // ★ SAY WHAT WAS NOT APPLIED. Every `scrollback` knob is
                     // parsed, stored, hot-reloaded and read by NOTHING, and
@@ -2637,7 +2637,7 @@ mod tests {
 
         // SetConfig YAML must parse as a valid TearConfig — use
         // the default round-tripped through YAML.
-        let yaml = serde_yaml_ng::to_string(&tear_config::TearConfig::default()).unwrap();
+        let yaml = serde_norway::to_string(&tear_config::TearConfig::default()).unwrap();
         let resp =
             dispatch_with_config(&inproc, &live, Request::SetConfig(yaml), Some(&audit), None);
         assert!(matches!(resp, Response::Ok));

@@ -102,7 +102,7 @@ wadachi-spec = "=0.1.7"
 
 # ── canonical fleet runtime crates ─────────────────────────────────
 serde = { version = "1", features = ["derive"] }
-serde_yaml_ng = "0.10"
+serde_norway = "0.9"
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"

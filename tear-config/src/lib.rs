@@ -64,7 +64,7 @@ pub enum ConfigError {
     #[error("io error reading config: {0}")]
     Io(#[from] std::io::Error),
     #[error("yaml parse error: {0}")]
-    Yaml(#[from] serde_yaml_ng::Error),
+    Yaml(#[from] serde_norway::Error),
     #[error("watcher failed: {0}")]
     Watch(#[from] notify::Error),
     /// M1: shikumi's load/reload errors surface through this
@@ -743,7 +743,7 @@ pub fn load_from(path: &Path) -> Result<TearConfig, ConfigError> {
         return Err(ConfigError::NotFound(path.to_path_buf()));
     }
     let text = std::fs::read_to_string(path)?;
-    let cfg: TearConfig = serde_yaml_ng::from_str(&text)?;
+    let cfg: TearConfig = serde_norway::from_str(&text)?;
     Ok(cfg)
 }
 
@@ -1143,16 +1143,16 @@ mod sessions_tests {
     #[test]
     fn attach_replays_indexed_colours_unless_told_otherwise() {
         use tear_types::pane_snapshot::ReplayColors;
-        let cfg: TearConfig = serde_yaml_ng::from_str("prefix: ctrl+a\n").unwrap();
+        let cfg: TearConfig = serde_norway::from_str("prefix: ctrl+a\n").unwrap();
         assert_eq!(cfg.attach.replay_colors, ReplayColors::Indexed);
         let cfg: TearConfig =
-            serde_yaml_ng::from_str("attach:\n  replay_colors: resolved\n").unwrap();
+            serde_norway::from_str("attach:\n  replay_colors: resolved\n").unwrap();
         assert_eq!(cfg.attach.replay_colors, ReplayColors::Resolved);
     }
 
     #[test]
     fn durability_defaults_to_process_bound_and_a_bare_config_parses() {
-        let cfg: TearConfig = serde_yaml_ng::from_str("prefix: ctrl+a\n").unwrap();
+        let cfg: TearConfig = serde_norway::from_str("prefix: ctrl+a\n").unwrap();
         assert_eq!(cfg.sessions, SessionsConfig::default());
         assert_eq!(cfg.sessions.durability, SessionDurability::ProcessBound);
         assert_eq!(cfg.sessions.journal.max_bytes_per_pane, 64 * 1024 * 1024);
@@ -1160,7 +1160,7 @@ mod sessions_tests {
 
     #[test]
     fn a_partial_sessions_block_fills_the_rest_from_defaults() {
-        let cfg: TearConfig = serde_yaml_ng::from_str(
+        let cfg: TearConfig = serde_norway::from_str(
             "sessions:\n  durability: held\n  journal:\n    max_bytes_per_pane: 1048576\n",
         )
         .unwrap();
@@ -1170,14 +1170,14 @@ mod sessions_tests {
         assert_eq!(cfg.sessions.journal.fsync_interval_ms, 1000);
         assert!(cfg.sessions.holder_program.is_none());
         let back: TearConfig =
-            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&cfg).unwrap()).unwrap();
+            serde_norway::from_str(&serde_norway::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.sessions, cfg.sessions);
     }
 
     #[test]
     fn an_unknown_durability_is_refused_at_parse_time() {
         let r: Result<TearConfig, _> =
-            serde_yaml_ng::from_str("sessions:\n  durability: immortal\n");
+            serde_norway::from_str("sessions:\n  durability: immortal\n");
         assert!(r.is_err());
     }
 }
@@ -1188,9 +1188,9 @@ mod tests {
     fn the_kitty_reset_on_command_end_defaults_on_and_reads_from_yaml() {
         assert!(TearConfig::default().keyboard.kitty_reset_on_command_end);
         let c: TearConfig =
-            serde_yaml_ng::from_str("keyboard:\n  kitty_reset_on_command_end: false\n").unwrap();
+            serde_norway::from_str("keyboard:\n  kitty_reset_on_command_end: false\n").unwrap();
         assert!(!c.keyboard.kitty_reset_on_command_end);
-        let d: TearConfig = serde_yaml_ng::from_str("prefix: ctrl+a\n").unwrap();
+        let d: TearConfig = serde_norway::from_str("prefix: ctrl+a\n").unwrap();
         assert!(d.keyboard.kitty_reset_on_command_end);
     }
 
@@ -1359,9 +1359,9 @@ mod tests {
     fn auth_token_env_round_trips_through_yaml() {
         let mut cfg = TearConfig::default();
         cfg.auth_token_env = Some("TEAR_AUTH_TOKEN".into());
-        let y = serde_yaml_ng::to_string(&cfg).unwrap();
+        let y = serde_norway::to_string(&cfg).unwrap();
         assert!(y.contains("TEAR_AUTH_TOKEN"), "yaml: {y}");
-        let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
+        let back: TearConfig = serde_norway::from_str(&y).unwrap();
         assert_eq!(back.auth_token_env, Some("TEAR_AUTH_TOKEN".into()));
     }
 
@@ -1369,8 +1369,8 @@ mod tests {
     fn audit_log_round_trips_through_yaml() {
         let mut cfg = TearConfig::default();
         cfg.audit_log = Some("~/.local/share/tear/audit.log".into());
-        let y = serde_yaml_ng::to_string(&cfg).unwrap();
-        let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
+        let y = serde_norway::to_string(&cfg).unwrap();
+        let back: TearConfig = serde_norway::from_str(&y).unwrap();
         assert_eq!(
             back.audit_log.as_deref(),
             Some("~/.local/share/tear/audit.log")
@@ -1387,8 +1387,8 @@ mod tests {
             api_key_env: Some("OPENAI_API_KEY".into()),
             context_bytes: 4000,
         });
-        let y = serde_yaml_ng::to_string(&cfg).unwrap();
-        let back: TearConfig = serde_yaml_ng::from_str(&y).unwrap();
+        let y = serde_norway::to_string(&cfg).unwrap();
+        let back: TearConfig = serde_norway::from_str(&y).unwrap();
         assert_eq!(back.ai, cfg.ai);
     }
 
@@ -1396,7 +1396,7 @@ mod tests {
     fn empty_yaml_yields_defaults_for_new_fields() {
         // A pre-existing operator's tear.yaml that predates #5 / #6
         // must keep working; serde-default fills in the new fields.
-        let cfg: TearConfig = serde_yaml_ng::from_str("{}").unwrap();
+        let cfg: TearConfig = serde_norway::from_str("{}").unwrap();
         assert_eq!(cfg.auth_token_env, None);
         assert_eq!(cfg.audit_log, None);
         assert_eq!(cfg.ai, None);

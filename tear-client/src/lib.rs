@@ -713,7 +713,7 @@ impl Client {
                 while !stop_for_thread.load(Ordering::SeqCst) {
                     match read_msg::<_, Response>(&mut reader) {
                         Ok(Response::ConfigChanged(yaml)) => {
-                            match serde_yaml_ng::from_str::<tear_config::TearConfig>(&yaml) {
+                            match serde_norway::from_str::<tear_config::TearConfig>(&yaml) {
                                 Ok(cfg) => on_change(Arc::new(cfg)),
                                 Err(_) => return, // malformed payload, bail
                             }
@@ -1279,7 +1279,7 @@ impl Client {
     /// serialised it from a typed TearConfig).
     pub fn get_config(&self) -> ControlResult<tear_config::TearConfig> {
         let yaml = self.get_config_yaml()?;
-        serde_yaml_ng::from_str(&yaml).map_err(|e| {
+        serde_norway::from_str(&yaml).map_err(|e| {
             ControlError::Transport(format!("daemon ConfigYaml is not valid TearConfig: {e}"))
         })
     }
@@ -1301,7 +1301,7 @@ impl Client {
     /// status-bar visibility, etc.). The daemon's on-disk file
     /// is NOT touched; the next file-system reload reverts.
     pub fn set_config(&self, cfg: &tear_config::TearConfig) -> ControlResult<()> {
-        let yaml = serde_yaml_ng::to_string(cfg).map_err(|e| {
+        let yaml = serde_norway::to_string(cfg).map_err(|e| {
             ControlError::Rejected(format!(
                 "client-side TearConfig YAML serialisation failed: {e}"
             ))

@@ -724,7 +724,7 @@ fn cmd_list(
         sessions.retain(|s| filter.matches(&s.source));
     }
     if yaml {
-        println!("{}", serde_yaml_ng::to_string(&sessions)?);
+        println!("{}", serde_norway::to_string(&sessions)?);
     } else if sessions.is_empty() {
         println!("(no sessions on {})", socket_path.display());
     } else {
@@ -1428,7 +1428,7 @@ fn cmd_audit(
         None => {
             let (client, _) = connect_to_daemon(socket)?;
             let yaml = client.get_config_yaml()?;
-            let cfg: tear_config::TearConfig = serde_yaml_ng::from_str(&yaml)?;
+            let cfg: tear_config::TearConfig = serde_norway::from_str(&yaml)?;
             let raw = cfg.audit_log.ok_or_else(|| {
                 anyhow::anyhow!("daemon has no audit_log configured (set services.tear.settings.audit_log in tear.yaml)")
             })?;
@@ -1543,7 +1543,7 @@ fn cmd_ai(
 
     // Load + override config.
     let cfg_yaml = client.get_config_yaml()?;
-    let cfg: tear_config::TearConfig = serde_yaml_ng::from_str(&cfg_yaml)?;
+    let cfg: tear_config::TearConfig = serde_norway::from_str(&cfg_yaml)?;
     let mut ai_cfg = cfg.ai.clone().unwrap_or_default();
     if let Some(m) = model_override {
         ai_cfg.model = m;
@@ -1836,7 +1836,7 @@ fn cmd_render(backend: Backend) -> Result<()> {
     let cfg = live.load();
     let out = match backend {
         Backend::Tmux => tear_tmux_backend::render_tmux_conf(&cfg),
-        Backend::Yaml => serde_yaml_ng::to_string(&*cfg)?,
+        Backend::Yaml => serde_norway::to_string(&*cfg)?,
     };
     print!("{out}");
     Ok(())

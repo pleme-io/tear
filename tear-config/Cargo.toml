@@ -21,7 +21,7 @@ workspace = true
 okiba = "0.2"
 tear-types = { workspace = true }
 serde = { workspace = true }
-serde_yaml_ng = { workspace = true }
+serde_norway = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

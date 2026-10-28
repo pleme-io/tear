@@ -146,11 +146,11 @@ fn up_list_yaml_emits_round_trippable_yaml() {
     let _ = h.run(&["up", "--name", "yaml-test", "--shell", "/bin/sh"]);
     let (stdout, _se, code) = h.run(&["list", "--yaml"]);
     assert_eq!(code, 0);
-    let parsed: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&stdout).unwrap_or_else(|e| panic!("bad yaml: {e}\nraw: {stdout}"));
+    let parsed: serde_norway::Value =
+        serde_norway::from_str(&stdout).unwrap_or_else(|e| panic!("bad yaml: {e}\nraw: {stdout}"));
     let arr = parsed.as_sequence().expect("yaml top-level is a sequence");
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["name"], serde_yaml_ng::Value::from("yaml-test"));
+    assert_eq!(arr[0]["name"], serde_norway::Value::from("yaml-test"));
 }
 
 #[test]
@@ -687,7 +687,7 @@ fn pane_record_start_stop_status_round_trip() {
     let h = DaemonHarness::new("record-roundtrip");
     let _ = h.run(&["up", "--name", "rec-test"]);
     let (yaml, _, _) = h.run(&["list", "--yaml"]);
-    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let pane_decimal = parsed
         .as_sequence()
         .and_then(|s| s.first())
@@ -725,7 +725,7 @@ fn pane_record_export_emits_valid_asciinema_cast_header() {
     let h = DaemonHarness::new("record-export");
     let _ = h.run(&["up", "--name", "exp-test"]);
     let (yaml, _, _) = h.run(&["list", "--yaml"]);
-    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let pane_decimal = parsed
         .as_sequence()
         .and_then(|s| s.first())
@@ -757,7 +757,7 @@ fn pane_info_on_fresh_pane_shows_zero_subscribers() {
     // pane id from the first session and convert to hex form for
     // the pane-info CLI input.
     let (yaml, _, _) = h.run(&["list", "--yaml"]);
-    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let pane_decimal = parsed
         .as_sequence()
         .and_then(|s| s.first())
