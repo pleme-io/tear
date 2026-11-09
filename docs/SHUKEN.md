@@ -13,13 +13,11 @@
 > per naming law 1 (foundational substrate); the literal gloss should let a
 > reader guess the job — *who holds the right to mutate*. Veto freely.
 
-> **Gate 0 lives elsewhere — read it first.**
-> [`theory/MADO-TEAR-SEAM.md`](https://github.com/pleme-io/theory/blob/main/MADO-TEAR-SEAM.md)
-> is the seam's Gate 0 (written 2026-07-30, measured 2026-07-31: ~90 illegal
-> states in eight classes). **This doc records a DIRECTION; that doc records
-> the STATES.** Do not restate its list here. shuken answers its §IV — "what
-> would speaking the same language mean" — with *authority* rather than
-> content, and inherits its §VII preconditions.
+> **Gate 0 comes first.** The seam's Gate 0 (written 2026-07-30, measured
+> 2026-07-31: ~90 illegal states in eight classes) records the STATES; **this
+> doc records a DIRECTION.** shuken answers "what would speaking the same
+> language mean" with *authority* rather than content, and inherits Gate 0's
+> preconditions.
 
 ---
 
@@ -180,10 +178,7 @@ the symptom that started this work *worse*.
   each combining codepoint takes its own cell and advances.
 
 `PaneGrid` must reach parity on both axes **before** it becomes
-authoritative. This is a precondition, not a follow-up — the full Gate 0 and
-the measurement behind it are in
-[`theory/MADO-TEAR-SEAM.md`](https://github.com/pleme-io/theory/blob/main/MADO-TEAR-SEAM.md)
-§III-A.
+authoritative. This is a Gate 0 precondition, not a follow-up.
 
 ## 5-B. ★ The border is VIEW vs VIEWPORT — not "everything in `Terminal` moves"
 

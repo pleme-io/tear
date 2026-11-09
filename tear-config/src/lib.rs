@@ -166,9 +166,8 @@ pub struct TearConfig {
     ///
     /// Mado pushes its own preferred value via SetConfig at attach
     /// time so tear sessions spawned/attached via mado inherit the
-    /// "huge scrollback" default automatically. See
-    /// `theory/CONFIGURATION-MANAGEMENT.md` § III for the
-    /// cross-tool composition pattern.
+    /// "huge scrollback" default automatically (the cross-tool
+    /// composition pattern).
     #[serde(default)]
     pub scrollback: ScrollbackConfig,
 

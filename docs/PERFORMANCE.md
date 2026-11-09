@@ -16,8 +16,7 @@
 > reachable when that behaviour is a good state. §8 grades every invariant as
 > a **TARGET** in selo's vocabulary: a row is re-graded only on a red run
 > against a deliberately broken input, and §6 re-executes every red run on
-> every CI run. Gate 0 for this seam is
-> [`theory/MADO-TEAR-SEAM.md`](https://github.com/pleme-io/theory/blob/main/MADO-TEAR-SEAM.md).
+> every CI run.
 > mado's
 > [`GRID-THREADING-CONTRACT.md`](https://github.com/pleme-io/mado/blob/main/docs/GRID-THREADING-CONTRACT.md)
 > points here for the tear ↔ mado path.

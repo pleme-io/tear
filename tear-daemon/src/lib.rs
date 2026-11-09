@@ -461,7 +461,7 @@ pub fn start_with_config(
     // Note this makes the same-uid property structural WITHOUT a
     // peer-credential check: the kernel enforces it at connect(2).
     // `getpeereid` earns its keep for ATTRIBUTION (which principal
-    // is acting — see theory/TEGATA.md's shutai), not for access.
+    // is acting), not for access.
     std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
 
     info!(path = %socket_path.display(), mode = "0600", "tear-daemon listening");
