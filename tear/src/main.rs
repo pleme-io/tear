@@ -1973,11 +1973,28 @@ fn cmd_daemon(socket: Option<std::path::PathBuf>, tcp: Option<std::net::SocketAd
     let stop_for_handler = stop.clone();
     ctrlc::set_handler(move || stop_for_handler.store(true, Ordering::SeqCst))
         .map_err(|e| anyhow::anyhow!("install signal handler: {e}"))?;
+    use tear_daemon::session;
+    let session_at_start = session::probe();
+    let mut last_check = std::time::Instant::now();
+    let mut orphaned = false;
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(200));
+        if last_check.elapsed() >= session::CHECK_EVERY {
+            last_check = std::time::Instant::now();
+            if session::decide(session_at_start, session::probe()) == session::Action::Exit {
+                tracing::error!(
+                    "tear-daemon: the login session that started this daemon is gone (the user no longer resolves); exiting so the live session's agent takes over"
+                );
+                orphaned = true;
+                break;
+            }
+        }
     }
     println!("\ntear-daemon shutting down...");
     handle.stop();
+    if orphaned {
+        std::process::exit(session::ORPHANED_EXIT_CODE);
+    }
     #[cfg(feature = "bench-probes")]
     let _ = makimono::probes::dump("daemon");
     Ok(())

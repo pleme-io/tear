@@ -34,6 +34,7 @@ pub mod audit;
 pub mod durability;
 pub mod kanshou_state;
 pub mod praca_store;
+pub mod session;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

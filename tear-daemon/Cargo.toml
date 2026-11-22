@@ -43,7 +43,7 @@ tokio = { version = "1", features = ["rt", "macros", "time"] }
 notify = { workspace = true }
 # Safe peer-credential read for shutai's attested arm — see the workspace
 # dep comment. This crate forbids unsafe, so the wrapper is load-bearing.
-nix = { workspace = true }
+nix = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 # Hand-encodes a request frame naming a variant this daemon's
